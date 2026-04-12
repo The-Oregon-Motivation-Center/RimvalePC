@@ -1,0 +1,6 @@
+Build started: Sat 04/11/2026 12:29:09.19 
+[OK] Script started 
+[OK] Android source found 
+[Step 1/2] cmake configure 
+ 
+[ERROR] cmake configure failed 

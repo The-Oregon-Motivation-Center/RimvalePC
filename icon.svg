@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Background -->
+  <rect width="128" height="128" rx="16" fill="#1a1a2e"/>
+  <!-- Shield shape -->
+  <path d="M64 18 L96 32 L96 68 Q96 95 64 110 Q32 95 32 68 L32 32 Z" fill="#16213e" stroke="#e94560" stroke-width="3"/>
+  <!-- R letter -->
+  <text x="64" y="80" font-family="serif" font-size="52" font-weight="bold" fill="#e94560" text-anchor="middle">R</text>
+  <!-- Decorative corners -->
+  <circle cx="32" cy="32" r="4" fill="#e94560"/>
+  <circle cx="96" cy="32" r="4" fill="#e94560"/>
+</svg>

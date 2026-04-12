@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://rimvale_inventory"]
+
+[ext_resource type="Script" path="res://scenes/inventory/inventory.gd" id="1_inv"]
+
+[node name="Inventory" type="Control"]
+script = ExtResource("1_inv")

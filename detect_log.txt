@@ -1,0 +1,86 @@
+=== RIMVALE BUILD DETECTION === 
+Date: Sat 04/11/2026 10:28:56.82 
+ 
+-- Visual Studio paths -- 
+FOUND VS root folder x86 
+ 
+-- vswhere -- 
+FOUND vswhere x86 
+ 
+-- Installer folder contents -- 
+ Volume in drive C is OS
+ Volume Serial Number is F028-60BF
+
+ Directory of C:\Program Files (x86)\Microsoft Visual Studio\Installer
+
+04/11/2026  09:59 AM    <DIR>          .
+04/11/2026  10:00 AM    <DIR>          ..
+04/11/2026  09:59 AM    <DIR>          Assets
+04/11/2026  09:59 AM    <DIR>          cs
+04/11/2026  09:59 AM    <DIR>          de
+04/11/2026  09:59 AM    <DIR>          es
+04/11/2026  09:59 AM    <DIR>          Feedback
+04/11/2026  09:59 AM           316,280 feedback.exe
+04/11/2026  09:59 AM             2,940 feedback.exe.config
+04/11/2026  09:59 AM    <DIR>          fr
+04/11/2026  09:59 AM            62,328 InstallCleanup.exe
+04/11/2026  09:59 AM               176 InstallCleanup.exe.config
+04/11/2026  09:59 AM    <DIR>          it
+04/11/2026  09:59 AM    <DIR>          ja
+04/11/2026  09:59 AM    <DIR>          ko
+04/11/2026  09:59 AM           124,280 Microsoft.VisualStudio.Setup.ToastNotification.exe
+04/11/2026  09:59 AM             6,834 Microsoft.VisualStudio.Setup.ToastNotification.exe.config
+04/11/2026  09:59 AM            35,825 NOTICE.txt
+04/11/2026  09:59 AM    <DIR>          pl
+04/11/2026  09:59 AM    <DIR>          PrecheckTools
+04/11/2026  09:59 AM    <DIR>          pt-BR
+04/11/2026  09:59 AM    <DIR>          resources
+04/11/2026  09:59 AM             1,040 Resources.pri
+04/11/2026  09:59 AM             1,040 Resources.scale-125.pri
+04/11/2026  09:59 AM             1,040 Resources.scale-150.pri
+04/11/2026  09:59 AM             1,040 Resources.scale-200.pri
+04/11/2026  09:59 AM             1,040 Resources.scale-400.pri
+04/11/2026  09:59 AM    <DIR>          ru
+04/11/2026  09:59 AM         3,146,656 setup.exe
+04/11/2026  09:59 AM            11,351 setup.exe.config
+04/11/2026  09:59 AM             9,280 setup.imagemanifest
+04/11/2026  09:59 AM               318 setup.visualelementsmanifest.xml
+04/11/2026  09:59 AM    <DIR>          tr
+04/11/2026  09:59 AM            52,136 VSInstallerElevationService.exe
+04/11/2026  09:59 AM             8,200 VSInstallerElevationService.exe.config
+04/11/2026  09:59 AM           469,456 vswhere.exe
+04/11/2026  09:59 AM           124,792 vs_installer.exe
+04/11/2026  09:59 AM             6,834 vs_installer.exe.config
+04/11/2026  09:59 AM               119 vs_installer.version.json
+04/11/2026  09:59 AM               318 vs_installer.visualelementsmanifest.xml
+04/11/2026  09:59 AM            40,344 vs_installer.windows.exe
+04/11/2026  09:59 AM               265 vs_installer.windows.exe.config
+04/11/2026  09:59 AM           124,792 vs_installershell.exe
+04/11/2026  09:59 AM             6,834 vs_installershell.exe.config
+04/11/2026  09:59 AM               318 vs_installershell.visualelementsmanifest.xml
+04/11/2026  09:59 AM           182,704 vs_layout.exe
+04/11/2026  09:59 AM             6,834 vs_layout.exe.config
+04/11/2026  09:59 AM    <DIR>          zh-Hans
+04/11/2026  09:59 AM    <DIR>          zh-Hant
+              30 File(s)      4,745,414 bytes
+              19 Dir(s)  80,701,370,368 bytes free
+ 
+-- VS root folder contents -- 
+VS root in Program Files does not exist 
+ Volume in drive C is OS
+ Volume Serial Number is F028-60BF
+
+ Directory of C:\Program Files (x86)\Microsoft Visual Studio
+
+04/11/2026  10:00 AM    <DIR>          .
+04/11/2026  10:03 AM    <DIR>          ..
+04/11/2026  10:00 AM    <DIR>          18
+04/11/2026  09:59 AM    <DIR>          Installer
+04/11/2026  10:04 AM    <DIR>          Shared
+               0 File(s)              0 bytes
+               5 Dir(s)  80,701,370,368 bytes free
+ 
+-- PATH -- 
+C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Program Files\dotnet\;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\CMake\bin;C:\Users\Acata\AppData\Local\Programs\Python\Launcher\;C:\Users\Acata\AppData\Local\Microsoft\WindowsApps;C:\Users\Acata\.dotnet\tools;C:\Users\Acata\AppData\Local\GitHubDesktop\bin;C:\Users\Acata\AppData\Roaming\npm;C:\Users\Acata\AppData\Local\Microsoft\WinGet\Packages\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\Users\Acata\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Acata\Documents\flutter\bin;C:\Program Files\CMake\bin; 
+ 
+=== DONE === 

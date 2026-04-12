@@ -1,0 +1,16 @@
+[configuration]
+entry_symbol = "rimvale_engine_library_init"
+compatibility_minimum = "4.3"
+reloadable = true
+
+[libraries]
+windows.debug.x86_64   = "res://addons/rimvale_engine/bin/Debug/librimvale_engine.windows.debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/rimvale_engine/bin/Release/librimvale_engine.windows.release.x86_64.dll"
+linux.debug.x86_64     = "res://addons/rimvale_engine/bin/librimvale_engine.linux.debug.x86_64.so"
+linux.release.x86_64   = "res://addons/rimvale_engine/bin/librimvale_engine.linux.release.x86_64.so"
+macos.debug             = "res://addons/rimvale_engine/bin/librimvale_engine.macos.debug.framework"
+macos.release           = "res://addons/rimvale_engine/bin/librimvale_engine.macos.release.framework"
+android.debug.arm64     = "res://addons/rimvale_engine/bin/librimvale_engine.android.debug.arm64.so"
+android.release.arm64   = "res://addons/rimvale_engine/bin/librimvale_engine.android.release.arm64.so"
+ios.debug               = "res://addons/rimvale_engine/bin/librimvale_engine.ios.debug.xcframework"
+ios.release             = "res://addons/rimvale_engine/bin/librimvale_engine.ios.release.xcframework"

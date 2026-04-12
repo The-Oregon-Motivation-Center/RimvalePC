@@ -1,0 +1,38 @@
+Diagnosing build environment... 
+Date: Sat 04/11/2026 10:24:55.88 
+ 
+── cmake ──────────────────────────────── 
+cmake version 4.3.1
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+ 
+── cl.exe (MSVC compiler) ─────────────── 
+INFO: Could not find files for the given pattern(s).
+ 
+── vswhere ────────────────────────────── 
+vswhere found at ProgramFiles x86 
+C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools
+ 
+── Searching Program Files for VS ─────── 
+The system cannot find the file specified.
+ Volume in drive C is OS
+ Volume Serial Number is F028-60BF
+
+ Directory of C:\Program Files (x86)\Microsoft Visual Studio
+
+04/11/2026  10:00 AM    <DIR>          .
+04/11/2026  10:03 AM    <DIR>          ..
+04/11/2026  10:00 AM    <DIR>          18
+04/11/2026  09:59 AM    <DIR>          Installer
+04/11/2026  10:04 AM    <DIR>          Shared
+               0 File(s)              0 bytes
+               5 Dir(s)  80,711,626,752 bytes free
+ 
+── Searching for MSBuild ───────────────── 
+INFO: Could not find files for the given pattern(s).
+ 
+── Searching for ninja ─────────────────── 
+INFO: Could not find files for the given pattern(s).
+ 
+── PATH ────────────────────────────────── 
+C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Program Files\dotnet\;C:\Program Files\nodejs\;C:\Program Files\Git\cmd;C:\Program Files\CMake\bin;C:\Users\Acata\AppData\Local\Programs\Python\Launcher\;C:\Users\Acata\AppData\Local\Microsoft\WindowsApps;C:\Users\Acata\.dotnet\tools;C:\Users\Acata\AppData\Local\GitHubDesktop\bin;C:\Users\Acata\AppData\Roaming\npm;C:\Users\Acata\AppData\Local\Microsoft\WinGet\Packages\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe;C:\Users\Acata\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Acata\Documents\flutter\bin;C:\Program Files\CMake\bin; 

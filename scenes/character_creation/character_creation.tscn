@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://rimvale_char_creation"]
+
+[ext_resource type="Script" path="res://scenes/character_creation/character_creation.gd" id="1_charcreate"]
+
+[node name="CharacterCreation" type="Control"]
+script = ExtResource("1_charcreate")

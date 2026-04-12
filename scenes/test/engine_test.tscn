@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://rimvale_engine_test"]
+
+[ext_resource type="Script" path="res://scenes/test/engine_test.gd" id="1_test"]
+
+[node name="EngineTest" type="Node"]
+script = ExtResource("1_test")
