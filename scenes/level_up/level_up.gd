@@ -19,7 +19,7 @@ const DOMAIN_NAMES: PackedStringArray = ["Biological", "Chemical", "Physical", "
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
-var _e: RimvaleEngine
+var _e
 var _handle: int = -1
 var _section: int = 0
 
@@ -63,6 +63,8 @@ var _sb_conditions: Array     = []   # Array of condition name Strings
 var _sb_name: String          = ""
 # Stored UI refs for in-place updates (no full redraw needed)
 var _sb_preview_lbl: Label
+var _sb_breakdown_lbl: Label
+var _sb_desc_lbl: Label
 var _sb_die_btns: Array = []
 
 # ── Stored UI references ──────────────────────────────────────────────────────
@@ -108,7 +110,7 @@ func _load_pending_state() -> void:
 # ── UI Construction ───────────────────────────────────────────────────────────
 
 func _build_ui() -> void:
-	var root := VBoxContainer.new()
+	var root = VBoxContainer.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.add_theme_constant_override("separation", 0)
 	add_child(root)
@@ -116,7 +118,7 @@ func _build_ui() -> void:
 	root.add_child(_build_header())
 	root.add_child(_build_section_bar())
 
-	var scroll := ScrollContainer.new()
+	var scroll = ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	root.add_child(scroll)
@@ -129,17 +131,17 @@ func _build_ui() -> void:
 	_render_section()
 
 func _build_header() -> Control:
-	var hdr := ColorRect.new()
+	var hdr = ColorRect.new()
 	hdr.color = RimvaleColors.BG_CARD
 	hdr.custom_minimum_size = Vector2(0, 88)
 
-	var mgn := MarginContainer.new()
+	var mgn = MarginContainer.new()
 	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for s in ["left", "right", "top", "bottom"]:
 		mgn.add_theme_constant_override("margin_" + s, 12)
 	hdr.add_child(mgn)
 
-	var hbox := HBoxContainer.new()
+	var hbox = HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 12)
 	mgn.add_child(hbox)
 
@@ -150,11 +152,11 @@ func _build_header() -> Control:
 
 	_refresh_header()
 
-	var right_col := VBoxContainer.new()
+	var right_col = VBoxContainer.new()
 	right_col.add_theme_constant_override("separation", 6)
 	hbox.add_child(right_col)
 
-	var back_btn := RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 38, 13)
+	var back_btn = RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 38, 13)
 	back_btn.pressed.connect(func():
 		get_parent().get_parent().pop_screen()
 	)
@@ -179,10 +181,10 @@ func _refresh_header() -> void:
 	var summoner_level: int = GameState.player_level
 
 	# Name row + rename button
-	var name_row := HBoxContainer.new()
+	var name_row = HBoxContainer.new()
 	name_row.add_theme_constant_override("separation", 6)
 	name_row.add_child(RimvaleUtils.label(name_, 20, RimvaleColors.TEXT_WHITE))
-	var rename_btn := RimvaleUtils.button("✎", RimvaleColors.TEXT_GRAY, 24, 12)
+	var rename_btn = RimvaleUtils.button("✎", RimvaleColors.TEXT_GRAY, 24, 12)
 	rename_btn.pressed.connect(func(): _show_rename_dialog())
 	name_row.add_child(rename_btn)
 	_header_vbox.add_child(name_row)
@@ -198,7 +200,7 @@ func _refresh_header() -> void:
 	var alignment: String = _get_alignment()
 	var domain: String = _get_domain()
 	if not alignment.is_empty() or not domain.is_empty():
-		var al_row := HBoxContainer.new()
+		var al_row = HBoxContainer.new()
 		al_row.add_theme_constant_override("separation", 8)
 		if not alignment.is_empty():
 			var al_col: Color = Color(0.08, 0.39, 0.75)
@@ -220,7 +222,7 @@ func _refresh_header() -> void:
 	if level_ >= summoner_level:
 		_header_vbox.add_child(RimvaleUtils.label("Level capped (Summoner Lv %d)" % summoner_level, 10, RimvaleColors.DANGER))
 	elif can_lvl:
-		var lvl_btn := RimvaleUtils.button("⬆ Level Up!", Color(0.30, 0.69, 0.31), 34, 13)
+		var lvl_btn = RimvaleUtils.button("⬆ Level Up!", Color(0.30, 0.69, 0.31), 34, 13)
 		lvl_btn.pressed.connect(func():
 			_e.add_xp(_handle, 0, GameState.player_level)
 			_load_pending_state()
@@ -232,17 +234,17 @@ func _refresh_header() -> void:
 		_header_vbox.add_child(RimvaleUtils.label("XP: %d / %d" % [xp_, xp_req_], 10, RimvaleColors.TEXT_DIM))
 
 func _build_section_bar() -> Control:
-	var bar := ScrollContainer.new()
+	var bar = ScrollContainer.new()
 	bar.custom_minimum_size = Vector2(0, 48)
 	bar.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 
-	var hbox := HBoxContainer.new()
+	var hbox = HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 2)
 	bar.add_child(hbox)
 
 	for i in range(SECTION_TITLES.size()):
 		var idx: int = i
-		var btn := RimvaleUtils.button(SECTION_TITLES[i],
+		var btn = RimvaleUtils.button(SECTION_TITLES[i],
 			RimvaleColors.ACCENT if i == _section else RimvaleColors.TEXT_GRAY, 42, 13)
 		btn.pressed.connect(func(): _on_section(idx))
 		_section_btns.append(btn)
@@ -267,12 +269,12 @@ func _render_section() -> void:
 	_stat_val_lbls.clear()
 	_skill_val_lbls.clear()
 
-	var mgn := MarginContainer.new()
+	var mgn = MarginContainer.new()
 	for s in ["left", "right", "top", "bottom"]:
 		mgn.add_theme_constant_override("margin_" + s, 16)
 	_content_area.add_child(mgn)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 12)
 	mgn.add_child(vbox)
 
@@ -293,7 +295,7 @@ func _build_stats(parent: VBoxContainer) -> void:
 		return
 
 	# Points badge + confirm holder
-	var hdr_row := HBoxContainer.new()
+	var hdr_row = HBoxContainer.new()
 	hdr_row.add_theme_constant_override("separation", 12)
 	parent.add_child(hdr_row)
 
@@ -301,7 +303,7 @@ func _build_stats(parent: VBoxContainer) -> void:
 		Color(0.30, 0.69, 0.31) if _available_stat_pts > 0 else RimvaleColors.TEXT_DIM)
 	hdr_row.add_child(_stat_pts_lbl)
 
-	var spacer := Control.new()
+	var spacer = Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(spacer)
 
@@ -325,13 +327,13 @@ func _build_stats(parent: VBoxContainer) -> void:
 		var confirmed: int = _confirmed_stats.get(stat_name, 0)
 		var pending: int = _pending_stats.get(stat_name, confirmed)
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 52)
 		parent.add_child(row)
 
 		# Icon + name
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
@@ -350,13 +352,13 @@ func _build_stats(parent: VBoxContainer) -> void:
 		_stat_val_lbls[stat_name] = val_lbl
 
 		# Decrement button
-		var minus_btn := RimvaleUtils.button("−", RimvaleColors.TEXT_GRAY, 40, 16)
+		var minus_btn = RimvaleUtils.button("−", RimvaleColors.TEXT_GRAY, 40, 16)
 		minus_btn.custom_minimum_size = Vector2(36, 0)
 		minus_btn.pressed.connect(func(): _decrement_stat(stat_name))
 		row.add_child(minus_btn)
 
 		# Increment button
-		var plus_btn := RimvaleUtils.button("+", RimvaleColors.SUCCESS, 40, 16)
+		var plus_btn = RimvaleUtils.button("+", RimvaleColors.SUCCESS, 40, 16)
 		plus_btn.custom_minimum_size = Vector2(36, 0)
 		plus_btn.pressed.connect(func(): _increment_stat(stat_name, stat_idx))
 		row.add_child(plus_btn)
@@ -410,7 +412,7 @@ func _update_stat_confirm_btn() -> void:
 			has_changes = true
 			break
 	if has_changes:
-		var btn := RimvaleUtils.button("Confirm Changes", Color(0.30, 0.69, 0.31), 36, 12)
+		var btn = RimvaleUtils.button("Confirm Changes", Color(0.30, 0.69, 0.31), 36, 12)
 		btn.pressed.connect(func(): _confirm_stats())
 		_stat_confirm_holder.add_child(btn)
 
@@ -442,11 +444,11 @@ func _build_skills(parent: VBoxContainer) -> void:
 			favored_count += 1
 
 	# Header row
-	var hdr_row := HBoxContainer.new()
+	var hdr_row = HBoxContainer.new()
 	hdr_row.add_theme_constant_override("separation", 12)
 	parent.add_child(hdr_row)
 
-	var pts_col := VBoxContainer.new()
+	var pts_col = VBoxContainer.new()
 	pts_col.add_theme_constant_override("separation", 2)
 	hdr_row.add_child(pts_col)
 
@@ -455,7 +457,7 @@ func _build_skills(parent: VBoxContainer) -> void:
 	pts_col.add_child(_skill_pts_lbl)
 	pts_col.add_child(RimvaleUtils.label("Favored: %d / %d  (Intellect limit)" % [favored_count, intellect], 11, RimvaleColors.TEXT_DIM))
 
-	var spacer := Control.new()
+	var spacer = Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(spacer)
 
@@ -473,14 +475,14 @@ func _build_skills(parent: VBoxContainer) -> void:
 		var is_fav: bool = _e.is_favored_skill(_handle, i)
 		var can_fav: bool = is_fav or favored_count < intellect
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
-		row.custom_minimum_size = Vector2(0, 46)
+		row.custom_minimum_size = Vector2(0, 28)
 		parent.add_child(row)
 
 		# Favored toggle
 		var fav_col: Color = Color(0.91, 0.12, 0.39) if is_fav else RimvaleColors.TEXT_DIM
-		var fav_btn := RimvaleUtils.button("❤" if is_fav else "♡", fav_col, 38, 14)
+		var fav_btn = RimvaleUtils.button("❤" if is_fav else "♡", fav_col, 38, 14)
 		fav_btn.custom_minimum_size = Vector2(34, 0)
 		fav_btn.pressed.connect(func():
 			if can_fav:
@@ -490,7 +492,7 @@ func _build_skills(parent: VBoxContainer) -> void:
 		row.add_child(fav_btn)
 
 		# Skill name
-		var name_lbl := RimvaleUtils.label(skill_name, 14,
+		var name_lbl = RimvaleUtils.label(skill_name, 14,
 			Color(0.91, 0.12, 0.39) if is_fav else RimvaleColors.TEXT_WHITE)
 		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(name_lbl)
@@ -507,13 +509,13 @@ func _build_skills(parent: VBoxContainer) -> void:
 		_skill_val_lbls[skill_name] = val_lbl
 
 		# Decrement
-		var minus_btn := RimvaleUtils.button("−", RimvaleColors.TEXT_GRAY, 38, 15)
+		var minus_btn = RimvaleUtils.button("−", RimvaleColors.TEXT_GRAY, 38, 15)
 		minus_btn.custom_minimum_size = Vector2(34, 0)
 		minus_btn.pressed.connect(func(): _decrement_skill(skill_name))
 		row.add_child(minus_btn)
 
 		# Increment
-		var plus_btn := RimvaleUtils.button("+", Color(0.13, 0.59, 0.95), 38, 15)
+		var plus_btn = RimvaleUtils.button("+", Color(0.13, 0.59, 0.95), 38, 15)
 		plus_btn.custom_minimum_size = Vector2(34, 0)
 		plus_btn.pressed.connect(func(): _increment_skill(skill_name, skill_idx))
 		row.add_child(plus_btn)
@@ -567,7 +569,7 @@ func _update_skill_confirm_btn() -> void:
 			has_changes = true
 			break
 	if has_changes:
-		var btn := RimvaleUtils.button("Confirm Changes", Color(0.13, 0.59, 0.95), 36, 12)
+		var btn = RimvaleUtils.button("Confirm Changes", Color(0.13, 0.59, 0.95), 36, 12)
 		btn.pressed.connect(func(): _confirm_skills())
 		_skill_confirm_holder.add_child(btn)
 
@@ -594,19 +596,19 @@ func _build_feats(parent: VBoxContainer) -> void:
 	var feat_pts: int = _e.get_character_feat_points(_handle)
 
 	# Header: points badge + filter controls
-	var hdr_row := HBoxContainer.new()
+	var hdr_row = HBoxContainer.new()
 	hdr_row.add_theme_constant_override("separation", 8)
 	parent.add_child(hdr_row)
 
 	hdr_row.add_child(RimvaleUtils.label("Feat Points: %d" % feat_pts, 16,
 		Color(0.61, 0.15, 0.69) if feat_pts > 0 else RimvaleColors.TEXT_DIM))
 
-	var spacer := Control.new()
+	var spacer = Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(spacer)
 
 	# Tier filter OptionButton
-	var tier_opt := OptionButton.new()
+	var tier_opt = OptionButton.new()
 	tier_opt.custom_minimum_size = Vector2(90, 34)
 	tier_opt.add_item("All Tiers", 0)
 	for t in range(1, 6):
@@ -620,7 +622,7 @@ func _build_feats(parent: VBoxContainer) -> void:
 
 	# Learned-only toggle
 	var learned_col: Color = Color(0.13, 0.59, 0.95) if _feat_learned_only else RimvaleColors.TEXT_GRAY
-	var learned_btn := RimvaleUtils.button("✓ Learned" if _feat_learned_only else "All", learned_col, 34, 12)
+	var learned_btn = RimvaleUtils.button("✓ Learned" if _feat_learned_only else "All", learned_col, 34, 12)
 	learned_btn.pressed.connect(func():
 		_feat_learned_only = not _feat_learned_only
 		_render_section()
@@ -630,23 +632,23 @@ func _build_feats(parent: VBoxContainer) -> void:
 	parent.add_child(RimvaleUtils.separator())
 
 	# All feat categories for filter info
-	var all_cats_raw := _e.get_all_feat_categories()
+	var all_cats_raw = _e.get_all_feat_categories()
 	var all_cats: Array = []
 	for c in all_cats_raw:
 		all_cats.append(str(c))
 
 	# Category filter row
-	var cat_scroll := ScrollContainer.new()
+	var cat_scroll = ScrollContainer.new()
 	cat_scroll.custom_minimum_size = Vector2(0, 36)
 	cat_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	parent.add_child(cat_scroll)
 
-	var cat_row := HBoxContainer.new()
+	var cat_row = HBoxContainer.new()
 	cat_row.add_theme_constant_override("separation", 6)
 	cat_scroll.add_child(cat_row)
 
 	var all_btn_col: Color = RimvaleColors.ACCENT if _feat_filter_cats.is_empty() else RimvaleColors.TEXT_GRAY
-	var all_chip := RimvaleUtils.button("All", all_btn_col, 30, 12)
+	var all_chip = RimvaleUtils.button("All", all_btn_col, 30, 12)
 	all_chip.pressed.connect(func():
 		_feat_filter_cats.clear()
 		_render_section()
@@ -657,7 +659,7 @@ func _build_feats(parent: VBoxContainer) -> void:
 		var cat_name: String = cat
 		var is_sel: bool = cat_name in _feat_filter_cats
 		var chip_col: Color = Color(0.61, 0.15, 0.69) if is_sel else RimvaleColors.TEXT_GRAY
-		var chip := RimvaleUtils.button(cat_name.left(12), chip_col, 30, 11)
+		var chip = RimvaleUtils.button(cat_name.left(12), chip_col, 30, 11)
 		chip.pressed.connect(func():
 			if cat_name in _feat_filter_cats:
 				_feat_filter_cats.erase(cat_name)
@@ -677,7 +679,7 @@ func _build_feats(parent: VBoxContainer) -> void:
 		tiers_to_show = [_feat_filter_tier]
 
 	for tier in tiers_to_show:
-		var feats_raw := _e.get_feats_by_tier(tier)
+		var feats_raw = _e.get_feats_by_tier(tier)
 		if feats_raw.size() == 0:
 			continue
 
@@ -685,7 +687,7 @@ func _build_feats(parent: VBoxContainer) -> void:
 
 		for feat_raw in feats_raw:
 			var feat_name: String = str(feat_raw)
-			var details_raw := _e.get_feat_details(feat_name, tier)
+			var details_raw = _e.get_feat_details(feat_name, tier)
 			var description: String = str(details_raw[0]) if details_raw.size() > 0 else ""
 			var category: String = str(details_raw[1]) if details_raw.size() > 1 else "Miscellaneous"
 			var tree_name: String = str(details_raw[2]) if details_raw.size() > 2 else ""
@@ -705,20 +707,20 @@ func _build_feats(parent: VBoxContainer) -> void:
 
 			# Add tier header once
 			if not tier_header_added:
-				var tier_lbl := RimvaleUtils.label("── Tier %d ──" % tier, 13, RimvaleColors.ACCENT)
+				var tier_lbl = RimvaleUtils.label("── Tier %d ──" % tier, 13, RimvaleColors.ACCENT)
 				parent.add_child(tier_lbl)
 				tier_header_added = true
 
-			var card := _build_feat_card(feat_name, tier, category, tree_name, description,
+			var card = _build_feat_card(feat_name, tier, category, tree_name, description,
 				is_unlocked, can_unlock, feat_pts)
 			parent.add_child(card)
 
 func _build_feat_card(feat_name: String, tier: int, category: String, tree_name: String,
 		description: String, is_unlocked: bool, can_unlock: bool, feat_pts: int) -> Control:
 	# PanelContainer auto-sizes to children (ColorRect does not).
-	var card := PanelContainer.new()
+	var card = PanelContainer.new()
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sbox := StyleBoxFlat.new()
+	var sbox = StyleBoxFlat.new()
 	sbox.bg_color = Color(0.10, 0.20, 0.10, 1.0) if is_unlocked else Color(0.10, 0.10, 0.14, 1.0)
 	sbox.content_margin_left   = 10.0
 	sbox.content_margin_right  = 10.0
@@ -726,18 +728,18 @@ func _build_feat_card(feat_name: String, tier: int, category: String, tree_name:
 	sbox.content_margin_bottom = 10.0
 	card.add_theme_stylebox_override("panel", sbox)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 4)
 	card.add_child(vbox)
 
-	var title_row := HBoxContainer.new()
+	var title_row = HBoxContainer.new()
 	title_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(title_row)
 
 	var status_mark: String = "✓ " if is_unlocked else ("○ " if can_unlock else "✗ ")
 	var name_col: Color = Color(0.30, 0.69, 0.31) if is_unlocked else \
 		(RimvaleColors.TEXT_WHITE if can_unlock else RimvaleColors.TEXT_DIM)
-	var name_lbl := RimvaleUtils.label(status_mark + feat_name, 14, name_col)
+	var name_lbl = RimvaleUtils.label(status_mark + feat_name, 14, name_col)
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_row.add_child(name_lbl)
 
@@ -745,23 +747,23 @@ func _build_feat_card(feat_name: String, tier: int, category: String, tree_name:
 		title_row.add_child(RimvaleUtils.label(tree_name.left(16), 10, RimvaleColors.TEXT_DIM))
 
 	if not description.is_empty():
-		var desc_lbl := RimvaleUtils.label(description, 11, RimvaleColors.TEXT_GRAY)
+		var desc_lbl = RimvaleUtils.label(description, 11, RimvaleColors.TEXT_GRAY)
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		vbox.add_child(desc_lbl)
 
-	var bottom_row := HBoxContainer.new()
+	var bottom_row = HBoxContainer.new()
 	bottom_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(bottom_row)
 
 	bottom_row.add_child(RimvaleUtils.label(category, 10, Color(0.61, 0.15, 0.69)))
-	var sp2 := Control.new()
+	var sp2 = Control.new()
 	sp2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bottom_row.add_child(sp2)
 
 	if can_unlock and not is_unlocked and feat_pts > 0:
 		var fn_cap: String = feat_name
 		var tier_cap: int = tier
-		var unlock_btn := RimvaleUtils.button("Unlock (T%d)" % tier, RimvaleColors.GOLD, 32, 12)
+		var unlock_btn = RimvaleUtils.button("Unlock (T%d)" % tier, RimvaleColors.GOLD, 32, 12)
 		unlock_btn.pressed.connect(func(): _confirm_feat_unlock(fn_cap, tier_cap))
 		bottom_row.add_child(unlock_btn)
 	elif is_unlocked:
@@ -771,7 +773,7 @@ func _build_feat_card(feat_name: String, tier: int, category: String, tree_name:
 	return card
 
 func _confirm_feat_unlock(feat_name: String, tier: int) -> void:
-	var dialog := ConfirmationDialog.new()
+	var dialog = ConfirmationDialog.new()
 	dialog.title = "Confirm Purchase"
 	dialog.dialog_text = "Unlock %s (Tier %d)?" % [feat_name, tier]
 	dialog.get_ok_button().text = "Unlock"
@@ -826,8 +828,9 @@ const DAMAGE_TYPES: PackedStringArray = [
 	"Bludgeoning", "Piercing", "Slashing", "Force", "Fire", "Cold",
 	"Lightning", "Acid", "Poison", "Psychic", "Radiant", "Necrotic", "Thunder"
 ]
-# Engine damage type indices (mobile skips 7; Acid=8 in engine enum)
-const DAMAGE_TYPE_ENG: PackedInt32Array = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13]
+# Engine damage type indices now match DAMAGE_TYPES 1:1 (bludgeoning..thunder).
+# Pass-through 0-12 lines up with the expanded PHB 13-damage-type list in the engine.
+const DAMAGE_TYPE_ENG: PackedInt32Array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 const DURATION_LABELS: PackedStringArray = ["Instant", "1 Minute", "10 Minutes", "1 Hour", "1 Day"]
 const DURATION_ROUNDS: PackedInt32Array  = [0, 10, 100, 600, 14400]
@@ -857,7 +860,10 @@ func _calc_spell_cost(effect_base_sp: int, duration_idx: int, range_idx: int,
 	var range_cost: int  = RANGE_SP_COST[range_idx] if range_idx < RANGE_SP_COST.size() else 0
 	var target_cost: int = 0
 	if targets > 1:
-		target_cost = int(pow(2.0, float(targets - 2))) * 2
+		# PHB multi-target: cumulative sum 2+4+8+16+… per additional target.
+		# targets=2 → 2, 3 → 2+4=6, 4 → 2+4+8=14, 5 → 2+4+8+16=30, 6 → 62…
+		for i in range(targets - 1):
+			target_cost += int(pow(2.0, float(i + 1)))
 	var cond_cost: int   = (harmful_cond_count * 3) - (beneficial_cond_count * 2)
 	var area_mult: int   = AREA_MULT[area_idx] if area_idx < AREA_MULT.size() else 1
 	var base_sum: int    = type_cost + base_with_dur + range_cost + target_cost + cond_cost
@@ -882,12 +888,53 @@ func _sb_update_preview() -> void:
 	for cname in _sb_conditions:
 		if cname in CONDITIONS_HARMFUL: harmful += 1
 		else: beneficial += 1
-	var cost := _calc_spell_cost(
-		_sb_effect_base_sp(), _sb_duration_idx, _sb_range_idx,
+
+	# Individual cost components for breakdown
+	var effect_base: int = _sb_effect_base_sp()
+	var sides_mod: int   = DIE_SIDES_MOD[_sb_die_idx] if _sb_die_idx < DIE_SIDES_MOD.size() else 0
+	var dice_cost: int   = _sb_die_count * (1 + sides_mod)
+	var dur_mult: int    = DURATION_MULT[_sb_duration_idx] if _sb_duration_idx < DURATION_MULT.size() else 1
+	var range_cost: int  = RANGE_SP_COST[_sb_range_idx] if _sb_range_idx < RANGE_SP_COST.size() else 0
+	var target_cost: int = 0
+	if _sb_targets > 1:
+		for i in range(_sb_targets - 1):
+			target_cost += int(pow(2.0, float(i + 1)))
+	var cond_cost: int   = (harmful * 3) - (beneficial * 2)
+	var type_cost: int   = 1 if _sb_is_saving_throw else 0
+
+	var cost = _calc_spell_cost(
+		effect_base, _sb_duration_idx, _sb_range_idx,
 		_sb_targets, _sb_area_idx, _sb_die_count, _sb_die_idx,
 		_sb_is_saving_throw, harmful, beneficial
 	)
-	_sb_preview_lbl.text = "Estimated SP Cost: %d SP" % cost
+	_sb_preview_lbl.text = "Total SP Cost: %d" % cost
+
+	# Breakdown
+	if is_instance_valid(_sb_breakdown_lbl):
+		var effects_arr: Array = DOMAIN_EFFECTS[_sb_domain] if _sb_domain < DOMAIN_EFFECTS.size() else []
+		var effect_name: String = effects_arr[_sb_effect_idx][0] if _sb_effect_idx < effects_arr.size() else "Unknown"
+		var lines: PackedStringArray = []
+		lines.append("Base Effect (%s): %d" % [effect_name, effect_base])
+		if dice_cost > 0:
+			lines.append("Dice (%dd%d): +%d" % [_sb_die_count, [4,6,8,10,12][_sb_die_idx], dice_cost])
+		if dur_mult > 1:
+			lines.append("Duration (×%d): applied" % dur_mult)
+		if range_cost > 0:
+			lines.append("Range (%s): +%d" % [RANGE_LABELS[_sb_range_idx], range_cost])
+		if target_cost > 0:
+			lines.append("Multi-target (%d): +%d" % [_sb_targets, target_cost])
+		if cond_cost != 0:
+			lines.append("Conditions: %s%d" % ["+" if cond_cost > 0 else "", cond_cost])
+		if type_cost > 0:
+			lines.append("Saving throw: +1")
+		var area_mult: int = AREA_MULT[_sb_area_idx] if _sb_area_idx < AREA_MULT.size() else 1
+		if area_mult > 1:
+			lines.append("Area (×%d): applied" % area_mult)
+		_sb_breakdown_lbl.text = "\n".join(lines)
+
+	# Description
+	if is_instance_valid(_sb_desc_lbl):
+		_sb_desc_lbl.text = _sb_generate_description()
 
 # ── Magic: main builder ───────────────────────────────────────────────────────
 
@@ -901,9 +948,9 @@ func _build_magic(parent: VBoxContainer) -> void:
 	var div_stat: int = _e.get_character_stat(_handle, 4)  # Divinity = stat index 4
 
 	# ── SP pool bar ──
-	var sp_card := PanelContainer.new()
+	var sp_card = PanelContainer.new()
 	sp_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sp_sbox := StyleBoxFlat.new()
+	var sp_sbox = StyleBoxFlat.new()
 	sp_sbox.bg_color = Color(0.10, 0.08, 0.20, 1.0)
 	sp_sbox.content_margin_left  = 12.0
 	sp_sbox.content_margin_right = 12.0
@@ -912,24 +959,24 @@ func _build_magic(parent: VBoxContainer) -> void:
 	sp_card.add_theme_stylebox_override("panel", sp_sbox)
 	parent.add_child(sp_card)
 
-	var sp_vbox := VBoxContainer.new()
+	var sp_vbox = VBoxContainer.new()
 	sp_vbox.add_theme_constant_override("separation", 4)
 	sp_card.add_child(sp_vbox)
 
-	var sp_row := HBoxContainer.new()
+	var sp_row = HBoxContainer.new()
 	sp_row.add_theme_constant_override("separation", 12)
 	sp_vbox.add_child(sp_row)
 	sp_row.add_child(RimvaleUtils.label("✦ SPELL POOL", 13, RimvaleColors.SP_PURPLE))
-	var sp_val := RimvaleUtils.label("%d / %d SP" % [cur_sp, max_sp], 18, Color(0.74, 0.40, 1.0))
+	var sp_val = RimvaleUtils.label("%d / %d SP" % [cur_sp, max_sp], 18, Color(0.74, 0.40, 1.0))
 	sp_val.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sp_row.add_child(sp_val)
 	sp_row.add_child(RimvaleUtils.label("DIV %d" % div_stat, 12, RimvaleColors.TEXT_DIM))
 
-	var bar_bg := ColorRect.new()
+	var bar_bg = ColorRect.new()
 	bar_bg.color = Color(0.15, 0.12, 0.25, 1.0)
 	bar_bg.custom_minimum_size = Vector2(0, 6)
 	sp_vbox.add_child(bar_bg)
-	var bar_fill := ColorRect.new()
+	var bar_fill = ColorRect.new()
 	bar_fill.color = Color(0.55, 0.22, 0.90, 1.0)
 	var pct: float = float(cur_sp) / float(max_sp) if max_sp > 0 else 0.0
 	bar_fill.anchor_right = pct
@@ -937,14 +984,14 @@ func _build_magic(parent: VBoxContainer) -> void:
 	bar_bg.add_child(bar_fill)
 
 	# ── Sub-tab bar ──
-	var tab_row := HBoxContainer.new()
+	var tab_row = HBoxContainer.new()
 	tab_row.add_theme_constant_override("separation", 0)
 	parent.add_child(tab_row)
 
-	var tab_labels := ["📖 Spellbook", "⚗ Spell Builder"]
+	var tab_labels = ["📖 Spellbook", "⚗ Spell Builder"]
 	for ti in range(2):
 		var ti_cap: int = ti
-		var tbtn := RimvaleUtils.button(tab_labels[ti],
+		var tbtn = RimvaleUtils.button(tab_labels[ti],
 			RimvaleColors.ACCENT if ti == _magic_tab else RimvaleColors.TEXT_GRAY, 42, 14)
 		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tbtn.pressed.connect(func():
@@ -964,12 +1011,12 @@ func _build_magic(parent: VBoxContainer) -> void:
 
 func _build_spellbook(parent: VBoxContainer) -> void:
 	var level_: int      = _e.get_character_level(_handle)
-	var learned_raw      := _e.get_learned_spells(_handle)
+	var learned_raw = _e.get_learned_spells(_handle)
 	var learned: Array   = []
 	for s in learned_raw:
 		learned.append(str(s))
-	var all_spells       := _e.get_all_spells()
-	var custom_spells    := _e.get_custom_spells()
+	var all_spells = _e.get_all_spells()
+	var custom_spells = _e.get_custom_spells()
 
 	# ── Known spells ──
 	parent.add_child(RimvaleUtils.label("KNOWN SPELLS", 12, RimvaleColors.TEXT_DIM))
@@ -1037,9 +1084,9 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 	var cur_sp: int    = _e.get_character_sp(_handle) if _handle != -1 else 0
 	var can_cast: bool = is_learned and cur_sp >= cost and cost > 0
 
-	var card := PanelContainer.new()
+	var card = PanelContainer.new()
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sbox := StyleBoxFlat.new()
+	var sbox = StyleBoxFlat.new()
 	sbox.bg_color = Color(0.08, 0.12, 0.22, 1.0) if is_learned else Color(0.10, 0.10, 0.14, 1.0)
 	sbox.content_margin_left   = 10.0
 	sbox.content_margin_right  = 10.0
@@ -1047,18 +1094,18 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 	sbox.content_margin_bottom = 10.0
 	card.add_theme_stylebox_override("panel", sbox)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 4)
 	card.add_child(vbox)
 
 	# Title row
-	var title_row := HBoxContainer.new()
+	var title_row = HBoxContainer.new()
 	title_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(title_row)
 
 	var icon: String  = "🔮 " if is_learned else "○ "
 	var name_col: Color = Color(0.74, 0.50, 1.0) if is_learned else 		(RimvaleColors.TEXT_WHITE if can_learn else RimvaleColors.TEXT_DIM)
-	var name_lbl := RimvaleUtils.label(icon + spell_name, 14, name_col)
+	var name_lbl = RimvaleUtils.label(icon + spell_name, 14, name_col)
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_row.add_child(name_lbl)
 
@@ -1070,7 +1117,7 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 		vbox.add_child(RimvaleUtils.label(domain_name + " Domain", 10, dom_col))
 
 	if not desc.is_empty():
-		var dl := RimvaleUtils.label(desc, 11, RimvaleColors.TEXT_GRAY)
+		var dl = RimvaleUtils.label(desc, 11, RimvaleColors.TEXT_GRAY)
 		dl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		vbox.add_child(dl)
 
@@ -1084,16 +1131,16 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 	if is_learned and not can_cast and cost > 0:
 		vbox.add_child(RimvaleUtils.label("Not enough SP to cast", 10, RimvaleColors.DANGER))
 
-	var btn_row := HBoxContainer.new()
+	var btn_row = HBoxContainer.new()
 	btn_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(btn_row)
-	var sp2 := Control.new(); sp2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var sp2 = Control.new(); sp2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btn_row.add_child(sp2)
 
 	var sn_cap: String = spell_name
 	var sc_cap: int    = cost
 	if is_learned:
-		var cast_btn := RimvaleUtils.button("Cast", Color(0.55, 0.22, 0.90), 34, 12)
+		var cast_btn = RimvaleUtils.button("Cast", Color(0.55, 0.22, 0.90), 34, 12)
 		cast_btn.disabled = not can_cast
 		cast_btn.pressed.connect(func():
 			if _e.spend_character_sp(_handle, sc_cap):
@@ -1102,11 +1149,11 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 				OS.alert("Not enough SP!", "Spell")
 		)
 		btn_row.add_child(cast_btn)
-		var forget_btn := RimvaleUtils.button("Forget", RimvaleColors.DANGER, 30, 12)
+		var forget_btn = RimvaleUtils.button("Forget", RimvaleColors.DANGER, 30, 12)
 		forget_btn.pressed.connect(func(): _e.forget_spell(_handle, sn_cap); _render_section())
 		btn_row.add_child(forget_btn)
 	elif can_learn:
-		var learn_btn := RimvaleUtils.button("Learn", Color(0.13, 0.59, 0.95), 34, 12)
+		var learn_btn = RimvaleUtils.button("Learn", Color(0.13, 0.59, 0.95), 34, 12)
 		learn_btn.pressed.connect(func(): _e.learn_spell(_handle, sn_cap); _render_section())
 		btn_row.add_child(learn_btn)
 
@@ -1117,9 +1164,25 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	_sb_die_btns.clear()
 	_sb_preview_lbl = null
+	_sb_breakdown_lbl = null
+	_sb_desc_lbl = null
+
+	# ── Header ──
+	parent.add_child(RimvaleUtils.label("Spell Crafter", 18, RimvaleColors.TEXT_WHITE))
+	parent.add_child(RimvaleUtils.spacer(4))
+
+	# ── Spell Name (at top, matching mobile) ──
+	var name_edit = LineEdit.new()
+	name_edit.placeholder_text = "Spell Name"
+	name_edit.text = _sb_name
+	name_edit.custom_minimum_size = Vector2(0, 40)
+	name_edit.add_theme_font_size_override("font_size", 15)
+	name_edit.text_changed.connect(func(t: String): _sb_name = t)
+	parent.add_child(name_edit)
+	parent.add_child(RimvaleUtils.spacer(4))
 
 	# ── Domain ──
-	var domain_opt := OptionButton.new()
+	var domain_opt = OptionButton.new()
 	for dn in DOMAIN_NAMES:
 		domain_opt.add_item(dn)
 	domain_opt.selected = _sb_domain
@@ -1131,10 +1194,10 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	parent.add_child(_sb_lrow("Domain", domain_opt))
 
 	# ── Effect ──
-	var effect_opt := OptionButton.new()
+	var effect_opt = OptionButton.new()
 	var effects_for_domain: Array = DOMAIN_EFFECTS[_sb_domain] if _sb_domain < DOMAIN_EFFECTS.size() else []
 	for ef in effects_for_domain:
-		effect_opt.add_item("%s  (%d SP)" % [ef[0], ef[1]])
+		effect_opt.add_item(ef[0])
 	effect_opt.selected = mini(_sb_effect_idx, max(0, effects_for_domain.size() - 1))
 	effect_opt.item_selected.connect(func(i: int):
 		_sb_effect_idx = i
@@ -1142,10 +1205,8 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	)
 	parent.add_child(_sb_lrow("Effect", effect_opt))
 
-	parent.add_child(RimvaleUtils.separator())
-
 	# ── Duration ──
-	var dur_opt := OptionButton.new()
+	var dur_opt = OptionButton.new()
 	for dl in DURATION_LABELS:
 		dur_opt.add_item(dl)
 	dur_opt.selected = _sb_duration_idx
@@ -1156,7 +1217,7 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	parent.add_child(_sb_lrow("Duration", dur_opt))
 
 	# ── Range ──
-	var range_opt := OptionButton.new()
+	var range_opt = OptionButton.new()
 	for rl in RANGE_LABELS:
 		range_opt.add_item(rl)
 	range_opt.selected = _sb_range_idx
@@ -1167,29 +1228,21 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	parent.add_child(_sb_lrow("Range", range_opt))
 
 	# ── Targets (1-10) ──
-	var tgt_row := HBoxContainer.new()
-	tgt_row.add_theme_constant_override("separation", 10)
-	var tgt_lbl := RimvaleUtils.label("Targets", 13, RimvaleColors.TEXT_GRAY)
-	tgt_lbl.custom_minimum_size = Vector2(140, 0)
-	tgt_row.add_child(tgt_lbl)
-	var tgt_val_lbl := RimvaleUtils.label(str(_sb_targets), 14, RimvaleColors.TEXT_WHITE)
-	tgt_val_lbl.custom_minimum_size = Vector2(30, 0)
-	var tgt_slider := HSlider.new()
-	tgt_slider.min_value = 1
-	tgt_slider.max_value = 10
+	var tgt_val_lbl = RimvaleUtils.label("Targets: %d" % _sb_targets, 13, RimvaleColors.TEXT_GRAY)
+	parent.add_child(tgt_val_lbl)
+	var tgt_slider = HSlider.new()
+	tgt_slider.min_value = 1; tgt_slider.max_value = 10; tgt_slider.step = 1
 	tgt_slider.value = _sb_targets
 	tgt_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tgt_slider.value_changed.connect(func(v: float):
 		_sb_targets = int(v)
-		tgt_val_lbl.text = str(_sb_targets)
+		tgt_val_lbl.text = "Targets: %d" % _sb_targets
 		_sb_update_preview()
 	)
-	tgt_row.add_child(tgt_val_lbl)
-	tgt_row.add_child(tgt_slider)
-	parent.add_child(tgt_row)
+	parent.add_child(tgt_slider)
 
 	# ── Area ──
-	var area_opt := OptionButton.new()
+	var area_opt = OptionButton.new()
 	for al in AREA_LABELS:
 		area_opt.add_item(al)
 	area_opt.selected = _sb_area_idx
@@ -1199,40 +1252,28 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	)
 	parent.add_child(_sb_lrow("Area", area_opt))
 
-	parent.add_child(RimvaleUtils.separator())
-
 	# ── Dice Count (0-10) ──
-	var dice_row := HBoxContainer.new()
-	dice_row.add_theme_constant_override("separation", 10)
-	var dice_lbl := RimvaleUtils.label("Die Count", 13, RimvaleColors.TEXT_GRAY)
-	dice_lbl.custom_minimum_size = Vector2(140, 0)
-	dice_row.add_child(dice_lbl)
-	var dice_val_lbl := RimvaleUtils.label(str(_sb_die_count), 14, RimvaleColors.TEXT_WHITE)
-	dice_val_lbl.custom_minimum_size = Vector2(30, 0)
-	var dice_slider := HSlider.new()
-	dice_slider.min_value = 0
-	dice_slider.max_value = 10
+	var dice_val_lbl = RimvaleUtils.label("Dice Count: %d" % _sb_die_count, 13, RimvaleColors.TEXT_GRAY)
+	parent.add_child(dice_val_lbl)
+	var dice_slider = HSlider.new()
+	dice_slider.min_value = 0; dice_slider.max_value = 10; dice_slider.step = 1
 	dice_slider.value = _sb_die_count
 	dice_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dice_slider.value_changed.connect(func(v: float):
 		_sb_die_count = int(v)
-		dice_val_lbl.text = str(_sb_die_count)
+		dice_val_lbl.text = "Dice Count: %d" % _sb_die_count
 		_sb_update_preview()
 	)
-	dice_row.add_child(dice_val_lbl)
-	dice_row.add_child(dice_slider)
-	parent.add_child(dice_row)
+	parent.add_child(dice_slider)
 
 	# ── Die Type ──
-	var die_type_row := HBoxContainer.new()
+	parent.add_child(RimvaleUtils.label("Die Type", 13, RimvaleColors.TEXT_GRAY))
+	var die_type_row = HBoxContainer.new()
 	die_type_row.add_theme_constant_override("separation", 6)
-	var die_type_lbl := RimvaleUtils.label("Die Type", 13, RimvaleColors.TEXT_GRAY)
-	die_type_lbl.custom_minimum_size = Vector2(140, 0)
-	die_type_row.add_child(die_type_lbl)
 	for di in range(DIE_LABELS.size()):
 		var di_cap: int = di
 		var col: Color = RimvaleColors.ACCENT if di == _sb_die_idx else RimvaleColors.TEXT_GRAY
-		var dbtn := RimvaleUtils.button(DIE_LABELS[di], col, 34, 13)
+		var dbtn = RimvaleUtils.button(DIE_LABELS[di], col, 34, 13)
 		dbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		dbtn.pressed.connect(func():
 			_sb_die_idx = di_cap
@@ -1246,7 +1287,7 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 	parent.add_child(die_type_row)
 
 	# ── Damage Type ──
-	var dmg_opt := OptionButton.new()
+	var dmg_opt = OptionButton.new()
 	for dt in DAMAGE_TYPES:
 		dmg_opt.add_item(dt)
 	dmg_opt.selected = _sb_damage_type
@@ -1258,48 +1299,49 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 
 	parent.add_child(RimvaleUtils.separator())
 
-	# ── Toggle flags ──
-	var flags_row := HBoxContainer.new()
-	flags_row.add_theme_constant_override("separation", 14)
-	parent.add_child(flags_row)
-
-	var heal_chk := CheckButton.new(); heal_chk.text = "Healing"
+	# ── Toggle flags (checkboxes matching mobile layout) ──
+	var heal_row = HBoxContainer.new()
+	heal_row.add_theme_constant_override("separation", 20)
+	var heal_chk = CheckBox.new(); heal_chk.text = "Healing Spell"
 	heal_chk.button_pressed = _sb_is_healing
+	heal_chk.add_theme_font_size_override("font_size", 13)
 	heal_chk.toggled.connect(func(b: bool): _sb_is_healing = b; _sb_update_preview())
-	flags_row.add_child(heal_chk)
-
-	var save_chk := CheckButton.new(); save_chk.text = "No Attack Roll (saves)"
+	heal_row.add_child(heal_chk)
+	var save_chk = CheckBox.new(); save_chk.text = "No Attack Roll\n(Target saves)"
 	save_chk.button_pressed = _sb_is_saving_throw
+	save_chk.add_theme_font_size_override("font_size", 13)
 	save_chk.toggled.connect(func(b: bool): _sb_is_saving_throw = b; _sb_update_preview())
-	flags_row.add_child(save_chk)
+	heal_row.add_child(save_chk)
+	parent.add_child(heal_row)
 
-	var tele_chk := CheckButton.new(); tele_chk.text = "Teleportation"
+	var tele_chk = CheckBox.new(); tele_chk.text = "Teleportation"
 	tele_chk.button_pressed = _sb_is_teleport
+	tele_chk.add_theme_font_size_override("font_size", 13)
 	tele_chk.toggled.connect(func(b: bool): _sb_is_teleport = b; _sb_update_preview())
-	flags_row.add_child(tele_chk)
+	parent.add_child(tele_chk)
 
 	parent.add_child(RimvaleUtils.separator())
 
 	# ── Conditions (two columns: Beneficial | Harmful) ──
-	parent.add_child(RimvaleUtils.label("CONDITIONS", 12, RimvaleColors.TEXT_DIM))
+	parent.add_child(RimvaleUtils.label("Conditions", 14, RimvaleColors.TEXT_WHITE))
+	parent.add_child(RimvaleUtils.spacer(2))
 
-	var cond_outer := HBoxContainer.new()
+	var cond_outer = HBoxContainer.new()
 	cond_outer.add_theme_constant_override("separation", 16)
 	parent.add_child(cond_outer)
 
 	# Beneficial column
-	var ben_col := VBoxContainer.new()
+	var ben_col = VBoxContainer.new()
 	ben_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	ben_col.add_theme_constant_override("separation", 2)
+	ben_col.add_theme_constant_override("separation", 0)
 	cond_outer.add_child(ben_col)
-	ben_col.add_child(RimvaleUtils.label("Beneficial  (-2 SP each)", 10, Color(0.30, 0.69, 0.31)))
+	ben_col.add_child(RimvaleUtils.label("Beneficial", 12, Color(0.30, 0.69, 0.31)))
 	for cname in CONDITIONS_BENEFICIAL:
 		var cn_cap: String = cname
-		var chk := CheckButton.new()
+		var chk = CheckBox.new()
 		chk.text = cname
 		chk.button_pressed = cname in _sb_conditions
 		chk.add_theme_font_size_override("font_size", 12)
-		chk.add_theme_color_override("font_color", Color(0.60, 0.90, 0.60))
 		chk.toggled.connect(func(b: bool):
 			if b:
 				if cn_cap not in _sb_conditions: _sb_conditions.append(cn_cap)
@@ -1310,18 +1352,17 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 		ben_col.add_child(chk)
 
 	# Harmful column
-	var harm_col := VBoxContainer.new()
+	var harm_col = VBoxContainer.new()
 	harm_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	harm_col.add_theme_constant_override("separation", 2)
+	harm_col.add_theme_constant_override("separation", 0)
 	cond_outer.add_child(harm_col)
-	harm_col.add_child(RimvaleUtils.label("Harmful  (+3 SP each)", 10, Color(0.90, 0.40, 0.40)))
+	harm_col.add_child(RimvaleUtils.label("Harmful", 12, Color(0.90, 0.40, 0.40)))
 	for cname in CONDITIONS_HARMFUL:
 		var cn_cap: String = cname
-		var chk := CheckButton.new()
+		var chk = CheckBox.new()
 		chk.text = cname
 		chk.button_pressed = cname in _sb_conditions
 		chk.add_theme_font_size_override("font_size", 12)
-		chk.add_theme_color_override("font_color", Color(1.0, 0.60, 0.60))
 		chk.toggled.connect(func(b: bool):
 			if b:
 				if cn_cap not in _sb_conditions: _sb_conditions.append(cn_cap)
@@ -1331,26 +1372,44 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 		)
 		harm_col.add_child(chk)
 
-	parent.add_child(RimvaleUtils.separator())
+	parent.add_child(RimvaleUtils.spacer(8))
 
-	# ── SP Cost preview ──
-	_sb_preview_lbl = RimvaleUtils.label("Estimated SP Cost: —", 16, Color(0.74, 0.40, 1.0))
-	parent.add_child(_sb_preview_lbl)
-	_sb_update_preview()   # populate immediately
+	# ── SP Cost preview card (matching mobile's bottom card) ──
+	var card = PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var card_style = StyleBoxFlat.new()
+	card_style.bg_color = Color(0.14, 0.12, 0.22, 1.0)
+	card_style.corner_radius_top_left = 8; card_style.corner_radius_top_right = 8
+	card_style.corner_radius_bottom_left = 8; card_style.corner_radius_bottom_right = 8
+	card_style.content_margin_left = 16.0; card_style.content_margin_right = 16.0
+	card_style.content_margin_top = 14.0; card_style.content_margin_bottom = 14.0
+	card.add_theme_stylebox_override("panel", card_style)
+	parent.add_child(card)
 
-	# ── Spell name & Create ──
-	parent.add_child(RimvaleUtils.spacer(4))
-	parent.add_child(RimvaleUtils.label("SPELL NAME", 12, RimvaleColors.TEXT_DIM))
-	var name_edit := LineEdit.new()
-	name_edit.placeholder_text = "Enter spell name..."
-	name_edit.text = _sb_name
-	name_edit.custom_minimum_size = Vector2(0, 36)
-	name_edit.text_changed.connect(func(t: String): _sb_name = t)
-	parent.add_child(name_edit)
+	var card_vbox = VBoxContainer.new()
+	card_vbox.add_theme_constant_override("separation", 4)
+	card.add_child(card_vbox)
 
-	parent.add_child(RimvaleUtils.spacer(4))
-	var create_btn := RimvaleUtils.button("✦ Register Custom Spell", Color(0.55, 0.22, 0.90), 48, 14)
-	create_btn.pressed.connect(func():
+	_sb_preview_lbl = RimvaleUtils.label("Total SP Cost: —", 20, Color(0.74, 0.40, 1.0))
+	card_vbox.add_child(_sb_preview_lbl)
+
+	_sb_breakdown_lbl = RimvaleUtils.label("", 11, RimvaleColors.TEXT_DIM)
+	_sb_breakdown_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	card_vbox.add_child(_sb_breakdown_lbl)
+
+	card_vbox.add_child(RimvaleUtils.spacer(4))
+	card_vbox.add_child(RimvaleUtils.label("Description:", 13, RimvaleColors.TEXT_WHITE))
+	_sb_desc_lbl = RimvaleUtils.label("", 12, Color(0.70, 0.75, 0.85))
+	_sb_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	card_vbox.add_child(_sb_desc_lbl)
+
+	_sb_update_preview()   # populate cost, breakdown, description
+
+	card_vbox.add_child(RimvaleUtils.spacer(8))
+
+	# ── Register button ──
+	# ── Helper lambda: build the spell dict and register it globally ───────────
+	var _do_register_spell: Callable = func(also_learn: bool) -> void:
 		var sname: String = _sb_name.strip_edges()
 		if sname.is_empty():
 			OS.alert("Please enter a spell name.", "Spell Builder")
@@ -1362,47 +1421,73 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 			if cname in CONDITIONS_HARMFUL: harmful += 1
 			else: beneficial += 1
 
-		var final_cost := _calc_spell_cost(
+		var final_cost: int = _calc_spell_cost(
 			_sb_effect_base_sp(), _sb_duration_idx, _sb_range_idx,
 			_sb_targets, _sb_area_idx, _sb_die_count, _sb_die_idx,
 			_sb_is_saving_throw, harmful, beneficial
 		)
 
-		var die_sides: int = [4, 6, 8, 10, 12][_sb_die_idx]
-		var dur_rounds: int = DURATION_ROUNDS[_sb_duration_idx]
+		var die_sides: int   = [4, 6, 8, 10, 12][_sb_die_idx]
+		var dur_rounds: int  = DURATION_ROUNDS[_sb_duration_idx]
 		var eng_dmg_type: int = DAMAGE_TYPE_ENG[_sb_damage_type] if _sb_damage_type < DAMAGE_TYPE_ENG.size() else 3
-		var cond_csv: String = ",".join(_sb_conditions)
+		var cond_csv: String  = ",".join(_sb_conditions)
 
 		_e.add_custom_spell(
-			sname,
-			_sb_domain,
-			final_cost,
-			"",
-			_sb_range_idx,
-			not _sb_is_saving_throw,
-			_sb_die_count,
-			die_sides,
-			eng_dmg_type,
-			_sb_is_healing,
-			dur_rounds,
-			_sb_targets,
-			_sb_area_idx,
-			cond_csv,
-			_sb_is_teleport
+			sname, _sb_domain, final_cost, _sb_generate_description(),
+			_sb_range_idx, not _sb_is_saving_throw,
+			_sb_die_count, die_sides, eng_dmg_type,
+			_sb_is_healing, dur_rounds, _sb_targets,
+			_sb_area_idx, cond_csv, _sb_is_teleport
 		)
+
+		# Also add it to this hero's learned spells immediately
+		if also_learn and _handle != -1:
+			_e.learn_spell(_handle, sname)
 
 		_sb_name = ""
 		_magic_tab = 0
 		_render_section()
-	)
-	parent.add_child(create_btn)
+
+	var register_btn = RimvaleUtils.button("Register Custom Spell", Color(0.35, 0.28, 0.65), 48, 14)
+	register_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	register_btn.pressed.connect(func(): _do_register_spell.call(true))
+	card_vbox.add_child(register_btn)
+
+## Generate a human-readable spell description (matches mobile layout).
+func _sb_generate_description() -> String:
+	var effects_arr: Array = DOMAIN_EFFECTS[_sb_domain] if _sb_domain < DOMAIN_EFFECTS.size() else []
+	var effect_name: String = effects_arr[_sb_effect_idx][0] if _sb_effect_idx < effects_arr.size() else "Unknown"
+	var domain_name: String = DOMAIN_NAMES[_sb_domain] if _sb_domain < DOMAIN_NAMES.size() else "Unknown"
+	var target_desc: String = "a single target" if _sb_targets <= 1 else "up to %d targets" % _sb_targets
+	var range_desc: String = "on yourself" if _sb_range_idx == 0 else "within %s" % RANGE_LABELS[_sb_range_idx]
+	var area_desc: String = "" if _sb_area_idx == 0 else " affecting a %s" % AREA_LABELS[_sb_area_idx]
+	var dur_desc: String = DURATION_LABELS[_sb_duration_idx]
+	var save_desc: String = ". Targets may roll a saving throw to resist or halve the effect." if _sb_is_saving_throw else "."
+
+	if _sb_is_teleport:
+		var tele_target: String = "yourself" if _sb_range_idx == 0 else "a target %s" % range_desc
+		return "Instantly teleport %s to a selected location. SP cost scales with distance: 10ft=1SP, 20ft=2SP, 30ft=4SP. Unwilling creatures resist with a Divinity save." % tele_target
+
+	var action_word: String = "heals for" if _sb_is_healing else "deals"
+	var dice_desc: String = ""
+	if _sb_die_count > 0:
+		dice_desc = " %dd%d" % [_sb_die_count, [4,6,8,10,12][_sb_die_idx]]
+	var type_desc: String = ""
+	if not _sb_is_healing and _sb_die_count > 0:
+		type_desc = " %s damage" % DAMAGE_TYPES[_sb_damage_type]
+	elif _sb_is_healing and _sb_die_count > 0:
+		type_desc = " hit points"
+
+	return "Using the %s domain, you weave a spell of %s that %s%s%s targeting %s %s%s. The effect lasts for %s%s" % [
+		domain_name, effect_name, action_word, dice_desc, type_desc,
+		target_desc, range_desc, area_desc, dur_desc, save_desc]
 
 # ── Helper: labeled two-column row for spell builder ─────────────────────────
 
 func _sb_lrow(label_text: String, ctrl: Control) -> HBoxContainer:
-	var row := HBoxContainer.new()
+	var row = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
-	var lbl := RimvaleUtils.label(label_text, 13, RimvaleColors.TEXT_GRAY)
+	var lbl = RimvaleUtils.label(label_text, 13, RimvaleColors.TEXT_GRAY)
 	lbl.custom_minimum_size = Vector2(140, 0)
 	row.add_child(lbl)
 	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1423,28 +1508,30 @@ func _build_identity(parent: VBoxContainer) -> void:
 		if safeguard_tier == 3: max_choices = 3
 		elif safeguard_tier == 4: max_choices = 4
 
-		var saf_card := ColorRect.new()
-		saf_card.color = Color(0.10, 0.14, 0.20, 1.0)
-		saf_card.custom_minimum_size = Vector2(0, 0)
-		var saf_mgn := MarginContainer.new()
-		saf_mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		for s in ["left", "right", "top", "bottom"]:
-			saf_mgn.add_theme_constant_override("margin_" + s, 10)
-		saf_card.add_child(saf_mgn)
-		var saf_vbox := VBoxContainer.new()
+		# PanelContainer auto-sizes to children (ColorRect does not).
+		var saf_card = PanelContainer.new()
+		saf_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var saf_style = StyleBoxFlat.new()
+		saf_style.bg_color = Color(0.10, 0.14, 0.20, 1.0)
+		saf_style.content_margin_left   = 10.0
+		saf_style.content_margin_right  = 10.0
+		saf_style.content_margin_top    = 10.0
+		saf_style.content_margin_bottom = 10.0
+		saf_card.add_theme_stylebox_override("panel", saf_style)
+		var saf_vbox = VBoxContainer.new()
 		saf_vbox.add_theme_constant_override("separation", 6)
-		saf_mgn.add_child(saf_vbox)
+		saf_card.add_child(saf_vbox)
 
 		saf_vbox.add_child(RimvaleUtils.label(
 			"Safeguard (T%d) — Choose %d Stats" % [safeguard_tier, max_choices], 14, RimvaleColors.ACCENT))
 		saf_vbox.add_child(RimvaleUtils.label("Chosen stats get doubled modifiers on saving throws.", 11, RimvaleColors.TEXT_GRAY))
 
-		var chosen_raw := _e.get_safeguard_chosen_stats(_handle)
+		var chosen_raw = _e.get_safeguard_chosen_stats(_handle)
 		var chosen: Array = []
 		for c in chosen_raw:
 			chosen.append(int(c))
 
-		var chip_row := HBoxContainer.new()
+		var chip_row = HBoxContainer.new()
 		chip_row.add_theme_constant_override("separation", 6)
 		saf_vbox.add_child(chip_row)
 
@@ -1454,7 +1541,7 @@ func _build_identity(parent: VBoxContainer) -> void:
 			var can_add: bool = is_chosen or chosen.size() < max_choices
 			var chip_col: Color = Color(0.30, 0.69, 0.31) if is_chosen else \
 				(RimvaleColors.TEXT_GRAY if can_add else RimvaleColors.TEXT_DIM)
-			var chip := RimvaleUtils.button(STAT_NAMES[si].left(3), chip_col, 30, 11)
+			var chip = RimvaleUtils.button(STAT_NAMES[si].left(3), chip_col, 30, 11)
 			chip.custom_minimum_size = Vector2(52, 0)
 			chip.pressed.connect(func():
 				if can_add or is_chosen:
@@ -1463,7 +1550,7 @@ func _build_identity(parent: VBoxContainer) -> void:
 						new_chosen.erase(stat_idx_cap)
 					else:
 						new_chosen.append(stat_idx_cap)
-					var arr := PackedInt32Array(new_chosen)
+					var arr = PackedInt32Array(new_chosen)
 					_e.set_safeguard_chosen_stats(_handle, arr)
 					_render_section()
 			)
@@ -1483,35 +1570,36 @@ func _build_identity(parent: VBoxContainer) -> void:
 
 	parent.add_child(RimvaleUtils.separator())
 
-	var roles_raw := _e.get_all_societal_roles()
+	var roles_raw = _e.get_all_societal_roles()
 	for role_raw in roles_raw:
 		var role_name: String = str(role_raw)
-		var details_raw := _e.get_societal_role_details(role_name)
+		var details_raw = _e.get_societal_role_details(role_name)
 		var primary: String = str(details_raw[0]) if details_raw.size() > 0 else ""
 		var secondary: String = str(details_raw[1]) if details_raw.size() > 1 else ""
 		var role_desc: String = str(details_raw[2]) if details_raw.size() > 2 else ""
 		var is_selected: bool = role_name == current_role
 
-		var rcard := ColorRect.new()
-		rcard.color = Color(0.07, 0.22, 0.07, 1.0) if is_selected else Color(0.10, 0.10, 0.14, 1.0)
-		rcard.custom_minimum_size = Vector2(0, 0)
+		# PanelContainer auto-sizes to children (ColorRect does not).
+		var rcard = PanelContainer.new()
+		rcard.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var rcard_style = StyleBoxFlat.new()
+		rcard_style.bg_color = Color(0.07, 0.22, 0.07, 1.0) if is_selected else Color(0.10, 0.10, 0.14, 1.0)
+		rcard_style.content_margin_left   = 10.0
+		rcard_style.content_margin_right  = 10.0
+		rcard_style.content_margin_top    = 10.0
+		rcard_style.content_margin_bottom = 10.0
+		rcard.add_theme_stylebox_override("panel", rcard_style)
 
-		var rmgn := MarginContainer.new()
-		rmgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		for s in ["left", "right", "top", "bottom"]:
-			rmgn.add_theme_constant_override("margin_" + s, 10)
-		rcard.add_child(rmgn)
-
-		var rvbox := VBoxContainer.new()
+		var rvbox = VBoxContainer.new()
 		rvbox.add_theme_constant_override("separation", 4)
-		rmgn.add_child(rvbox)
+		rcard.add_child(rvbox)
 
-		var rtitle_row := HBoxContainer.new()
+		var rtitle_row = HBoxContainer.new()
 		rtitle_row.add_theme_constant_override("separation", 8)
 		rvbox.add_child(rtitle_row)
 
 		var rname_col: Color = Color(0.30, 0.69, 0.31) if is_selected else RimvaleColors.TEXT_WHITE
-		var rname_lbl := RimvaleUtils.label(role_name, 15, rname_col)
+		var rname_lbl = RimvaleUtils.label(role_name, 15, rname_col)
 		rname_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		rtitle_row.add_child(rname_lbl)
 
@@ -1519,7 +1607,7 @@ func _build_identity(parent: VBoxContainer) -> void:
 			rtitle_row.add_child(RimvaleUtils.label("✓ Selected", 11, Color(0.30, 0.69, 0.31)))
 
 		if not role_desc.is_empty():
-			var rdesc := RimvaleUtils.label(role_desc, 11, RimvaleColors.TEXT_GRAY)
+			var rdesc = RimvaleUtils.label(role_desc, 11, RimvaleColors.TEXT_GRAY)
 			rdesc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			rvbox.add_child(rdesc)
 
@@ -1552,7 +1640,7 @@ func _build_equipment(parent: VBoxContainer) -> void:
 
 	# Equipped slots row
 	parent.add_child(RimvaleUtils.label("EQUIPPED", 12, RimvaleColors.TEXT_DIM))
-	var slots_row := HBoxContainer.new()
+	var slots_row = HBoxContainer.new()
 	slots_row.add_theme_constant_override("separation", 8)
 	parent.add_child(slots_row)
 
@@ -1560,7 +1648,7 @@ func _build_equipment(parent: VBoxContainer) -> void:
 	var armor: String = str(_e.get_equipped_armor(_handle))
 	var shield: String = str(_e.get_equipped_shield(_handle))
 
-	var slot_data := [
+	var slot_data = [
 		["⚔ Weapon", weapon, 0],
 		["🛡 Armor", armor, 1],
 		["🔰 Shield", shield, 2]
@@ -1570,18 +1658,18 @@ func _build_equipment(parent: VBoxContainer) -> void:
 		var item_name: String = sd[1]
 		var slot_idx: int = sd[2]
 
-		var slot_card := ColorRect.new()
+		var slot_card = ColorRect.new()
 		slot_card.color = Color(0.10, 0.14, 0.20, 1.0)
 		slot_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		slot_card.custom_minimum_size = Vector2(0, 64)
 
-		var smgn := MarginContainer.new()
+		var smgn = MarginContainer.new()
 		smgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		for s in ["left", "right", "top", "bottom"]:
 			smgn.add_theme_constant_override("margin_" + s, 8)
 		slot_card.add_child(smgn)
 
-		var svbox := VBoxContainer.new()
+		var svbox = VBoxContainer.new()
 		svbox.add_theme_constant_override("separation", 3)
 		smgn.add_child(svbox)
 
@@ -1593,7 +1681,7 @@ func _build_equipment(parent: VBoxContainer) -> void:
 
 		if not item_is_empty:
 			var si_cap: int = slot_idx
-			var unequip_btn := RimvaleUtils.button("✕ Unequip", RimvaleColors.DANGER, 26, 10)
+			var unequip_btn = RimvaleUtils.button("✕ Unequip", RimvaleColors.DANGER, 26, 10)
 			unequip_btn.pressed.connect(func(): _e.unequip_item(_handle, si_cap); _render_section())
 			svbox.add_child(unequip_btn)
 
@@ -1602,7 +1690,7 @@ func _build_equipment(parent: VBoxContainer) -> void:
 	parent.add_child(RimvaleUtils.separator())
 
 	# Tab bar: Inventory / Stash
-	var tab_row := HBoxContainer.new()
+	var tab_row = HBoxContainer.new()
 	tab_row.add_theme_constant_override("separation", 0)
 	parent.add_child(tab_row)
 
@@ -1610,19 +1698,19 @@ func _build_equipment(parent: VBoxContainer) -> void:
 		var tab_idx: int = ti
 		var tab_label: String = "Inventory" if ti == 0 else "Stash"
 		var is_active: bool = _inv_tab == ti
-		var tbtn := RimvaleUtils.button(tab_label,
+		var tbtn = RimvaleUtils.button(tab_label,
 			RimvaleColors.ACCENT if is_active else RimvaleColors.TEXT_GRAY, 38, 13)
 		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tbtn.pressed.connect(func(): _inv_tab = tab_idx; _render_section())
 		tab_row.add_child(tbtn)
 
 	# Category filter chips
-	var filter_scroll := ScrollContainer.new()
+	var filter_scroll = ScrollContainer.new()
 	filter_scroll.custom_minimum_size = Vector2(0, 34)
 	filter_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	parent.add_child(filter_scroll)
 
-	var chip_row := HBoxContainer.new()
+	var chip_row = HBoxContainer.new()
 	chip_row.add_theme_constant_override("separation", 6)
 	filter_scroll.add_child(chip_row)
 
@@ -1630,7 +1718,7 @@ func _build_equipment(parent: VBoxContainer) -> void:
 	for cat in ["All", "Weapons", "Armor", "Magic", "Misc"]:
 		var cat_name: String = cat
 		var cc: Color = RimvaleColors.ACCENT if cat == active_filter else RimvaleColors.TEXT_GRAY
-		var chip := RimvaleUtils.button(cat, cc, 30, 12)
+		var chip = RimvaleUtils.button(cat, cc, 30, 12)
 		chip.pressed.connect(func():
 			if _inv_tab == 0: _inv_filter = cat_name
 			else: _stash_filter = cat_name
@@ -1645,14 +1733,14 @@ func _build_equipment(parent: VBoxContainer) -> void:
 		_build_stash_list(parent)
 
 func _build_inventory_list(parent: VBoxContainer) -> void:
-	var items_raw := _e.get_inventory_items(_handle)
+	var items_raw = _e.get_inventory_items(_handle)
 	if items_raw.size() == 0:
 		parent.add_child(RimvaleUtils.label("Inventory is empty.", 13, RimvaleColors.TEXT_DIM))
 		return
 
 	for item_raw in items_raw:
 		var item_name: String = str(item_raw)
-		var details_raw := _e.get_item_details(_handle, item_name)
+		var details_raw = _e.get_item_details(_handle, item_name)
 		var rarity: String = str(details_raw[0]) if details_raw.size() > 0 else "Mundane"
 		var cur_hp: int = int(str(details_raw[1])) if details_raw.size() > 1 else 0
 		var max_hp: int = int(str(details_raw[2])) if details_raw.size() > 2 else 0
@@ -1671,12 +1759,12 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 			continue
 
 		var rarity_col: Color = _rarity_color(rarity)
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 46)
 		parent.add_child(row)
 
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
@@ -1688,15 +1776,15 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 
 		var in_cap: String = item_name
 		if item_type == "Consumable":
-			var use_btn := RimvaleUtils.button("Use", RimvaleColors.SUCCESS, 34, 12)
+			var use_btn = RimvaleUtils.button("Use", RimvaleColors.SUCCESS, 34, 12)
 			use_btn.pressed.connect(func(): _e.use_consumable(_handle, in_cap); _render_section())
 			row.add_child(use_btn)
 		elif item_type != "General":
-			var eq_btn := RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 34, 12)
+			var eq_btn = RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 34, 12)
 			eq_btn.pressed.connect(func(): _e.equip_item(_handle, in_cap); _render_section())
 			row.add_child(eq_btn)
 
-		var stash_btn := RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 34, 12)
+		var stash_btn = RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 34, 12)
 		stash_btn.pressed.connect(func():
 			_e.remove_item_from_inventory(_handle, in_cap)
 			if in_cap not in GameState.stash:
@@ -1711,7 +1799,7 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 		return
 
 	for item_name in GameState.stash:
-		var details_raw := _e.get_registry_item_details(item_name)
+		var details_raw = _e.get_registry_item_details(item_name)
 		var item_type: String = str(details_raw[4]) if details_raw.size() > 4 else "General"
 		var rarity: String = str(details_raw[0]) if details_raw.size() > 0 else "Mundane"
 		var is_magical: bool = rarity != "Mundane"
@@ -1726,12 +1814,12 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 		if not pass_filter:
 			continue
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 46)
 		parent.add_child(row)
 
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
@@ -1739,7 +1827,7 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 		info.add_child(RimvaleUtils.label(item_type, 10, RimvaleColors.TEXT_DIM))
 
 		var in_cap: String = item_name
-		var take_btn := RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 34, 12)
+		var take_btn = RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 34, 12)
 		take_btn.pressed.connect(func():
 			GameState.stash.erase(in_cap)
 			_e.add_item_to_inventory(_handle, in_cap)
@@ -1755,7 +1843,7 @@ func _build_lineage(parent: VBoxContainer) -> void:
 		return
 
 	var lineage_: String = str(_e.get_character_lineage_name(_handle))
-	var raw := _e.get_lineage_details(lineage_)
+	var raw = _e.get_lineage_details(lineage_)
 
 	var lin_type: String = str(raw[0]) if raw.size() > 0 else ""
 	var lin_speed: int = int(str(raw[1])) if raw.size() > 1 else 0
@@ -1766,10 +1854,11 @@ func _build_lineage(parent: VBoxContainer) -> void:
 	var lin_features: PackedStringArray = lin_features_raw.split("||", false)
 
 	# Portrait
-	var portrait := TextureRect.new()
+	var portrait = TextureRect.new()
 	portrait.custom_minimum_size = Vector2(80, 80)
 	portrait.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	portrait.texture = RimvaleUtils.get_portrait(lineage_)
+	var _lu_p := RimvaleUtils.get_sprite_portrait(lineage_)
+	if _lu_p != null: portrait.texture = _lu_p
 	portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	parent.add_child(portrait)
@@ -1778,7 +1867,7 @@ func _build_lineage(parent: VBoxContainer) -> void:
 
 	# Type + Speed badges row
 	if not lin_type.is_empty() or lin_speed > 0:
-		var badges_row := HBoxContainer.new()
+		var badges_row = HBoxContainer.new()
 		badges_row.add_theme_constant_override("separation", 8)
 		parent.add_child(badges_row)
 		if not lin_type.is_empty():
@@ -1790,7 +1879,7 @@ func _build_lineage(parent: VBoxContainer) -> void:
 
 	# Description
 	if not lin_desc.is_empty():
-		var desc_lbl := RimvaleUtils.label(lin_desc, 13, RimvaleColors.TEXT_LIGHT)
+		var desc_lbl = RimvaleUtils.label(lin_desc, 13, RimvaleColors.TEXT_LIGHT)
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		parent.add_child(desc_lbl)
 
@@ -1798,7 +1887,7 @@ func _build_lineage(parent: VBoxContainer) -> void:
 	if not lin_culture.is_empty():
 		parent.add_child(RimvaleUtils.separator())
 		parent.add_child(RimvaleUtils.label("Culture", 14, RimvaleColors.ACCENT))
-		var cult_lbl := RimvaleUtils.label(lin_culture, 13, RimvaleColors.TEXT_LIGHT)
+		var cult_lbl = RimvaleUtils.label(lin_culture, 13, RimvaleColors.TEXT_LIGHT)
 		cult_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		parent.add_child(cult_lbl)
 
@@ -1816,15 +1905,15 @@ func _build_lineage(parent: VBoxContainer) -> void:
 			var feature_str: String = str(feature).strip_edges()
 			if feature_str.is_empty():
 				continue
-			var fcard := ColorRect.new()
+			var fcard = ColorRect.new()
 			fcard.color = Color(0.10, 0.10, 0.16, 1.0)
 			fcard.custom_minimum_size = Vector2(0, 0)
-			var fmgn := MarginContainer.new()
+			var fmgn = MarginContainer.new()
 			fmgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 			for s in ["left", "right", "top", "bottom"]:
 				fmgn.add_theme_constant_override("margin_" + s, 8)
 			fcard.add_child(fmgn)
-			var flbl := RimvaleUtils.label(feature_str, 12, RimvaleColors.TEXT_LIGHT)
+			var flbl = RimvaleUtils.label(feature_str, 12, RimvaleColors.TEXT_LIGHT)
 			flbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			fmgn.add_child(flbl)
 			parent.add_child(fcard)
@@ -1835,12 +1924,12 @@ func _build_lineage(parent: VBoxContainer) -> void:
 func _show_rename_dialog() -> void:
 	if _handle == -1:
 		return
-	var dialog := ConfirmationDialog.new()
+	var dialog = ConfirmationDialog.new()
 	dialog.title = "Rename Agent"
 	dialog.get_ok_button().text = "Rename"
 	dialog.get_cancel_button().text = "Cancel"
 
-	var name_edit := LineEdit.new()
+	var name_edit = LineEdit.new()
 	name_edit.text = str(_e.get_character_name(_handle))
 	name_edit.placeholder_text = "Enter name..."
 	name_edit.custom_minimum_size = Vector2(280, 36)
@@ -1862,7 +1951,7 @@ func _show_rename_dialog() -> void:
 func _get_alignment() -> String:
 	if _handle == -1:
 		return ""
-	var checks := [
+	var checks = [
 		["Unity Scholar Initiate", "Unity"],
 		["Unity Pact Initiate", "Unity"],
 		["Chaos Initiate", "Chaos"],
@@ -1894,10 +1983,10 @@ func _rarity_color(rarity: String) -> Color:
 	return RimvaleColors.TEXT_DIM
 
 func _make_badge(text: String, col: Color) -> Control:
-	var bg := ColorRect.new()
+	var bg = ColorRect.new()
 	bg.color = Color(col, 0.2)
 	bg.custom_minimum_size = Vector2(0, 26)
-	var mgn := MarginContainer.new()
+	var mgn = MarginContainer.new()
 	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for s in ["left", "right", "top", "bottom"]:
 		mgn.add_theme_constant_override("margin_" + s, 4)

@@ -1,2 +1,3 @@
 .godot/
 gdextension/build/
+gdextension/build_fresh/ 

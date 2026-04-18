@@ -6,7 +6,7 @@ extends Node
 
 func _ready() -> void:
 	print("=== Phase 1 GDExtension Test ===")
-	var e: RimvaleEngine = RimvaleAPI.engine
+	var e = RimvaleAPI.engine
 
 	# 1. Lineages
 	var lineages = e.get_all_lineages()

@@ -9,7 +9,7 @@
 
 extends Control
 
-var _e: RimvaleEngine
+var _e
 
 # Handles for enemies spawned this fight
 var _enemy_handles: Array = []
@@ -44,20 +44,20 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	# Background
-	var bg := ColorRect.new()
+	var bg = ColorRect.new()
 	bg.color = Color(0.05, 0.05, 0.08, 1.0)
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 
 	# Root layout
-	var root := VBoxContainer.new()
+	var root = VBoxContainer.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.add_theme_constant_override("separation", 0)
 	add_child(root)
 
 	root.add_child(_build_header())
 
-	var content := HBoxContainer.new()
+	var content = HBoxContainer.new()
 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	content.add_theme_constant_override("separation", 0)
 	root.add_child(content)
@@ -74,20 +74,20 @@ func _ready() -> void:
 # ── Panel builders ────────────────────────────────────────────────────────────
 
 func _build_header() -> Control:
-	var bg := ColorRect.new()
+	var bg = ColorRect.new()
 	bg.color = Color(0.10, 0.05, 0.08, 1.0)
 	bg.custom_minimum_size = Vector2(0, 60)
 
-	var margin := MarginContainer.new()
+	var margin = MarginContainer.new()
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for side in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 10)
 	bg.add_child(margin)
 
-	var hbox := HBoxContainer.new()
+	var hbox = HBoxContainer.new()
 	margin.add_child(hbox)
 
-	var title := Label.new()
+	var title = Label.new()
 	title.text = "⚔  COMBAT"
 	title.add_theme_font_size_override("font_size", 26)
 	title.add_theme_color_override("font_color", Color(0.95, 0.50, 0.30, 1.0))
@@ -103,20 +103,20 @@ func _build_header() -> Control:
 	return bg
 
 func _build_left_panel() -> Control:
-	var panel := PanelContainer.new()
+	var panel = PanelContainer.new()
 	panel.custom_minimum_size = Vector2(240, 0)
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
-	var margin := MarginContainer.new()
+	var margin = MarginContainer.new()
 	for side in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 14)
 	panel.add_child(margin)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 8)
 	margin.add_child(vbox)
 
-	var lbl := Label.new()
+	var lbl = Label.new()
 	lbl.text = "INITIATIVE ORDER"
 	lbl.add_theme_font_size_override("font_size", 14)
 	lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.55, 1.0))
@@ -131,21 +131,21 @@ func _build_left_panel() -> Control:
 	return panel
 
 func _build_center_panel() -> Control:
-	var panel := PanelContainer.new()
+	var panel = PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
-	var margin := MarginContainer.new()
+	var margin = MarginContainer.new()
 	for side in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 20)
 	panel.add_child(margin)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 14)
 	margin.add_child(vbox)
 
 	# Current combatant info
-	var act_lbl := Label.new()
+	var act_lbl = Label.new()
 	act_lbl.text = "ACTIVE COMBATANT"
 	act_lbl.add_theme_font_size_override("font_size", 14)
 	act_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.55, 1.0))
@@ -158,13 +158,13 @@ func _build_center_panel() -> Control:
 	vbox.add_child(HSeparator.new())
 
 	# Action log
-	var log_lbl := Label.new()
+	var log_lbl = Label.new()
 	log_lbl.text = "BATTLE LOG"
 	log_lbl.add_theme_font_size_override("font_size", 14)
 	log_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.55, 1.0))
 	vbox.add_child(log_lbl)
 
-	var scroll := ScrollContainer.new()
+	var scroll = ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vbox.add_child(scroll)
@@ -180,20 +180,20 @@ func _build_center_panel() -> Control:
 	return panel
 
 func _build_right_panel() -> Control:
-	var panel := PanelContainer.new()
+	var panel = PanelContainer.new()
 	panel.custom_minimum_size = Vector2(260, 0)
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
-	var margin := MarginContainer.new()
+	var margin = MarginContainer.new()
 	for side in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 14)
 	panel.add_child(margin)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 10)
 	margin.add_child(vbox)
 
-	var lbl := Label.new()
+	var lbl = Label.new()
 	lbl.text = "ACTIONS"
 	lbl.add_theme_font_size_override("font_size", 14)
 	lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.55, 1.0))
@@ -212,12 +212,12 @@ func _build_right_panel() -> Control:
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(_status_label)
 
-	var spacer := Control.new()
+	var spacer = Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vbox.add_child(spacer)
 
 	# Retreat button
-	var retreat_btn := Button.new()
+	var retreat_btn = Button.new()
 	retreat_btn.text = "Retreat to Hub"
 	retreat_btn.custom_minimum_size = Vector2(0, 48)
 	retreat_btn.add_theme_font_size_override("font_size", 15)
@@ -228,7 +228,7 @@ func _build_right_panel() -> Control:
 	return panel
 
 func _build_footer() -> Control:
-	var bg := ColorRect.new()
+	var bg = ColorRect.new()
 	bg.color = Color(0.08, 0.08, 0.12, 1.0)
 	bg.custom_minimum_size = Vector2(0, 36)
 	return bg
@@ -244,10 +244,10 @@ func _setup_combat() -> void:
 		_e.add_player_to_combat(handle)
 
 	# Spawn one enemy per party member (up to 2)
-	var enemy_count := mini(party.size(), 2)
+	var enemy_count = mini(party.size(), 2)
 	for i in range(enemy_count):
-		var suffix := "" if i == 0 else " #%d" % (i + 1)
-		var eh := _e.spawn_creature(ENEMY_NAME + suffix, ENEMY_CATEGORY, ENEMY_LEVEL)
+		var suffix = "" if i == 0 else " #%d" % (i + 1)
+		var eh = _e.spawn_creature(ENEMY_NAME + suffix, ENEMY_CATEGORY, ENEMY_LEVEL)
 		_enemy_handles.append(eh)
 		_e.add_creature_to_combat(eh)
 		_log("Spawned [color=red]%s[/color] (handle %d)" % [ENEMY_NAME + suffix, eh])
@@ -284,22 +284,51 @@ func _show_player_actions() -> void:
 	_clear_action_bar()
 	_status_label.text = "Your turn!"
 
+	var cur_handle: int = _get_current_player_handle()
+
 	# Attack button — targets first living enemy
-	var atk_btn := _action_button("⚔ Attack", Color(0.95, 0.50, 0.30, 1.0))
+	var atk_btn = _action_button("⚔ Attack", Color(0.95, 0.50, 0.30, 1.0))
 	atk_btn.pressed.connect(_on_attack)
 	_action_bar.add_child(atk_btn)
 
-	# Spell button — opens picker if the current player has learned spells
-	var cur_handle: int = _get_current_player_handle()
+	# Ranged Attack — only if hero has a ranged weapon equipped
 	if cur_handle != -1:
-		var spells_raw := _e.get_learned_spells(cur_handle)
+		var cd = _e.get_char_dict(cur_handle)
+		var weapon_name: String = str(cd.get("weapon", "")).to_lower()
+		var has_ranged: bool = (
+			"bow" in weapon_name or "crossbow" in weapon_name or
+			"sling" in weapon_name or "dart" in weapon_name or
+			"javelin" in weapon_name or "throwing" in weapon_name
+		)
+		if has_ranged:
+			var rng_btn = _action_button("🏹 Ranged", Color(0.95, 0.75, 0.30, 1.0))
+			rng_btn.pressed.connect(_on_ranged_attack)
+			_action_bar.add_child(rng_btn)
+
+	# Dodge button — costs 1 AP, grants dodge condition
+	var dodge_btn = _action_button("🛡 Dodge", Color(0.40, 0.75, 0.95, 1.0))
+	dodge_btn.pressed.connect(_on_dodge)
+	_action_bar.add_child(dodge_btn)
+
+	# Spell button — opens picker if the current player has learned spells
+	if cur_handle != -1:
+		var spells_raw = _e.get_learned_spells(cur_handle)
 		if spells_raw.size() > 0:
-			var spell_btn := _action_button("🔮 Spell", Color(0.74, 0.40, 1.0))
+			var spell_btn = _action_button("🔮 Spell", Color(0.74, 0.40, 1.0))
 			spell_btn.pressed.connect(func(): _show_spell_picker(cur_handle))
 			_action_bar.add_child(spell_btn)
 
+	# Item button — opens item picker if hero has usable items
+	if cur_handle != -1:
+		var cd = _e.get_char_dict(cur_handle)
+		var items_arr: Array = cd.get("items", [])
+		if items_arr.size() > 0:
+			var item_btn = _action_button("🧪 Item", Color(0.40, 0.85, 0.55, 1.0))
+			item_btn.pressed.connect(func(): _show_item_picker(cur_handle))
+			_action_bar.add_child(item_btn)
+
 	# End turn button
-	var end_btn := _action_button("End Turn", Color(0.65, 0.65, 0.65, 1.0))
+	var end_btn = _action_button("End Turn", Color(0.65, 0.65, 0.65, 1.0))
 	end_btn.pressed.connect(_on_end_turn)
 	_action_bar.add_child(end_btn)
 
@@ -309,7 +338,7 @@ func _show_action_buttons(enabled: bool) -> void:
 			child.disabled = !enabled
 
 func _action_button(txt: String, col: Color) -> Button:
-	var btn := Button.new()
+	var btn = Button.new()
 	btn.text = txt
 	btn.custom_minimum_size = Vector2(0, 52)
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -327,7 +356,7 @@ func _on_attack() -> void:
 	# Find first living enemy id
 	var target_id: String = ""
 	for eh in _enemy_handles:
-		var hp := _e.get_creature_hp(eh)
+		var hp = _e.get_creature_hp(eh)
 		if hp > 0:
 			target_id = _e.get_creature_id(eh)
 			break
@@ -351,6 +380,106 @@ func _on_end_turn() -> void:
 	_e.next_turn()
 	_do_current_turn()
 
+func _on_dodge() -> void:
+	_e.perform_action(ACTION_DODGE, "")
+	var log_line: String = _e.get_last_action_log()
+	_log("[color=cyan]🛡 %s[/color]" % (log_line if log_line.length() > 0 else "You take a defensive stance!"))
+	_status_label.text = ""
+	_refresh_combatant_panel()
+	if _check_combat_over():
+		return
+
+func _on_ranged_attack() -> void:
+	var target_id: String = ""
+	for eh in _enemy_handles:
+		if _e.get_creature_hp(eh) > 0:
+			target_id = _e.get_creature_id(eh)
+			break
+	if target_id.is_empty():
+		_status_label.text = "No enemies to target!"
+		return
+	_e.perform_action(ACTION_RANGED, target_id)
+	var log_line: String = _e.get_last_action_log()
+	_log("[color=#f5c842]🏹 %s[/color]" % (log_line if log_line.length() > 0 else "You fire a ranged attack!"))
+	_status_label.text = ""
+	_refresh_combatant_panel()
+	if _check_combat_over():
+		return
+
+func _show_item_picker(player_handle: int) -> void:
+	var cd = _e.get_char_dict(player_handle)
+	var items_arr: Array = cd.get("items", [])
+
+	var dialog = AcceptDialog.new()
+	dialog.title = "Use an Item"
+	dialog.get_ok_button().text = "Cancel"
+	dialog.min_size = Vector2i(340, 380)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+
+	var scroll = ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 300)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(scroll)
+
+	var list = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 4)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
+	for item_raw in items_arr:
+		var item_name: String = str(item_raw)
+		var row = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		row.custom_minimum_size = Vector2(0, 44)
+		list.add_child(row)
+
+		var name_lbl = Label.new()
+		name_lbl.text = "🧪 " + item_name
+		name_lbl.add_theme_font_size_override("font_size", 14)
+		name_lbl.add_theme_color_override("font_color", Color(0.40, 0.85, 0.55, 1.0))
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(name_lbl)
+
+		var cap_item = item_name
+		var use_btn = Button.new()
+		use_btn.text = "Use"
+		use_btn.custom_minimum_size = Vector2(60, 0)
+		use_btn.add_theme_font_size_override("font_size", 13)
+		use_btn.pressed.connect(func():
+			dialog.hide()
+			dialog.queue_free()
+			_on_use_item(player_handle, cap_item)
+		)
+		row.add_child(use_btn)
+		list.add_child(HSeparator.new())
+
+	if items_arr.is_empty():
+		var empty = Label.new()
+		empty.text = "No usable items."
+		empty.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60, 1.0))
+		list.add_child(empty)
+
+	dialog.confirmed.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2(340, 380))
+
+func _on_use_item(player_handle: int, item_name: String) -> void:
+	_e.perform_action(ACTION_ITEM, item_name)
+	var log_line: String = _e.get_last_action_log()
+	_log("[color=#55dd88]🧪 %s[/color]" % (log_line if log_line.length() > 0 else "Used: " + item_name))
+	# Remove consumed item from char dict
+	var cd = _e.get_char_dict(player_handle)
+	var items_arr: Array = cd.get("items", [])
+	items_arr.erase(item_name)
+	cd["items"] = items_arr
+	_status_label.text = ""
+	_refresh_combatant_panel()
+	if _check_combat_over():
+		return
+
 # ── Spell Casting ─────────────────────────────────────────────────────────────
 
 ## Returns the character handle whose ID matches the current combatant, or -1.
@@ -364,28 +493,28 @@ func _get_current_player_handle() -> int:
 func _show_spell_picker(player_handle: int) -> void:
 	var cur_sp: int  = _e.get_character_sp(player_handle)
 	var max_sp: int  = _e.get_character_max_sp(player_handle)
-	var spells_raw   := _e.get_learned_spells(player_handle)
-	var all_spells   := _e.get_all_spells()
-	var custom_sp    := _e.get_custom_spells()
+	var spells_raw = _e.get_learned_spells(player_handle)
+	var all_spells = _e.get_all_spells()
+	var custom_sp = _e.get_custom_spells()
 
-	var dialog := AcceptDialog.new()
+	var dialog = AcceptDialog.new()
 	dialog.title  = "Cast a Spell"
 	dialog.get_ok_button().text = "Cancel"
 	dialog.min_size = Vector2i(380, 460)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 6)
 	dialog.add_child(vbox)
 
 	vbox.add_child(_make_sp_bar_label(cur_sp, max_sp))
 	vbox.add_child(HSeparator.new())
 
-	var scroll := ScrollContainer.new()
+	var scroll = ScrollContainer.new()
 	scroll.custom_minimum_size = Vector2(0, 360)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vbox.add_child(scroll)
 
-	var list := VBoxContainer.new()
+	var list = VBoxContainer.new()
 	list.add_theme_constant_override("separation", 4)
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list)
@@ -413,17 +542,17 @@ func _show_spell_picker(player_handle: int) -> void:
 
 		var can_cast: bool = cur_sp >= cost
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 50)
 		list.add_child(row)
 
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
 
-		var name_lbl := Label.new()
+		var name_lbl = Label.new()
 		name_lbl.text = "🔮 " + sname
 		name_lbl.add_theme_font_size_override("font_size", 14)
 		name_lbl.add_theme_color_override("font_color",
@@ -431,14 +560,14 @@ func _show_spell_picker(player_handle: int) -> void:
 		info.add_child(name_lbl)
 
 		if not desc.is_empty():
-			var desc_lbl := Label.new()
+			var desc_lbl = Label.new()
 			desc_lbl.text       = desc.left(72) + ("…" if desc.length() > 72 else "")
 			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
 			desc_lbl.add_theme_font_size_override("font_size", 10)
 			desc_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60, 1.0))
 			info.add_child(desc_lbl)
 
-		var cost_lbl := Label.new()
+		var cost_lbl = Label.new()
 		cost_lbl.text = "%d SP" % cost
 		cost_lbl.add_theme_font_size_override("font_size", 14)
 		cost_lbl.add_theme_color_override("font_color",
@@ -449,7 +578,7 @@ func _show_spell_picker(player_handle: int) -> void:
 		var sc_cap: int  = cost
 		var sname_cap    = sname
 
-		var cast_btn := Button.new()
+		var cast_btn = Button.new()
 		cast_btn.text  = "Cast"
 		cast_btn.custom_minimum_size = Vector2(64, 0)
 		cast_btn.disabled = not can_cast
@@ -465,7 +594,7 @@ func _show_spell_picker(player_handle: int) -> void:
 		list.add_child(HSeparator.new())
 
 	if spells_raw.size() == 0:
-		var empty_lbl := Label.new()
+		var empty_lbl = Label.new()
 		empty_lbl.text = "No spells learned."
 		empty_lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60, 1.0))
 		list.add_child(empty_lbl)
@@ -488,16 +617,16 @@ func _on_cast_spell(spell_name: String, cost: int) -> void:
 	_check_combat_over()
 
 func _make_sp_bar_label(cur: int, max_val: int) -> Control:
-	var hbox := HBoxContainer.new()
+	var hbox = HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 12)
 
-	var lbl := Label.new()
+	var lbl = Label.new()
 	lbl.text = "SP"
 	lbl.add_theme_font_size_override("font_size", 13)
 	lbl.add_theme_color_override("font_color", Color(0.60, 0.60, 0.60, 1.0))
 	hbox.add_child(lbl)
 
-	var val_lbl := Label.new()
+	var val_lbl = Label.new()
 	val_lbl.text = "%d / %d" % [cur, max_val]
 	val_lbl.add_theme_font_size_override("font_size", 15)
 	val_lbl.add_theme_color_override("font_color", Color(0.74, 0.40, 1.0))
@@ -518,7 +647,7 @@ func _refresh_initiative() -> void:
 	var current_id: String = str(_e.get_current_combatant_id())
 
 	for entry in order:
-		var lbl := Label.new()
+		var lbl = Label.new()
 		lbl.text = entry
 		lbl.add_theme_font_size_override("font_size", 15)
 		# Highlight current
@@ -537,14 +666,14 @@ func _refresh_combatant_panel() -> void:
 	var cap: int = _e.get_current_combatant_ap()
 	var is_player: bool = _e.get_current_combatant_is_player()
 
-	var name_lbl := Label.new()
+	var name_lbl = Label.new()
 	name_lbl.text = cname + ("  [PLAYER]" if is_player else "  [ENEMY]")
 	name_lbl.add_theme_font_size_override("font_size", 24)
 	name_lbl.add_theme_color_override("font_color",
 		Color(0.50, 0.85, 0.50, 1.0) if is_player else Color(0.90, 0.40, 0.40, 1.0))
 	_combatant_panel.add_child(name_lbl)
 
-	var stats_lbl := Label.new()
+	var stats_lbl = Label.new()
 	stats_lbl.text = "HP: %d     AP: %d" % [chp, cap]
 	stats_lbl.add_theme_font_size_override("font_size", 18)
 	stats_lbl.add_theme_color_override("font_color", Color(0.80, 0.80, 0.75, 1.0))
@@ -557,7 +686,7 @@ func _refresh_combatant_panel() -> void:
 ## Returns true if combat is over.
 func _check_combat_over() -> bool:
 	# Check enemies
-	var all_dead := true
+	var all_dead = true
 	for eh in _enemy_handles:
 		if _e.get_creature_hp(eh) > 0:
 			all_dead = false
@@ -568,7 +697,7 @@ func _check_combat_over() -> bool:
 		return true
 
 	# Check players
-	var party_dead := true
+	var party_dead = true
 	for ph in GameState.get_active_handles():
 		if _e.get_character_hp(ph) > 0:
 			party_dead = false
@@ -586,16 +715,30 @@ func _combat_end(victory: bool) -> void:
 
 	if victory:
 		_log("\n[color=yellow]★ VICTORY! All enemies defeated. ★[/color]")
-		# Collect loot for each player
-		for ph in GameState.party:
+		# Collect loot for each player and push into shared stash
+		var all_loot: Array = []
+		for ph in GameState.get_active_handles():
 			var loot: PackedStringArray = _e.collect_loot(ph)
-			if loot.size() > 0:
-				_log("Loot: " + ", ".join(Array(loot)))
+			for item in loot:
+				var s: String = str(item)
+				if not s.is_empty():
+					all_loot.append(s)
+					GameState.stash.append(s)
+		if all_loot.size() > 0:
+			_log("[color=gold]Loot gained: " + ", ".join(all_loot) + "[/color]")
+		else:
+			_log("[color=gray]No loot dropped.[/color]")
+		# Award XP to each living party member
+		var xp_gain: int = maxi(10, ENEMY_LEVEL * 20 * _enemy_handles.size())
+		for ph in GameState.get_active_handles():
+			if _e.get_character_hp(ph) > 0:
+				_e.add_experience(ph, xp_gain)
+		_log("[color=cyan]+%d XP awarded to living party members.[/color]" % xp_gain)
 	else:
 		_log("\n[color=red]✗ DEFEAT — your party has fallen.[/color]")
 
 	# Add "Return to Hub" button
-	var ret_btn := _action_button("Return to Hub", Color(0.95, 0.80, 0.30, 1.0))
+	var ret_btn = _action_button("Return to Hub", Color(0.95, 0.80, 0.30, 1.0))
 	ret_btn.pressed.connect(_on_retreat)
 	_action_bar.add_child(ret_btn)
 

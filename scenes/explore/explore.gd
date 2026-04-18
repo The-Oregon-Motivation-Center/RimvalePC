@@ -63,6 +63,10 @@ var _steps_since_encounter: int = 0
 var _encounter_rate: float = 0.18
 var _encounter_guarantee: int = 8
 
+# ── AP action cost tracking (Rimvale Mobile parity) ─────────────────────────
+# 1st action = 1 AP, 2nd = 2 AP, 3rd = 3 AP, etc.
+var _poi_actions_taken: int = 0
+
 var _region_id: String = ""
 var _subregion: String = ""
 var _terrain_style: int = 3
@@ -616,6 +620,7 @@ func _on_poi_step(pos: Vector2i) -> void:
 	if poi.is_empty():
 		return
 	_steps_since_encounter = 0
+	_poi_actions_taken = 0   # reset action cost counter on entering a POI
 
 	match int(poi["type"]):
 		POI_ACF:        _show_acf_panel()
@@ -740,13 +745,96 @@ func _show_rubble_info() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 
-func _show_message(text: String, col: Color) -> void:
+## Returns the AP cost for the NEXT action (1-based: 1st=1, 2nd=2, …).
+func _next_action_ap_cost() -> int:
+	return _poi_actions_taken + 1
+
+## Try to spend AP from a single unit for the next action.
+## Picks the first unit in the active team that can afford the full cost.
+## Returns the handle of the unit that paid, or -1 if nobody can afford it.
+func _spend_action_ap() -> int:
+	var cost: int = _next_action_ap_cost()
+	for h in GameState.get_active_handles():
+		var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+		if cd == null:
+			continue
+		var ap: int = int(cd.get("ap", 0))
+		if ap >= cost:
+			cd["ap"] = ap - cost
+			_poi_actions_taken += 1
+			_regen_party_ap()   # end-of-action AP regen for the whole team
+			return h
+	return -1
+
+## Regen AP for every active unit: each recovers STR points (min 1) up to max.
+## Feats that grant "+1 AP regen" are checked via the feat dictionary.
+func _regen_party_ap() -> void:
+	for h in GameState.get_active_handles():
+		var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+		if cd == null:
+			continue
+		var stats: Array = cd.get("stats", [1, 1, 1, 1, 1])
+		var str_val: int = maxi(1, int(stats[0]))   # STR = index 0
+		# Check feats for bonus AP regen
+		var bonus: int = 0
+		var feats: Dictionary = cd.get("feats", {})
+		for feat_name in feats.keys():
+			var fl: String = str(feat_name).to_lower()
+			# Feats whose description mentions "+1 AP regen" grant +1
+			if "ap regen" in fl or "endurance" in fl or "second wind" in fl:
+				bonus += 1
+		var regen: int = str_val + bonus
+		var ap: int  = int(cd.get("ap", 0))
+		var cap: int = int(cd.get("max_ap", 10))
+		cd["ap"] = mini(ap + regen, cap)
+
+## Convenience: returns text like "(1 AP)" for button labels.
+func _ap_cost_str() -> String:
+	return "(%d AP)" % _next_action_ap_cost()
+
+## Show a temporary message, then optionally return to a panel after a delay.
+## If return_callback is provided, the panel is re-shown after 1.2 seconds.
+func _show_message(text: String, col: Color, return_callback: Callable = Callable()) -> void:
 	_clear_info()
 	var lbl := RimvaleUtils.label(text, 14, col)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(lbl)
+	if return_callback.is_valid():
+		await get_tree().create_timer(1.2).timeout
+		if is_instance_valid(self):
+			return_callback.call()
 
 # ── ACF Office ──────────────────────────────────────────────────────────────
+
+## Adds per-unit AP status lines to a panel.
+func _add_ap_status(parent: VBoxContainer) -> void:
+	var cost: int = _next_action_ap_cost()
+	var e = RimvaleAPI.engine
+	var any_can_act: bool = false
+	for h in GameState.get_active_handles():
+		var cd: Dictionary = e.get_char_dict(h)
+		if cd == null:
+			continue
+		var name_: String = e.get_character_name(h)
+		var ap: int = int(cd.get("ap", 0))
+		var max_ap: int = int(cd.get("max_ap", 10))
+		var col: Color = RimvaleColors.AP_BLUE if ap >= cost else RimvaleColors.TEXT_DIM
+		if ap >= cost:
+			any_can_act = true
+		parent.add_child(RimvaleUtils.label(
+			"%s  AP: %d/%d" % [name_, ap, max_ap], 11, col))
+	var cost_col: Color = RimvaleColors.AP_BLUE if any_can_act else RimvaleColors.DANGER
+	parent.add_child(RimvaleUtils.label(
+		"Next action: %d AP" % cost, 11, cost_col))
+
+## Wraps an action with the AP cost check.  Deducts from the first unit that
+## can afford the full cost.  Returns true if AP was spent.
+func _try_action(return_panel: Callable) -> bool:
+	var spender: int = _spend_action_ap()
+	if spender < 0:
+		_show_message("Not enough AP! Rest to recover.", RimvaleColors.DANGER, return_panel)
+		return false
+	return true
 
 func _show_acf_panel() -> void:
 	_clear_info()
@@ -757,32 +845,33 @@ func _show_acf_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	var heal_btn := RimvaleUtils.button("🩹 Request Medical Aid (Free)", RimvaleColors.HP_GREEN, 44, 13)
+	var heal_btn := RimvaleUtils.button("🩹 Request Medical Aid %s" % _ap_cost_str(), RimvaleColors.HP_GREEN, 44, 13)
 	heal_btn.pressed.connect(func():
+		if not _try_action(_show_acf_panel): return
 		for h in GameState.get_active_handles():
 			RimvaleAPI.engine.long_rest(h)
-		_show_message("All agents restored to full health.", RimvaleColors.HP_GREEN)
-		await get_tree().create_timer(1.2).timeout
-		_show_acf_panel()
+		_show_message("All agents restored to full health.", RimvaleColors.HP_GREEN, _show_acf_panel)
 	)
 	_info_vbox.add_child(heal_btn)
 
-	var brief_btn := RimvaleUtils.button("📋 Accept Field Briefing (+50 XP)", RimvaleColors.CYAN, 44, 13)
+	var brief_btn := RimvaleUtils.button("📋 Accept Field Briefing (+50 XP) %s" % _ap_cost_str(), RimvaleColors.CYAN, 44, 13)
 	brief_btn.pressed.connect(func():
+		if not _try_action(_show_acf_panel): return
 		for h in GameState.get_active_handles():
 			RimvaleAPI.engine.add_xp(h, 50, 20)
 		GameState.player_xp += 50
-		_show_message("Briefing received. +50 XP to all agents.", RimvaleColors.CYAN)
 		GameState.save_game()
+		_show_message("Briefing received. +50 XP to all agents.", RimvaleColors.CYAN, _show_acf_panel)
 	)
 	_info_vbox.add_child(brief_btn)
 
 	_info_vbox.add_child(RimvaleUtils.separator())
 	var manage_btn := RimvaleUtils.button("⚔ Manage Units", RimvaleColors.ACCENT, 38, 12)
 	manage_btn.pressed.connect(func():
-		_on_exit()
-		await get_tree().create_timer(0.1).timeout
+		GameState.save_game()
 		var main_node = get_tree().root.get_child(0)
 		if main_node and main_node.has_method("go_to_tab"):
 			main_node.go_to_tab(0)
@@ -800,6 +889,7 @@ func _show_shop_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
 	_info_vbox.add_child(RimvaleUtils.label("Gold: %d" % GameState.gold, 13, RimvaleColors.GOLD))
 	_info_vbox.add_child(RimvaleUtils.separator())
 
@@ -829,16 +919,17 @@ func _show_shop_panel() -> void:
 		var sp := Control.new(); sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(sp)
 
-		var buy_btn := RimvaleUtils.button("Buy", RimvaleColors.GOLD, 28, 11)
-		buy_btn.custom_minimum_size.x = 60
+		var buy_btn := RimvaleUtils.button("Buy %s" % _ap_cost_str(), RimvaleColors.GOLD, 28, 11)
+		buy_btn.custom_minimum_size.x = 80
 		var cap_name := item_name; var cap_price := price
 		buy_btn.pressed.connect(func():
+			if not _try_action(_show_shop_panel): return
 			if GameState.gold >= cap_price:
 				GameState.gold -= cap_price
 				_apply_shop_item(cap_name)
 				_show_shop_panel()
 			else:
-				_show_message("Not enough gold!", RimvaleColors.DANGER)
+				_show_message("Not enough gold!", RimvaleColors.DANGER, _show_shop_panel)
 		)
 		row.add_child(buy_btn)
 		cvbox.add_child(row)
@@ -890,13 +981,18 @@ func _show_rest_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	var rest_btn := RimvaleUtils.button("💤 Rest (Fully Heal Party)", RimvaleColors.HP_GREEN, 50, 14)
+	var rest_btn := RimvaleUtils.button("💤 Rest (Fully Heal Party) %s" % _ap_cost_str(), RimvaleColors.HP_GREEN, 50, 14)
 	rest_btn.pressed.connect(func():
+		if not _try_action(_show_rest_panel): return
 		for h in GameState.get_active_handles():
 			RimvaleAPI.engine.long_rest(h)
+		# Reset escalating action cost — the party is freshly rested
+		_poi_actions_taken = 0
 		GameState.save_game()
-		_show_message("Your team rests peacefully. All HP, AP, and SP restored.", RimvaleColors.HP_GREEN)
+		_show_message("Your team rests peacefully. All HP, AP, and SP restored.", RimvaleColors.HP_GREEN, _show_rest_panel)
 	)
 	_info_vbox.add_child(rest_btn)
 
@@ -904,7 +1000,7 @@ func _show_rest_panel() -> void:
 	var save_btn := RimvaleUtils.button("💾 Save Game", RimvaleColors.CYAN, 44, 13)
 	save_btn.pressed.connect(func():
 		GameState.save_game()
-		_show_message("Game saved.", RimvaleColors.CYAN)
+		_show_message("Game saved.", RimvaleColors.CYAN, _show_rest_panel)
 	)
 	_info_vbox.add_child(save_btn)
 
@@ -919,36 +1015,43 @@ func _show_tavern_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	var round_btn := RimvaleUtils.button("🍻 Buy a Round (25 gold, +30 XP)", RimvaleColors.ORANGE, 44, 13)
+	var round_btn := RimvaleUtils.button("🍻 Buy a Round (25g, +30 XP) %s" % _ap_cost_str(), RimvaleColors.ORANGE, 44, 13)
 	round_btn.pressed.connect(func():
+		if not _try_action(_show_tavern_panel): return
 		if GameState.gold >= 25:
 			GameState.gold -= 25
 			for h in GameState.get_active_handles():
 				RimvaleAPI.engine.add_xp(h, 30, 20)
 			GameState.player_xp += 30
 			GameState.save_game()
-			_show_message("Cheers all around! +30 XP.", RimvaleColors.ORANGE)
+			_show_message("Cheers all around! +30 XP.", RimvaleColors.ORANGE, _show_tavern_panel)
 		else:
-			_show_message("Not enough gold for a round.", RimvaleColors.DANGER)
+			_show_message("Not enough gold for a round.", RimvaleColors.DANGER, _show_tavern_panel)
 	)
 	_info_vbox.add_child(round_btn)
 
-	var rumour_btn := RimvaleUtils.button("👂 Gather Rumours (Free)", RimvaleColors.CYAN, 44, 13)
+	var rumour_btn := RimvaleUtils.button("👂 Gather Rumours %s" % _ap_cost_str(), RimvaleColors.CYAN, 44, 13)
 	rumour_btn.pressed.connect(func():
+		if not _try_action(_show_tavern_panel): return
 		var rumours: Array = _content.get("rumours", ["Nothing interesting today."])
 		var r: String = str(rumours[randi() % rumours.size()])
-		_show_message("\"" + r + "\"", RimvaleColors.TEXT_LIGHT)
+		_show_message("\"" + r + "\"", RimvaleColors.TEXT_LIGHT, _show_tavern_panel)
 	)
 	_info_vbox.add_child(rumour_btn)
 
 	_info_vbox.add_child(RimvaleUtils.separator())
-	var rest_btn := RimvaleUtils.button("☕ Short Rest (Restore Half HP)", RimvaleColors.HP_GREEN, 38, 12)
+	var rest_btn := RimvaleUtils.button("☕ Short Rest (Restore Half HP) %s" % _ap_cost_str(), RimvaleColors.HP_GREEN, 38, 12)
 	rest_btn.pressed.connect(func():
+		if not _try_action(_show_tavern_panel): return
 		for h in GameState.get_active_handles():
 			RimvaleAPI.engine.short_rest(h)
+		# Reset escalating action cost — the party rested
+		_poi_actions_taken = 0
 		GameState.save_game()
-		_show_message("A brief rest. Your team recovers.", RimvaleColors.HP_GREEN)
+		_show_message("A brief rest. Your team recovers.", RimvaleColors.HP_GREEN, _show_tavern_panel)
 	)
 	_info_vbox.add_child(rest_btn)
 
@@ -963,22 +1066,26 @@ func _show_blacksmith_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	var sharpen_btn := RimvaleUtils.button("⚔ Sharpen Weapons (+20 XP, 40g)", RimvaleColors.GOLD, 44, 13)
+	var sharpen_btn := RimvaleUtils.button("⚔ Sharpen Weapons (+20 XP, 40g) %s" % _ap_cost_str(), RimvaleColors.GOLD, 44, 13)
 	sharpen_btn.pressed.connect(func():
+		if not _try_action(_show_blacksmith_panel): return
 		if GameState.gold >= 40:
 			GameState.gold -= 40
 			for h in GameState.get_active_handles():
 				RimvaleAPI.engine.add_xp(h, 20, 20)
 			GameState.save_game()
-			_show_message("Weapons honed to a razor edge. +20 XP.", Color(0.85, 0.45, 0.25))
+			_show_message("Weapons honed to a razor edge. +20 XP.", Color(0.85, 0.45, 0.25), _show_blacksmith_panel)
 		else:
-			_show_message("Not enough gold.", RimvaleColors.DANGER)
+			_show_message("Not enough gold.", RimvaleColors.DANGER, _show_blacksmith_panel)
 	)
 	_info_vbox.add_child(sharpen_btn)
 
-	var reinforce_btn := RimvaleUtils.button("🛡 Reinforce Armour (+1 AC, 60g)", RimvaleColors.CYAN, 44, 13)
+	var reinforce_btn := RimvaleUtils.button("🛡 Reinforce Armour (+1 AC, 60g) %s" % _ap_cost_str(), RimvaleColors.CYAN, 44, 13)
 	reinforce_btn.pressed.connect(func():
+		if not _try_action(_show_blacksmith_panel): return
 		if GameState.gold >= 60:
 			GameState.gold -= 60
 			for h in GameState.get_active_handles():
@@ -986,9 +1093,9 @@ func _show_blacksmith_panel() -> void:
 				if cd != null:
 					cd["feat_ac_bonus"] = int(cd.get("feat_ac_bonus", 0)) + 1
 			GameState.save_game()
-			_show_message("Armour reinforced. +1 AC for the party.", Color(0.85, 0.45, 0.25))
+			_show_message("Armour reinforced. +1 AC for the party.", Color(0.85, 0.45, 0.25), _show_blacksmith_panel)
 		else:
-			_show_message("Not enough gold.", RimvaleColors.DANGER)
+			_show_message("Not enough gold.", RimvaleColors.DANGER, _show_blacksmith_panel)
 	)
 	_info_vbox.add_child(reinforce_btn)
 
@@ -1003,27 +1110,31 @@ func _show_library_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	var study_btn := RimvaleUtils.button("📖 Study Texts (+80 XP, 50g)", RimvaleColors.CYAN, 44, 13)
+	var study_btn := RimvaleUtils.button("📖 Study Texts (+80 XP, 50g) %s" % _ap_cost_str(), RimvaleColors.CYAN, 44, 13)
 	study_btn.pressed.connect(func():
+		if not _try_action(_show_library_panel): return
 		if GameState.gold >= 50:
 			GameState.gold -= 50
 			for h in GameState.get_active_handles():
 				RimvaleAPI.engine.add_xp(h, 80, 20)
 			GameState.player_xp += 80
 			GameState.save_game()
-			_show_message("Hours among ancient tomes. +80 XP.", RimvaleColors.CYAN)
+			_show_message("Hours among ancient tomes. +80 XP.", RimvaleColors.CYAN, _show_library_panel)
 		else:
-			_show_message("A donation of 50 gold is required.", RimvaleColors.DANGER)
+			_show_message("A donation of 50 gold is required.", RimvaleColors.DANGER, _show_library_panel)
 	)
 	_info_vbox.add_child(study_btn)
 
-	var meditate_btn := RimvaleUtils.button("🧘 Meditate (Restore SP, free)", RimvaleColors.SP_PURPLE, 44, 13)
+	var meditate_btn := RimvaleUtils.button("🧘 Meditate (Restore SP) %s" % _ap_cost_str(), RimvaleColors.SP_PURPLE, 44, 13)
 	meditate_btn.pressed.connect(func():
+		if not _try_action(_show_library_panel): return
 		for h in GameState.get_active_handles():
 			RimvaleAPI.engine.restore_character_sp(h, 3)
 		GameState.save_game()
-		_show_message("Quiet meditation. +3 SP restored to each agent.", RimvaleColors.SP_PURPLE)
+		_show_message("Quiet meditation. +3 SP restored to each agent.", RimvaleColors.SP_PURPLE, _show_library_panel)
 	)
 	_info_vbox.add_child(meditate_btn)
 
@@ -1037,6 +1148,8 @@ func _show_bounty_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
 	var bounties: Array = _content.get("bounties", [
 		["Clear the Nest", 3, 100, "Creatures breeding in the shadows."],
@@ -1065,10 +1178,11 @@ func _show_bounty_panel() -> void:
 		var sp := Control.new(); sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(sp)
 
-		var accept_btn := RimvaleUtils.button("Accept", RimvaleColors.WARNING, 28, 11)
-		accept_btn.custom_minimum_size.x = 70
+		var accept_btn := RimvaleUtils.button("Accept %s" % _ap_cost_str(), RimvaleColors.WARNING, 28, 11)
+		accept_btn.custom_minimum_size.x = 90
 		var cap_terrain := bterrain; var cap_reward := breward
 		accept_btn.pressed.connect(func():
+			if not _try_action(_show_bounty_panel): return
 			_launch_bounty(cap_terrain, cap_reward)
 		)
 		row.add_child(accept_btn)
@@ -1078,7 +1192,7 @@ func _show_bounty_panel() -> void:
 func _launch_bounty(terrain: int, gold_reward: int) -> void:
 	var handles: PackedInt64Array = GameState.get_active_handles()
 	if handles.is_empty():
-		_show_message("No active team!", RimvaleColors.DANGER)
+		_show_message("No active team!", RimvaleColors.DANGER, _show_bounty_panel)
 		return
 
 	var base_level: int = maxi(1, GameState.player_level)
@@ -1107,9 +1221,12 @@ func _show_fountain_panel() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
 	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	var wish_btn := RimvaleUtils.button("🪙 Toss a Coin (1 gold)", RimvaleColors.AP_BLUE, 44, 13)
+	var wish_btn := RimvaleUtils.button("🪙 Toss a Coin (1 gold) %s" % _ap_cost_str(), RimvaleColors.AP_BLUE, 44, 13)
 	wish_btn.pressed.connect(func():
+		if not _try_action(_show_fountain_panel): return
 		if GameState.gold >= 1:
 			GameState.gold -= 1
 			var boons: Array = _content.get("fountain_boons", [
@@ -1143,9 +1260,9 @@ func _show_fountain_panel() -> void:
 				"gold":
 					GameState.earn_gold(boon_val)
 			GameState.save_game()
-			_show_message(str(pick[0]), RimvaleColors.AP_BLUE)
+			_show_message(str(pick[0]), RimvaleColors.AP_BLUE, _show_fountain_panel)
 		else:
-			_show_message("You have no coins to spare.", RimvaleColors.TEXT_DIM)
+			_show_message("You have no coins to spare.", RimvaleColors.TEXT_DIM, _show_fountain_panel)
 	)
 	_info_vbox.add_child(wish_btn)
 

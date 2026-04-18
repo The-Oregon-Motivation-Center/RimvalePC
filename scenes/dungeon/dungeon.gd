@@ -112,6 +112,46 @@ const C_SP_BAR    := Color(0.75, 0.35, 0.80)
 const C_FOG_UNSEEN     := Color(0.03, 0.03, 0.03, 0.96)   # near-black shroud
 const C_FOG_REMEMBERED := Color(0.00, 0.00, 0.00, 0.55)   # dimming overlay for seen tiles
 
+# ── Spell Crafter constants (matching level_up.gd / mobile parity) ───────────
+const SC_DOMAIN_NAMES: PackedStringArray = ["Biological", "Chemical", "Physical", "Spiritual"]
+const SC_DOMAIN_EFFECTS: Array = [
+	[["Augment Trait",1],["Health Regeneration",1],["Memory Edit",4],["Mind Control",6],
+	 ["Revivify",5],["Terrain Manipulation",1],["Undeath",1],["Weather Resistance",1]],
+	[["Combustion",4],["Damage an Object",1],["Mend an Object",2],["Remove Grime",1],["Transmutation",40]],
+	[["Accuracy",1],["Ambient Temperature",1],["Create Construct",2],["Damage Output Increase",1],
+	 ["Damage Reduction",2],["Illusions",2],["Light",2],["Shield",1],["Telekinesis",1],
+	 ["Teleportation",1],["Time Manipulation",2]],
+	[["Bless",1],["Conjure Damage or Healing",1],["Curse",1],["Intangibility",4],
+	 ["Suppress Magic",2],["Summon",2]],
+]
+const SC_DURATION_LABELS: PackedStringArray = ["Instant","1 Minute","10 Minutes","1 Hour","1 Day"]
+const SC_DURATION_ROUNDS: PackedInt32Array  = [0,10,100,600,14400]
+const SC_DURATION_MULT:   PackedInt32Array  = [1,2,3,5,10]
+const SC_RANGE_LABELS: PackedStringArray = ["Self","Touch","15 ft","30 ft","100 ft","500 ft","1000 ft"]
+const SC_RANGE_SP:     PackedInt32Array  = [0,0,1,2,3,6,10]
+const SC_AREA_LABELS:  PackedStringArray = ["Single Target","Small (10 ft cube)","Large (30 ft cube)","Massive (100 ft cube)"]
+const SC_AREA_MULT:    PackedInt32Array  = [1,2,3,10]
+const SC_DIE_LABELS:   PackedStringArray = ["d4","d6","d8","d10","d12"]
+const SC_DIE_SIDES_MOD:PackedInt32Array  = [0,1,2,3,4]
+const SC_DAMAGE_TYPES: PackedStringArray = [
+	"Bludgeoning","Piercing","Slashing","Force","Fire","Cold",
+	"Lightning","Acid","Poison","Psychic","Radiant","Necrotic","Thunder"]
+const SC_COND_BENEFICIAL: PackedStringArray = [
+	"Calm","Dodging","Flying","Hidden","Invisible","Invulnerable","Resistance","Shielded","Silent","Stoneskin"]
+const SC_COND_HARMFUL: PackedStringArray = [
+	"Bleed","Blinded","Charm","Confused","Dazed","Deafened","Depleted","Diseased",
+	"Enraged","Exhausted","Fear","Fever","Incapacitated","Paralyzed","Petrified",
+	"Poisoned","Prone","Restrained","Slowed","Squeeze","Stunned","Unconscious","Vulnerable"]
+# Spell crafter state
+var _sc_overlay: Control = null
+var _sc_domain: int = 0; var _sc_effect_idx: int = 0; var _sc_duration_idx: int = 0
+var _sc_range_idx: int = 0; var _sc_targets: int = 1; var _sc_area_idx: int = 0
+var _sc_die_count: int = 0; var _sc_die_idx: int = 1; var _sc_damage_type: int = 3
+var _sc_is_healing: bool = false; var _sc_is_saving_throw: bool = false
+var _sc_is_teleport: bool = false; var _sc_conditions: Array = []; var _sc_name: String = ""
+var _sc_cost_lbl: Label; var _sc_breakdown_lbl: Label; var _sc_desc_lbl: Label
+var _sc_die_btns: Array = []
+
 # Elevation tints (applied on top of floor colour)
 const C_ELEV_HIGH := Color(1.00, 1.00, 1.00, 0.22)   # brightened for raised platform
 const C_ELEV_LOW  := Color(0.00, 0.00, 0.00, 0.30)   # darkened for pit/low ground
@@ -3287,11 +3327,15 @@ func _on_grid_input(event: InputEvent) -> void:
 	# Resolve the entity under the click once, shared by both branches below.
 	var clicked_ent: Dictionary = _entity_at(tx, ty)
 
-	# Single-target mode: click an enemy to attack/grapple/etc.
+	# Single-target mode: click a valid target (enemy or ally depending on action)
 	if not _pending_action.is_empty():
-		if not clicked_ent.is_empty() and not bool(clicked_ent["is_dead"]) \
-				and not bool(clicked_ent["is_player"]):
-			_execute_action_on_target(str(clicked_ent["id"]))
+		if not clicked_ent.is_empty() and not bool(clicked_ent["is_dead"]):
+			var want_friendly: bool = bool(_pending_action.get("_target_friendly", false))
+			var is_friendly: bool = bool(clicked_ent.get("is_player", false)) or bool(clicked_ent.get("is_friendly", false))
+			if want_friendly == is_friendly:
+				_execute_action_on_target(str(clicked_ent["id"]))
+			else:
+				_add_log("[color=yellow]Invalid target — click %s.[/color]" % ("an ally" if want_friendly else "an enemy"))
 		else:
 			_cancel_pending_action()
 		return
@@ -3444,6 +3488,16 @@ func _populate_action_columns() -> void:
 		lbl.add_theme_color_override("font_color", Color(0.45, 0.45, 0.42))
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_col_magic_vbox.add_child(lbl)
+
+	# Craft Spell button — always available (matches mobile parity)
+	var craft_btn := Button.new()
+	craft_btn.text = "✦ Craft Spell"
+	craft_btn.flat = true
+	craft_btn.add_theme_font_size_override("font_size", 11)
+	craft_btn.add_theme_color_override("font_color", Color(0.74, 0.40, 1.0))
+	craft_btn.add_theme_color_override("font_hover_color", Color(0.85, 0.55, 1.0))
+	craft_btn.pressed.connect(_open_spell_crafter)
+	_col_magic_vbox.add_child(craft_btn)
 
 	# Ability column: lineage traits first, then standard abilities
 	var trait_actions: Array = _e.get_available_lineage_trait_actions(_selected_id)
@@ -3606,6 +3660,7 @@ func _on_action_pressed(action: Dictionary) -> void:
 	var action_id: int  = int(action.get("action_id", -1))
 	var area_type: int  = int(action.get("area_type", 0))
 	var is_tp: bool     = bool(action.get("is_teleport", false))
+	var range_idx: int  = int(action.get("range_idx", 0))
 
 	# Area spells: enter area-targeting mode
 	if area_type > 0:
@@ -3618,30 +3673,66 @@ func _on_action_pressed(action: Dictionary) -> void:
 		_update_3d_view()
 		return
 
-	# Teleport: re-use area mode with radius 0 (exact tile click)
+	# Teleport: self-range → click destination tile; other range → pick target first
 	if is_tp:
-		_area_mode    = true
-		_area_action  = action.duplicate()
-		_area_radius  = 0
-		_area_preview = Vector2i(-1, -1)
-		_action_mode_lbl.text = "Click a floor tile to teleport…  [ESC to cancel]"
-		_update_3d_view()
+		if range_idx == 0:
+			# Self teleport: go straight to tile selection
+			_area_mode    = true
+			_area_action  = action.duplicate()
+			_area_radius  = 0
+			_area_preview = Vector2i(-1, -1)
+			_action_mode_lbl.text = "Click a floor tile to teleport to…  [ESC to cancel]"
+			_update_3d_view()
+		else:
+			# Teleport another unit: first pick the target, then destination
+			_pending_action = action.duplicate()
+			_pending_action["_target_friendly"] = true
+			_pending_action["_teleport_pick_target"] = true
+			_action_mode_lbl.text = "Click a unit to teleport…  [ESC to cancel]"
+			_update_3d_view()
 		return
 
-	# Single-target attack / grapple: enter target-selection mode
+	# Single-target attack / grapple: enter target-selection mode (click enemy)
 	if is_attack or action_id == 18:  # 18 = ACT_GRAPPLE
 		_pending_action = action.duplicate()
+		_pending_action["_target_friendly"] = false
 		_action_mode_lbl.text = "Click an enemy to target…  [ESC to cancel]"
 		_update_3d_view()
 		return
 
-	# Immediate actions (no target needed)
+	# Single-target non-attack spells with range > 0 (heals, buffs):
+	# enter target-selection mode for a friendly unit
+	if action_id == 10 and range_idx > 0:  # 10 = ACT_CAST_SPELL
+		_pending_action = action.duplicate()
+		_pending_action["_target_friendly"] = true
+		_action_mode_lbl.text = "Click an ally to target…  [ESC to cancel]"
+		_update_3d_view()
+		return
+
+	# Immediate actions (no target needed: self-range spells, dodge, rest, etc.)
 	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
 	_handle_action_result(result)
 
 func _execute_action_on_target(target_id: String) -> void:
 	if _pending_action.is_empty() or _selected_id == "": return
 	var action: Dictionary = _pending_action.duplicate()
+
+	# Teleport two-step: target selected → now pick destination tile
+	if bool(action.get("_teleport_pick_target", false)):
+		_cancel_pending_action()
+		action.erase("_teleport_pick_target")
+		action.erase("_target_friendly")
+		action["_teleport_target_id"] = target_id
+		_area_mode    = true
+		_area_action  = action.duplicate()
+		_area_radius  = 0
+		_area_preview = Vector2i(-1, -1)
+		var tgt_ent: Dictionary = _get_entity(target_id)
+		var tgt_name: String = str(tgt_ent.get("name", "target"))
+		_action_mode_lbl.text = "Click a floor tile to teleport %s to…  [ESC to cancel]" % tgt_name
+		_update_3d_view()
+		return
+
 	_cancel_pending_action()
 	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, target_id, 0, 0)
 	_handle_action_result(result)
@@ -3948,3 +4039,317 @@ func _colored_btn(txt: String, col: Color) -> Button:
 	dis_style.bg_color = col.darkened(0.45)
 	b.add_theme_stylebox_override("disabled", dis_style)
 	return b
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Dungeon Spell Crafter (mobile parity) ────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _sc_calc_cost() -> int:
+	var effects: Array = SC_DOMAIN_EFFECTS[_sc_domain] if _sc_domain < SC_DOMAIN_EFFECTS.size() else []
+	var base: int = int(effects[_sc_effect_idx][1]) if _sc_effect_idx < effects.size() else 1
+	var sides_mod: int = SC_DIE_SIDES_MOD[_sc_die_idx] if _sc_die_idx < SC_DIE_SIDES_MOD.size() else 0
+	var dice_cost: int = _sc_die_count * (1 + sides_mod)
+	var dur_mult: int  = SC_DURATION_MULT[_sc_duration_idx] if _sc_duration_idx < SC_DURATION_MULT.size() else 1
+	var base_eff: int  = base + dice_cost
+	var with_dur: int  = base_eff if _sc_duration_idx == 0 else base_eff * dur_mult
+	var range_cost: int = SC_RANGE_SP[_sc_range_idx] if _sc_range_idx < SC_RANGE_SP.size() else 0
+	var tgt_cost: int = 0
+	if _sc_targets > 1:
+		for i in range(_sc_targets - 1): tgt_cost += int(pow(2.0, float(i + 1)))
+	var harmful: int = 0; var beneficial: int = 0
+	for cn in _sc_conditions:
+		if cn in SC_COND_HARMFUL: harmful += 1
+		else: beneficial += 1
+	var cond_cost: int = (harmful * 3) - (beneficial * 2)
+	var type_cost: int = 1 if _sc_is_saving_throw else 0
+	var area_mult: int = SC_AREA_MULT[_sc_area_idx] if _sc_area_idx < SC_AREA_MULT.size() else 1
+	var total: int = (type_cost + with_dur + range_cost + tgt_cost + cond_cost) * area_mult
+	return maxi(0, total)
+
+func _sc_description() -> String:
+	var effects: Array = SC_DOMAIN_EFFECTS[_sc_domain] if _sc_domain < SC_DOMAIN_EFFECTS.size() else []
+	var eff_name: String = effects[_sc_effect_idx][0] if _sc_effect_idx < effects.size() else "Unknown"
+	var dom: String = SC_DOMAIN_NAMES[_sc_domain]
+	var tgt: String = "a single target" if _sc_targets <= 1 else "up to %d targets" % _sc_targets
+	var rng: String = "on yourself" if _sc_range_idx == 0 else "within %s" % SC_RANGE_LABELS[_sc_range_idx]
+	var area: String = "" if _sc_area_idx == 0 else " affecting a %s" % SC_AREA_LABELS[_sc_area_idx]
+	var dur: String = SC_DURATION_LABELS[_sc_duration_idx]
+	var save_d: String = ". Targets may save to resist." if _sc_is_saving_throw else "."
+	if _sc_is_teleport:
+		return "Teleport %s to a selected location. Cost scales with distance." % ("yourself" if _sc_range_idx == 0 else "a target %s" % rng)
+	var act: String = "heals for" if _sc_is_healing else "deals"
+	var dice_d: String = " %dd%d" % [_sc_die_count, [4,6,8,10,12][_sc_die_idx]] if _sc_die_count > 0 else ""
+	var type_d: String = ""
+	if _sc_die_count > 0:
+		type_d = " hit points" if _sc_is_healing else " %s damage" % SC_DAMAGE_TYPES[_sc_damage_type]
+	return "Using the %s domain, you weave a spell of %s that %s%s%s targeting %s %s%s. Lasts %s%s" % [dom, eff_name, act, dice_d, type_d, tgt, rng, area, dur, save_d]
+
+func _sc_update_preview() -> void:
+	if is_instance_valid(_sc_cost_lbl):
+		_sc_cost_lbl.text = "Total SP Cost: %d" % _sc_calc_cost()
+	if is_instance_valid(_sc_breakdown_lbl):
+		var effects: Array = SC_DOMAIN_EFFECTS[_sc_domain] if _sc_domain < SC_DOMAIN_EFFECTS.size() else []
+		var eff_name: String = effects[_sc_effect_idx][0] if _sc_effect_idx < effects.size() else "Unknown"
+		var base: int = int(effects[_sc_effect_idx][1]) if _sc_effect_idx < effects.size() else 1
+		_sc_breakdown_lbl.text = "Base Effect (%s): %d" % [eff_name, base]
+	if is_instance_valid(_sc_desc_lbl):
+		_sc_desc_lbl.text = _sc_description()
+
+func _open_spell_crafter() -> void:
+	if _sc_overlay != null and is_instance_valid(_sc_overlay):
+		_sc_overlay.queue_free()
+		_sc_overlay = null
+
+	_sc_die_btns.clear()
+	_sc_cost_lbl = null; _sc_breakdown_lbl = null; _sc_desc_lbl = null
+
+	# Full-screen overlay
+	_sc_overlay = Panel.new()
+	_sc_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg_style = StyleBoxFlat.new()
+	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
+	_sc_overlay.add_theme_stylebox_override("panel", bg_style)
+	add_child(_sc_overlay)
+
+	var mgn = MarginContainer.new()
+	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
+	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_sc_overlay.add_child(mgn)
+
+	var scroll = ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mgn.add_child(scroll)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
+
+	# Header with close
+	var hdr = HBoxContainer.new()
+	vbox.add_child(hdr)
+	hdr.add_child(RimvaleUtils.label("Spell Crafter", 18, RimvaleColors.TEXT_WHITE))
+	var spacer = Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+	var close_btn = Button.new(); close_btn.text = "X"; close_btn.flat = true
+	close_btn.add_theme_font_size_override("font_size", 18)
+	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
+	close_btn.pressed.connect(func():
+		if is_instance_valid(_sc_overlay): _sc_overlay.queue_free(); _sc_overlay = null
+	)
+	hdr.add_child(close_btn)
+
+	# Spell name
+	var name_edit = LineEdit.new()
+	name_edit.placeholder_text = "Spell Name"
+	name_edit.text = _sc_name
+	name_edit.custom_minimum_size = Vector2(0, 36)
+	name_edit.add_theme_font_size_override("font_size", 14)
+	name_edit.text_changed.connect(func(t: String): _sc_name = t)
+	vbox.add_child(name_edit)
+
+	# Domain
+	var dom_opt = OptionButton.new()
+	for dn in SC_DOMAIN_NAMES: dom_opt.add_item(dn)
+	dom_opt.selected = _sc_domain
+	dom_opt.item_selected.connect(func(i: int): _sc_domain = i; _sc_effect_idx = 0; _rebuild_spell_crafter())
+	vbox.add_child(_sc_row("Domain", dom_opt))
+
+	# Effect
+	var eff_opt = OptionButton.new()
+	var effs: Array = SC_DOMAIN_EFFECTS[_sc_domain] if _sc_domain < SC_DOMAIN_EFFECTS.size() else []
+	for ef in effs: eff_opt.add_item(ef[0])
+	eff_opt.selected = mini(_sc_effect_idx, max(0, effs.size() - 1))
+	eff_opt.item_selected.connect(func(i: int): _sc_effect_idx = i; _sc_update_preview())
+	vbox.add_child(_sc_row("Effect", eff_opt))
+
+	# Duration
+	var dur_opt = OptionButton.new()
+	for dl in SC_DURATION_LABELS: dur_opt.add_item(dl)
+	dur_opt.selected = _sc_duration_idx
+	dur_opt.item_selected.connect(func(i: int): _sc_duration_idx = i; _sc_update_preview())
+	vbox.add_child(_sc_row("Duration", dur_opt))
+
+	# Range
+	var rng_opt = OptionButton.new()
+	for rl in SC_RANGE_LABELS: rng_opt.add_item(rl)
+	rng_opt.selected = _sc_range_idx
+	rng_opt.item_selected.connect(func(i: int): _sc_range_idx = i; _sc_update_preview())
+	vbox.add_child(_sc_row("Range", rng_opt))
+
+	# Targets
+	var tgt_lbl = RimvaleUtils.label("Targets: %d" % _sc_targets, 12, RimvaleColors.TEXT_GRAY)
+	vbox.add_child(tgt_lbl)
+	var tgt_sl = HSlider.new(); tgt_sl.min_value = 1; tgt_sl.max_value = 10; tgt_sl.step = 1; tgt_sl.value = _sc_targets
+	tgt_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tgt_sl.value_changed.connect(func(v: float): _sc_targets = int(v); tgt_lbl.text = "Targets: %d" % _sc_targets; _sc_update_preview())
+	vbox.add_child(tgt_sl)
+
+	# Area
+	var area_opt = OptionButton.new()
+	for al in SC_AREA_LABELS: area_opt.add_item(al)
+	area_opt.selected = _sc_area_idx
+	area_opt.item_selected.connect(func(i: int): _sc_area_idx = i; _sc_update_preview())
+	vbox.add_child(_sc_row("Area", area_opt))
+
+	# Dice Count
+	var dc_lbl = RimvaleUtils.label("Dice Count: %d" % _sc_die_count, 12, RimvaleColors.TEXT_GRAY)
+	vbox.add_child(dc_lbl)
+	var dc_sl = HSlider.new(); dc_sl.min_value = 0; dc_sl.max_value = 10; dc_sl.step = 1; dc_sl.value = _sc_die_count
+	dc_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dc_sl.value_changed.connect(func(v: float): _sc_die_count = int(v); dc_lbl.text = "Dice Count: %d" % _sc_die_count; _sc_update_preview())
+	vbox.add_child(dc_sl)
+
+	# Die Type
+	vbox.add_child(RimvaleUtils.label("Die Type", 12, RimvaleColors.TEXT_GRAY))
+	var dt_row = HBoxContainer.new(); dt_row.add_theme_constant_override("separation", 6)
+	for di in range(SC_DIE_LABELS.size()):
+		var di_c: int = di
+		var col: Color = RimvaleColors.ACCENT if di == _sc_die_idx else RimvaleColors.TEXT_GRAY
+		var dbtn = RimvaleUtils.button(SC_DIE_LABELS[di], col, 30, 12)
+		dbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		dbtn.pressed.connect(func():
+			_sc_die_idx = di_c
+			for k in range(_sc_die_btns.size()):
+				_sc_die_btns[k].add_theme_color_override("font_color", RimvaleColors.ACCENT if k == _sc_die_idx else RimvaleColors.TEXT_GRAY)
+			_sc_update_preview()
+		)
+		_sc_die_btns.append(dbtn); dt_row.add_child(dbtn)
+	vbox.add_child(dt_row)
+
+	# Damage Type
+	var dmg_opt = OptionButton.new()
+	for dt in SC_DAMAGE_TYPES: dmg_opt.add_item(dt)
+	dmg_opt.selected = _sc_damage_type
+	dmg_opt.item_selected.connect(func(i: int): _sc_damage_type = i; _sc_update_preview())
+	vbox.add_child(_sc_row("Damage Type", dmg_opt))
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Flags
+	var fl_row = HBoxContainer.new(); fl_row.add_theme_constant_override("separation", 16)
+	var h_chk = CheckBox.new(); h_chk.text = "Healing Spell"; h_chk.button_pressed = _sc_is_healing
+	h_chk.add_theme_font_size_override("font_size", 12)
+	h_chk.toggled.connect(func(b: bool): _sc_is_healing = b; _sc_update_preview())
+	fl_row.add_child(h_chk)
+	var sv_chk = CheckBox.new(); sv_chk.text = "No Attack Roll\n(Target saves)"; sv_chk.button_pressed = _sc_is_saving_throw
+	sv_chk.add_theme_font_size_override("font_size", 12)
+	sv_chk.toggled.connect(func(b: bool): _sc_is_saving_throw = b; _sc_update_preview())
+	fl_row.add_child(sv_chk)
+	vbox.add_child(fl_row)
+	var tp_chk = CheckBox.new(); tp_chk.text = "Teleportation"; tp_chk.button_pressed = _sc_is_teleport
+	tp_chk.add_theme_font_size_override("font_size", 12)
+	tp_chk.toggled.connect(func(b: bool): _sc_is_teleport = b; _sc_update_preview())
+	vbox.add_child(tp_chk)
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Conditions
+	vbox.add_child(RimvaleUtils.label("Conditions", 14, RimvaleColors.TEXT_WHITE))
+	var cond_outer = HBoxContainer.new(); cond_outer.add_theme_constant_override("separation", 12)
+	vbox.add_child(cond_outer)
+
+	var ben_col = VBoxContainer.new(); ben_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ben_col.add_theme_constant_override("separation", 0); cond_outer.add_child(ben_col)
+	ben_col.add_child(RimvaleUtils.label("Beneficial", 11, Color(0.30, 0.69, 0.31)))
+	for cn in SC_COND_BENEFICIAL:
+		var cn_c: String = cn
+		var chk = CheckBox.new(); chk.text = cn; chk.button_pressed = cn in _sc_conditions
+		chk.add_theme_font_size_override("font_size", 11)
+		chk.toggled.connect(func(b: bool):
+			if b:
+				if cn_c not in _sc_conditions: _sc_conditions.append(cn_c)
+			else: _sc_conditions.erase(cn_c)
+			_sc_update_preview()
+		)
+		ben_col.add_child(chk)
+
+	var harm_col = VBoxContainer.new(); harm_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	harm_col.add_theme_constant_override("separation", 0); cond_outer.add_child(harm_col)
+	harm_col.add_child(RimvaleUtils.label("Harmful", 11, Color(0.90, 0.40, 0.40)))
+	for cn in SC_COND_HARMFUL:
+		var cn_c: String = cn
+		var chk = CheckBox.new(); chk.text = cn; chk.button_pressed = cn in _sc_conditions
+		chk.add_theme_font_size_override("font_size", 11)
+		chk.toggled.connect(func(b: bool):
+			if b:
+				if cn_c not in _sc_conditions: _sc_conditions.append(cn_c)
+			else: _sc_conditions.erase(cn_c)
+			_sc_update_preview()
+		)
+		harm_col.add_child(chk)
+
+	vbox.add_child(RimvaleUtils.spacer(6))
+
+	# Preview card
+	var card = PanelContainer.new(); card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var cs = StyleBoxFlat.new(); cs.bg_color = Color(0.14, 0.12, 0.22)
+	cs.corner_radius_top_left = 8; cs.corner_radius_top_right = 8
+	cs.corner_radius_bottom_left = 8; cs.corner_radius_bottom_right = 8
+	cs.content_margin_left = 14; cs.content_margin_right = 14
+	cs.content_margin_top = 12; cs.content_margin_bottom = 12
+	card.add_theme_stylebox_override("panel", cs)
+	vbox.add_child(card)
+
+	var cv = VBoxContainer.new(); cv.add_theme_constant_override("separation", 4)
+	card.add_child(cv)
+
+	_sc_cost_lbl = RimvaleUtils.label("Total SP Cost: —", 18, Color(0.74, 0.40, 1.0))
+	cv.add_child(_sc_cost_lbl)
+	_sc_breakdown_lbl = RimvaleUtils.label("", 10, RimvaleColors.TEXT_DIM)
+	cv.add_child(_sc_breakdown_lbl)
+	cv.add_child(RimvaleUtils.label("Description:", 12, RimvaleColors.TEXT_WHITE))
+	_sc_desc_lbl = RimvaleUtils.label("", 11, Color(0.70, 0.75, 0.85))
+	_sc_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cv.add_child(_sc_desc_lbl)
+	_sc_update_preview()
+
+	cv.add_child(RimvaleUtils.spacer(6))
+
+	# Register button
+	var reg_btn = RimvaleUtils.button("Register Custom Spell", Color(0.35, 0.28, 0.65), 44, 14)
+	reg_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reg_btn.pressed.connect(_sc_register_spell)
+	cv.add_child(reg_btn)
+
+func _rebuild_spell_crafter() -> void:
+	if is_instance_valid(_sc_overlay):
+		_sc_overlay.queue_free(); _sc_overlay = null
+	_open_spell_crafter()
+
+func _sc_register_spell() -> void:
+	var sname: String = _sc_name.strip_edges()
+	if sname.is_empty():
+		_add_log("[color=red]Enter a spell name first.[/color]")
+		return
+	var cost: int = _sc_calc_cost()
+	var die_sides: int = [4,6,8,10,12][_sc_die_idx]
+	var dur_rounds: int = SC_DURATION_ROUNDS[_sc_duration_idx]
+	var cond_csv: String = ",".join(_sc_conditions)
+	_e.add_custom_spell(
+		sname, _sc_domain, cost, _sc_description(),
+		_sc_range_idx, not _sc_is_saving_throw,
+		_sc_die_count, die_sides, _sc_damage_type,
+		_sc_is_healing, dur_rounds, _sc_targets,
+		_sc_area_idx, cond_csv, _sc_is_teleport
+	)
+	# Learn it for the currently selected unit
+	if _selected_id != "":
+		var ent = _get_entity(_selected_id)
+		var h: int = int(ent.get("handle", -1))
+		if h >= 0: _e.learn_spell(h, sname)
+	var display_cost: int = 0 if _sc_is_teleport else cost
+	_add_log("[color=#bd66ff]%s registered and learned: %s (%d SP)[/color]" % [sname, _sc_description().left(60), display_cost])
+	_sc_name = ""
+	if is_instance_valid(_sc_overlay): _sc_overlay.queue_free(); _sc_overlay = null
+	_populate_action_columns()
+
+func _sc_row(label_text: String, ctrl: Control) -> HBoxContainer:
+	var row = HBoxContainer.new(); row.add_theme_constant_override("separation", 8)
+	var lbl = RimvaleUtils.label(label_text, 12, RimvaleColors.TEXT_GRAY)
+	lbl.custom_minimum_size = Vector2(100, 0)
+	row.add_child(lbl)
+	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(ctrl)
+	return row

@@ -275,6 +275,21 @@ func _build_stats_section(parent: VBoxContainer) -> void:
 	wipe_btn.pressed.connect(_on_wipe_pressed)
 	parent.add_child(wipe_btn)
 
+	parent.add_child(RimvaleUtils.spacer(8))
+
+	# Exit to Main Menu — saves and returns to title screen
+	var menu_btn = RimvaleUtils.button("Exit to Main Menu", RimvaleColors.TEXT_LIGHT, 60, 12)
+	menu_btn.pressed.connect(func():
+		var main_node = get_tree().current_scene
+		if main_node and main_node.has_method("exit_to_title"):
+			main_node.exit_to_title()
+		else:
+			GameState.save_game()
+			GameState.reset_loaded_flag()
+			get_tree().change_scene_to_file("res://scenes/title/title_screen.tscn")
+	)
+	parent.add_child(menu_btn)
+
 # ── Dev Tools ────────────────────────────────────────────────────────────────
 
 func _build_devtools_section(parent: VBoxContainer) -> void:

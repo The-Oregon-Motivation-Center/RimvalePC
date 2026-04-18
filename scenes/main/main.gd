@@ -4,15 +4,16 @@
 
 extends Control
 
-const NAV_HEIGHT := 72
-const TAB_SCENES := [
+const TITLE_SCENE := "res://scenes/title/title_screen.tscn"
+const NAV_HEIGHT = 72
+const TAB_SCENES = [
 	"res://scenes/team/team.tscn",
 	"res://scenes/world/world.tscn",
 	"res://scenes/shop/shop.tscn",
 	"res://scenes/codex/codex.tscn",
 	"res://scenes/profile/profile.tscn",
 ]
-const TAB_LABELS := ["⚔ Units", "🌍 World", "🛒 Shop", "📖 Codex", "👤 Profile"]
+const TAB_LABELS = ["⚔ Units", "🌍 World", "🛒 Shop", "📖 Codex", "👤 Profile"]
 
 var _content_area: Control
 var _tab_buttons: Array = []
@@ -20,16 +21,22 @@ var _current_scene: Node = null
 var _nav_bar: Control
 
 # Screens that hide the nav bar (full-screen takeover)
-var _hide_nav_scenes := [
+var _hide_nav_scenes = [
 	"res://scenes/level_up/level_up.tscn",
 	"res://scenes/inventory/inventory.tscn",
 	"res://scenes/combat/combat.tscn",
 	"res://scenes/character_creation/character_creation.tscn",
+	"res://scenes/dungeon/dungeon.tscn",
+	"res://scenes/explore/explore.tscn",
 ]
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
+	# Safety net: if launched directly from editor (not via title screen),
+	# make sure the game state is initialised.
+	GameState.ensure_init()
+
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	RimvaleUtils.add_bg(self, RimvaleColors.BG_DARK)
 
@@ -49,37 +56,37 @@ func _ready() -> void:
 # ── Nav bar ───────────────────────────────────────────────────────────────────
 
 func _build_nav_bar() -> Control:
-	var bar := Control.new()
+	var bar = Control.new()
 	bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	bar.custom_minimum_size = Vector2(0, NAV_HEIGHT)
 	bar.offset_top = -NAV_HEIGHT
 
-	var bg := ColorRect.new()
+	var bg = ColorRect.new()
 	bg.color = RimvaleColors.BG_NAV
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bar.add_child(bg)
 
 	# Top border line
-	var line := ColorRect.new()
+	var line = ColorRect.new()
 	line.color = RimvaleColors.DIVIDER
 	line.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	line.custom_minimum_size = Vector2(0, 1)
 	bar.add_child(line)
 
-	var hbox := HBoxContainer.new()
+	var hbox = HBoxContainer.new()
 	hbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hbox.add_theme_constant_override("separation", 0)
 	bar.add_child(hbox)
 
 	for i in range(TAB_LABELS.size()):
-		var btn := _make_tab_button(TAB_LABELS[i], i)
+		var btn = _make_tab_button(TAB_LABELS[i], i)
 		_tab_buttons.append(btn)
 		hbox.add_child(btn)
 
 	return bar
 
 func _make_tab_button(label_txt: String, idx: int) -> Button:
-	var btn := Button.new()
+	var btn = Button.new()
 	btn.text = label_txt
 	btn.flat = true
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -121,8 +128,8 @@ func _load_scene(path: String) -> void:
 	_content_area.add_child(_current_scene)
 
 	# Show/hide nav bar
-	var hide := path in _hide_nav_scenes
-	_nav_bar.visible = !hide
+	var hide_nav: bool = path in _hide_nav_scenes
+	_nav_bar.visible = not hide_nav
 
 # ── Public API (called by child scenes to navigate) ──────────────────────────
 
@@ -138,3 +145,9 @@ func pop_screen() -> void:
 ## Switch to a specific tab by index.
 func go_to_tab(idx: int) -> void:
 	_switch_tab(idx)
+
+## Save and return to the title / main menu screen.
+func exit_to_title() -> void:
+	GameState.save_game()
+	GameState.reset_loaded_flag()
+	get_tree().change_scene_to_file(TITLE_SCENE)

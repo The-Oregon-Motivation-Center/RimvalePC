@@ -6,7 +6,7 @@ extends Control
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
-var _e: RimvaleEngine
+var _e
 var _handle: int = -1
 var _active_tab: int = 0       # 0=Inventory  1=Stash
 var _inv_filter: String = "All"
@@ -38,42 +38,42 @@ func _ready() -> void:
 # ── UI Construction ───────────────────────────────────────────────────────────
 
 func _build_ui() -> void:
-	var root := VBoxContainer.new()
+	var root = VBoxContainer.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.add_theme_constant_override("separation", 0)
 	add_child(root)
 
 	# ── Header ──
-	var hdr := ColorRect.new()
+	var hdr = ColorRect.new()
 	hdr.color = RimvaleColors.BG_CARD
 	hdr.custom_minimum_size = Vector2(0, 60)
 	root.add_child(hdr)
 
-	var hmgn := MarginContainer.new()
+	var hmgn = MarginContainer.new()
 	hmgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for s in ["left", "right", "top", "bottom"]:
 		hmgn.add_theme_constant_override("margin_" + s, 12)
 	hdr.add_child(hmgn)
 
-	var hrow := HBoxContainer.new()
+	var hrow = HBoxContainer.new()
 	hrow.add_theme_constant_override("separation", 12)
 	hmgn.add_child(hrow)
 
 	var char_name: String = str(_e.get_character_name(_handle)) if _handle != -1 else "No Hero"
 	hrow.add_child(RimvaleUtils.label("🎒 Gear — " + char_name, 20, RimvaleColors.ACCENT))
 
-	var gold_lbl := RimvaleUtils.label("💰 %d GP" % GameState.gold, 15, RimvaleColors.GOLD)
+	var gold_lbl = RimvaleUtils.label("💰 %d GP" % GameState.gold, 15, RimvaleColors.GOLD)
 	gold_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hrow.add_child(gold_lbl)
 
-	var back_btn := RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 40, 13)
+	var back_btn = RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 40, 13)
 	back_btn.pressed.connect(func():
 		get_parent().get_parent().pop_screen()
 	)
 	hrow.add_child(back_btn)
 
 	# ── Equipped slots ──
-	var eq_mgn := MarginContainer.new()
+	var eq_mgn = MarginContainer.new()
 	for s in ["left", "right"]:
 		eq_mgn.add_theme_constant_override("margin_" + s, 12)
 	eq_mgn.add_theme_constant_override("margin_top", 10)
@@ -86,13 +86,13 @@ func _build_ui() -> void:
 	_refresh_equipped()
 
 	# ── Tabs ──
-	var tab_row := HBoxContainer.new()
+	var tab_row = HBoxContainer.new()
 	tab_row.add_theme_constant_override("separation", 0)
 	root.add_child(tab_row)
 	for ti in range(2):
 		var ti_cap: int = ti
 		var tlabel: String = "Inventory" if ti == 0 else "Stash"
-		var tbtn := RimvaleUtils.button(tlabel,
+		var tbtn = RimvaleUtils.button(tlabel,
 			RimvaleColors.ACCENT if ti == _active_tab else RimvaleColors.TEXT_GRAY, 42, 14)
 		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tbtn.pressed.connect(func():
@@ -107,14 +107,14 @@ func _build_ui() -> void:
 		tab_row.add_child(tbtn)
 
 	# ── Category filter row ──
-	var filter_scroll := ScrollContainer.new()
+	var filter_scroll = ScrollContainer.new()
 	filter_scroll.custom_minimum_size = Vector2(0, 36)
 	filter_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	root.add_child(filter_scroll)
 
 	_filter_hbox = HBoxContainer.new()
 	_filter_hbox.add_theme_constant_override("separation", 8)
-	var filter_mgn := MarginContainer.new()
+	var filter_mgn = MarginContainer.new()
 	for s in ["left", "right"]:
 		filter_mgn.add_theme_constant_override("margin_" + s, 12)
 	filter_scroll.add_child(filter_mgn)
@@ -122,12 +122,12 @@ func _build_ui() -> void:
 	_rebuild_filter_chips()
 
 	# ── Item list ──
-	var scroll := ScrollContainer.new()
+	var scroll = ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	root.add_child(scroll)
 
-	var list_mgn := MarginContainer.new()
+	var list_mgn = MarginContainer.new()
 	for s in ["left", "right"]:
 		list_mgn.add_theme_constant_override("margin_" + s, 12)
 	list_mgn.add_theme_constant_override("margin_top", 4)
@@ -143,12 +143,12 @@ func _build_ui() -> void:
 	_rebuild_items()
 
 	# ── Open Market button ──
-	var shop_mgn := MarginContainer.new()
+	var shop_mgn = MarginContainer.new()
 	for s in ["left", "right", "bottom"]:
 		shop_mgn.add_theme_constant_override("margin_" + s, 12)
 	root.add_child(shop_mgn)
 
-	var shop_btn := RimvaleUtils.button("🛒 Open Market", RimvaleColors.GOLD, 48, 15)
+	var shop_btn = RimvaleUtils.button("🛒 Open Market", RimvaleColors.GOLD, 48, 15)
 	shop_btn.pressed.connect(func(): _show_shop_dialog())
 	shop_mgn.add_child(shop_btn)
 
@@ -166,7 +166,7 @@ func _refresh_equipped() -> void:
 	var armor: String  = str(_e.get_equipped_armor(_handle))
 	var shield: String = str(_e.get_equipped_shield(_handle))
 
-	var slots_data := [
+	var slots_data = [
 		["⚔ Weapon", weapon, 0],
 		["🛡 Armor",  armor,  1],
 		["🔰 Shield", shield, 2]
@@ -177,18 +177,18 @@ func _refresh_equipped() -> void:
 		var item_name: String = sd[1]
 		var slot_idx: int = sd[2]
 
-		var card := ColorRect.new()
+		var card = ColorRect.new()
 		card.color = Color(0.10, 0.14, 0.20, 1.0)
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card.custom_minimum_size = Vector2(0, 66)
 
-		var cmgn := MarginContainer.new()
+		var cmgn = MarginContainer.new()
 		cmgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		for s in ["left", "right", "top", "bottom"]:
 			cmgn.add_theme_constant_override("margin_" + s, 8)
 		card.add_child(cmgn)
 
-		var cvbox := VBoxContainer.new()
+		var cvbox = VBoxContainer.new()
 		cvbox.add_theme_constant_override("separation", 3)
 		cmgn.add_child(cvbox)
 
@@ -202,7 +202,7 @@ func _refresh_equipped() -> void:
 
 		if not is_empty:
 			var si_cap: int = slot_idx
-			var x_btn := RimvaleUtils.button("✕", RimvaleColors.DANGER, 22, 10)
+			var x_btn = RimvaleUtils.button("✕", RimvaleColors.DANGER, 22, 10)
 			x_btn.pressed.connect(func():
 				_e.unequip_item(_handle, si_cap)
 				_refresh_equipped()
@@ -221,7 +221,7 @@ func _rebuild_filter_chips() -> void:
 	for cat in ["All", "Weapons", "Armor", "Magic", "Misc"]:
 		var cat_cap: String = cat
 		var cc: Color = RimvaleColors.ACCENT if cat == active_filter else RimvaleColors.TEXT_GRAY
-		var chip := RimvaleUtils.button(cat, cc, 30, 12)
+		var chip = RimvaleUtils.button(cat, cc, 30, 12)
 		chip.pressed.connect(func():
 			if _active_tab == 0: _inv_filter = cat_cap
 			else: _stash_filter = cat_cap
@@ -244,7 +244,7 @@ func _rebuild_items() -> void:
 		_build_stash_items()
 
 func _build_inventory_items() -> void:
-	var items_raw := _e.get_inventory_items(_handle)
+	var items_raw = _e.get_inventory_items(_handle)
 
 	# Separate magical / mundane for "All" or "Magic" filter display
 	var magical_items: Array = []
@@ -252,7 +252,7 @@ func _build_inventory_items() -> void:
 
 	for item_raw in items_raw:
 		var item_name: String = str(item_raw)
-		var details_raw := _e.get_item_details(_handle, item_name)
+		var details_raw = _e.get_item_details(_handle, item_name)
 		var rarity: String = str(details_raw[0]) if details_raw.size() > 0 else "Mundane"
 		var cur_hp: int = int(str(details_raw[1])) if details_raw.size() > 1 else 0
 		var max_hp: int = int(str(details_raw[2])) if details_raw.size() > 2 else 0
@@ -263,7 +263,7 @@ func _build_inventory_items() -> void:
 			desc = str(details_raw[details_raw.size() - 1])
 		var is_magical: bool = rarity != "Mundane"
 
-		var item_data := {
+		var item_data = {
 			"name": item_name,
 			"rarity": rarity,
 			"cur_hp": cur_hp,
@@ -316,27 +316,27 @@ func _build_item_row(d: Dictionary) -> Control:
 	var is_magical: bool = d["magical"]
 	var rarity_col: Color = _rarity_color(rarity)
 
-	var card := ColorRect.new()
+	var card = ColorRect.new()
 	card.color = Color(rarity_col, 0.05) if is_magical else Color(0.10, 0.10, 0.14, 1.0)
 	card.custom_minimum_size = Vector2(0, 0)
 
-	var mgn := MarginContainer.new()
+	var mgn = MarginContainer.new()
 	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for s in ["left", "right", "top", "bottom"]:
 		mgn.add_theme_constant_override("margin_" + s, 10)
 	card.add_child(mgn)
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 4)
 	mgn.add_child(vbox)
 
 	# Title row
-	var title_row := HBoxContainer.new()
+	var title_row = HBoxContainer.new()
 	title_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(title_row)
 
 	var name_prefix: String = "✦ " if is_magical else ""
-	var name_lbl := RimvaleUtils.label(name_prefix + item_name, 14,
+	var name_lbl = RimvaleUtils.label(name_prefix + item_name, 14,
 		rarity_col if is_magical else RimvaleColors.TEXT_WHITE)
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_row.add_child(name_lbl)
@@ -344,7 +344,7 @@ func _build_item_row(d: Dictionary) -> Control:
 	# Action buttons
 	var in_cap: String = item_name
 	if item_type == "Consumable":
-		var use_btn := RimvaleUtils.button("Use", RimvaleColors.SUCCESS, 32, 12)
+		var use_btn = RimvaleUtils.button("Use", RimvaleColors.SUCCESS, 32, 12)
 		use_btn.pressed.connect(func():
 			_e.use_consumable(_handle, in_cap)
 			_refresh_equipped()
@@ -352,7 +352,7 @@ func _build_item_row(d: Dictionary) -> Control:
 		)
 		title_row.add_child(use_btn)
 	elif item_type != "General" and item_type != "Consumable":
-		var eq_btn := RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 32, 12)
+		var eq_btn = RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 32, 12)
 		eq_btn.pressed.connect(func():
 			_e.equip_item(_handle, in_cap)
 			_refresh_equipped()
@@ -360,12 +360,12 @@ func _build_item_row(d: Dictionary) -> Control:
 		)
 		title_row.add_child(eq_btn)
 
-	var transfer_btn := RimvaleUtils.button("→", RimvaleColors.TEXT_GRAY, 32, 12)
+	var transfer_btn = RimvaleUtils.button("→", RimvaleColors.TEXT_GRAY, 32, 12)
 	transfer_btn.custom_minimum_size = Vector2(30, 0)
 	transfer_btn.pressed.connect(func(): _show_transfer_dialog(in_cap))
 	title_row.add_child(transfer_btn)
 
-	var stash_btn := RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 32, 12)
+	var stash_btn = RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 32, 12)
 	stash_btn.pressed.connect(func():
 		_e.remove_item_from_inventory(_handle, in_cap)
 		GameState.add_to_stash(in_cap)
@@ -374,7 +374,7 @@ func _build_item_row(d: Dictionary) -> Control:
 	title_row.add_child(stash_btn)
 
 	# Info row
-	var info_row := HBoxContainer.new()
+	var info_row = HBoxContainer.new()
 	info_row.add_theme_constant_override("separation", 12)
 	vbox.add_child(info_row)
 
@@ -388,7 +388,7 @@ func _build_item_row(d: Dictionary) -> Control:
 
 	# Description (collapsible-like: show if short)
 	if not desc.is_empty() and desc.length() < 200:
-		var desc_lbl := RimvaleUtils.label(desc, 11, RimvaleColors.TEXT_GRAY)
+		var desc_lbl = RimvaleUtils.label(desc, 11, RimvaleColors.TEXT_GRAY)
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		vbox.add_child(desc_lbl)
 
@@ -401,7 +401,7 @@ func _build_stash_items() -> void:
 
 	var any_shown: bool = false
 	for item_name in GameState.stash:
-		var details_raw := _e.get_registry_item_details(item_name)
+		var details_raw = _e.get_registry_item_details(item_name)
 		var item_type: String = str(details_raw[4]) if details_raw.size() > 4 else "General"
 		var rarity: String = str(details_raw[0]) if details_raw.size() > 0 else "Mundane"
 		var is_magical: bool = rarity != "Mundane"
@@ -419,19 +419,19 @@ func _build_stash_items() -> void:
 		any_shown = true
 		var in_cap: String = item_name
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 46)
 		_item_list.add_child(row)
 
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
 		info.add_child(RimvaleUtils.label(item_name, 14, RimvaleColors.TEXT_WHITE))
 		info.add_child(RimvaleUtils.label(item_type, 10, RimvaleColors.TEXT_DIM))
 
-		var take_btn := RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 36, 12)
+		var take_btn = RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 36, 12)
 		take_btn.pressed.connect(func():
 			GameState.remove_from_stash(in_cap)
 			_e.add_item_to_inventory(_handle, in_cap)
@@ -445,11 +445,11 @@ func _build_stash_items() -> void:
 # ── Transfer Dialog ───────────────────────────────────────────────────────────
 
 func _show_transfer_dialog(item_name: String) -> void:
-	var dialog := AcceptDialog.new()
+	var dialog = AcceptDialog.new()
 	dialog.title = "Transfer " + item_name
 	dialog.get_ok_button().text = "Cancel"
 
-	var vbox := VBoxContainer.new()
+	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 6)
 	dialog.add_child(vbox)
 	vbox.add_child(RimvaleUtils.label("Select an agent to receive this item:", 13, RimvaleColors.TEXT_GRAY))
@@ -463,7 +463,7 @@ func _show_transfer_dialog(item_name: String) -> void:
 
 		var h_cap: int = h
 		var in_cap: String = item_name
-		var row_btn := RimvaleUtils.button("%s  (%s Lv %d)" % [target_name, lin, lv],
+		var row_btn = RimvaleUtils.button("%s  (%s Lv %d)" % [target_name, lin, lv],
 			RimvaleColors.TEXT_WHITE, 44, 13)
 		row_btn.pressed.connect(func():
 			_e.remove_item_from_inventory(_handle, in_cap)
@@ -490,19 +490,19 @@ func _show_shop_dialog() -> void:
 	_shop_dialog.get_ok_button().text = "Done"
 	_shop_dialog.min_size = Vector2i(420, 540)
 
-	var outer := VBoxContainer.new()
+	var outer = VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 8)
 	_shop_dialog.add_child(outer)
 
 	# Buy / Sell tab bar
-	var tab_row := HBoxContainer.new()
+	var tab_row = HBoxContainer.new()
 	tab_row.add_theme_constant_override("separation", 0)
 	outer.add_child(tab_row)
 
 	for ti in range(2):
 		var ti_cap: int = ti
 		var tl: String = "Buy" if ti == 0 else "Sell"
-		var tbtn := RimvaleUtils.button(tl,
+		var tbtn = RimvaleUtils.button(tl,
 			RimvaleColors.ACCENT if ti == 0 else RimvaleColors.TEXT_GRAY, 40, 13)
 		tbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tbtn.pressed.connect(func(): _shop_switch_tab(ti_cap))
@@ -536,19 +536,19 @@ func _shop_rebuild() -> void:
 
 func _shop_rebuild_buy() -> void:
 	# Category filter chips
-	var cat_scroll := ScrollContainer.new()
+	var cat_scroll = ScrollContainer.new()
 	cat_scroll.custom_minimum_size = Vector2(0, 34)
 	cat_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_shop_content.add_child(cat_scroll)
 
-	var cat_row := HBoxContainer.new()
+	var cat_row = HBoxContainer.new()
 	cat_row.add_theme_constant_override("separation", 6)
 	cat_scroll.add_child(cat_row)
 
 	for cat_n in ["Weapons", "Armor", "Magic", "Misc"]:
 		var cn_cap: String = cat_n
 		var cc: Color = RimvaleColors.ACCENT if cat_n == _shop_buy_cat else RimvaleColors.TEXT_GRAY
-		var chip := RimvaleUtils.button(cat_n, cc, 30, 11)
+		var chip = RimvaleUtils.button(cat_n, cc, 30, 11)
 		chip.pressed.connect(func():
 			_shop_buy_cat = cn_cap
 			_shop_rebuild()
@@ -556,17 +556,17 @@ func _shop_rebuild_buy() -> void:
 		cat_row.add_child(chip)
 
 	# Item list
-	var item_scroll := ScrollContainer.new()
+	var item_scroll = ScrollContainer.new()
 	item_scroll.custom_minimum_size = Vector2(0, 340)
 	item_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_shop_content.add_child(item_scroll)
 
-	var item_vbox := VBoxContainer.new()
+	var item_vbox = VBoxContainer.new()
 	item_vbox.add_theme_constant_override("separation", 2)
 	item_scroll.add_child(item_vbox)
 
-	var mundane_raw := _e.get_all_registry_mundane_items()
-	var magic_raw   := _e.get_all_registry_magic_items()
+	var mundane_raw = _e.get_all_registry_mundane_items()
+	var magic_raw = _e.get_all_registry_magic_items()
 
 	var combined: Array = []
 	for n in mundane_raw:
@@ -579,7 +579,7 @@ func _shop_rebuild_buy() -> void:
 	for entry in combined:
 		var iname: String   = entry[0]
 		var imagical: bool  = entry[1]
-		var det             := _e.get_registry_item_details(iname)
+		var det = _e.get_registry_item_details(iname)
 		var icost: int      = int(str(det[3])) if det.size() > 3 else 0
 		var itype: String   = str(det[4]) if det.size() > 4 else "General"
 		var idesc: String   = str(det[det.size() - 1]) if det.size() > 5 else ""
@@ -598,12 +598,12 @@ func _shop_rebuild_buy() -> void:
 		var ic_cap: int     = icost
 		var dc_cap: String  = idesc
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 44)
 		item_vbox.add_child(row)
 
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
@@ -613,7 +613,7 @@ func _shop_rebuild_buy() -> void:
 			sub += "  ·  " + dc_cap.left(48)
 		info.add_child(RimvaleUtils.label(sub, 10, RimvaleColors.TEXT_DIM))
 
-		var buy_btn := RimvaleUtils.button("Buy", RimvaleColors.GOLD, 34, 12)
+		var buy_btn = RimvaleUtils.button("Buy", RimvaleColors.GOLD, 34, 12)
 		buy_btn.pressed.connect(func():
 			if GameState.spend_gold(ic_cap):
 				GameState.add_to_stash(in_cap)
@@ -627,12 +627,12 @@ func _shop_rebuild_buy() -> void:
 		item_vbox.add_child(RimvaleUtils.label("Nothing available in this category.", 13, RimvaleColors.TEXT_DIM))
 
 func _shop_rebuild_sell() -> void:
-	var sell_scroll := ScrollContainer.new()
+	var sell_scroll = ScrollContainer.new()
 	sell_scroll.custom_minimum_size = Vector2(0, 380)
 	sell_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_shop_content.add_child(sell_scroll)
 
-	var sell_vbox := VBoxContainer.new()
+	var sell_vbox = VBoxContainer.new()
 	sell_vbox.add_theme_constant_override("separation", 2)
 	sell_scroll.add_child(sell_vbox)
 
@@ -641,26 +641,26 @@ func _shop_rebuild_sell() -> void:
 		return
 
 	for item_n in GameState.stash:
-		var det      := _e.get_registry_item_details(item_n)
+		var det = _e.get_registry_item_details(item_n)
 		var cost_val: int = int(str(det[3])) if det.size() > 3 else 0
 		var sell_val: int = cost_val / 2
 
 		var in_cap: String = item_n
 		var sv_cap: int    = sell_val
 
-		var row := HBoxContainer.new()
+		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		row.custom_minimum_size = Vector2(0, 44)
 		sell_vbox.add_child(row)
 
-		var info := VBoxContainer.new()
+		var info = VBoxContainer.new()
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
 		info.add_child(RimvaleUtils.label(in_cap, 13, RimvaleColors.TEXT_WHITE))
 		info.add_child(RimvaleUtils.label("Sell value: %d GP" % sv_cap, 10, RimvaleColors.GOLD))
 
-		var sell_btn := RimvaleUtils.button("Sell", RimvaleColors.DANGER, 34, 12)
+		var sell_btn = RimvaleUtils.button("Sell", RimvaleColors.DANGER, 34, 12)
 		sell_btn.pressed.connect(func():
 			GameState.remove_from_stash(in_cap)
 			GameState.earn_gold(sv_cap)
