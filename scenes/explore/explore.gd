@@ -1681,21 +1681,37 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _player_moving:
 		return  # ignore input during movement animation
 	if event is InputEventKey and event.pressed and not event.echo:
-		var dir := Vector2i.ZERO
+		var raw_dir := Vector2.ZERO
 		match event.keycode:
-			KEY_W, KEY_UP:    dir = Vector2i(0, -1)
-			KEY_S, KEY_DOWN:  dir = Vector2i(0,  1)
-			KEY_A, KEY_LEFT:  dir = Vector2i(-1, 0)
-			KEY_D, KEY_RIGHT: dir = Vector2i( 1, 0)
+			KEY_W, KEY_UP:    raw_dir = Vector2(0, -1)   # "forward"
+			KEY_S, KEY_DOWN:  raw_dir = Vector2(0,  1)   # "backward"
+			KEY_A, KEY_LEFT:  raw_dir = Vector2(-1, 0)   # "strafe left"
+			KEY_D, KEY_RIGHT: raw_dir = Vector2( 1, 0)   # "strafe right"
 			KEY_HOME:
 				_cam_yaw = 0.0
 				_cam_pitch = 40.0
 				_cam_dist = 10.0
-		if dir != Vector2i.ZERO:
-			_try_move(dir)
+		if raw_dir != Vector2.ZERO:
+			var dir: Vector2i = _camera_relative_dir(raw_dir)
+			if dir != Vector2i.ZERO:
+				_try_move(dir)
 			var vp := get_viewport()
 			if vp != null:
 				vp.set_input_as_handled()
+
+## Convert a raw input direction into a grid direction relative to camera yaw.
+## Camera yaw 0° means camera looks from +Z toward origin (south-facing),
+## so "forward" (0,-1) maps to grid north. As yaw rotates, directions rotate too.
+func _camera_relative_dir(raw: Vector2) -> Vector2i:
+	var yaw_rad: float = deg_to_rad(-_cam_yaw)
+	# Rotate the input vector by negative camera yaw so "forward" follows the camera
+	var rotated_x: float = raw.x * cos(yaw_rad) - raw.y * sin(yaw_rad)
+	var rotated_y: float = raw.x * sin(yaw_rad) + raw.y * cos(yaw_rad)
+	# Snap to the strongest cardinal direction (only one axis moves at a time on a grid)
+	if absf(rotated_x) >= absf(rotated_y):
+		return Vector2i(1 if rotated_x > 0 else -1, 0)
+	else:
+		return Vector2i(0, 1 if rotated_y > 0 else -1)
 
 func _on_3d_input(event: InputEvent) -> void:
 	# Camera rotation via right-mouse drag

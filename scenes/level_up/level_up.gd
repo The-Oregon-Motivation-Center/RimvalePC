@@ -494,7 +494,7 @@ func _build_skills(parent: VBoxContainer) -> void:
 		# Skill name
 		var name_lbl = RimvaleUtils.label(skill_name, 14,
 			Color(0.91, 0.12, 0.39) if is_fav else RimvaleColors.TEXT_WHITE)
-		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.custom_minimum_size = Vector2(140, 0)
 		row.add_child(name_lbl)
 
 		# Value label
@@ -519,6 +519,11 @@ func _build_skills(parent: VBoxContainer) -> void:
 		plus_btn.custom_minimum_size = Vector2(34, 0)
 		plus_btn.pressed.connect(func(): _increment_skill(skill_name, skill_idx))
 		row.add_child(plus_btn)
+
+		# Push remaining space to the right (keeps controls compact on the left)
+		var row_spacer = Control.new()
+		row_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(row_spacer)
 
 func _increment_skill(skill_name: String, skill_idx: int) -> void:
 	var pending: int = _pending_skills.get(skill_name, 0)

@@ -426,38 +426,10 @@ func ensure_init() -> void:
 func reset_loaded_flag() -> void:
 	_game_loaded = false
 
-## Creates two default units if the collection is empty.
+## No default starter units — the game begins with the 10-token selection.
 ## Called deferred from _ready and also at the end of wipe_all.
 func _ensure_starter_units() -> void:
-	if collection.size() > 0:
-		return
-	var e = RimvaleAPI.engine
-
-	# Unit 1 — Kael, a balanced Human fighter
-	var h1: int = e.create_character("Kael", "Human", 28)
-	var c1 = e.get_char_dict(h1)
-	if c1 != null:
-		c1["hp"]     = 25
-		c1["max_hp"] = 25
-		c1["ac"]     = 13
-		c1["speed"]  = 6
-	e.equip_item(h1, "Longsword")
-	e.equip_item(h1, "Leather Armor")
-	add_to_collection(h1)
-	set_team_slot(0, h1)
-
-	# Unit 2 — Sylara, a nimble Elf archer
-	var h2: int = e.create_character("Sylara", "Elf", 24)
-	var c2 = e.get_char_dict(h2)
-	if c2 != null:
-		c2["hp"]     = 20
-		c2["max_hp"] = 20
-		c2["ac"]     = 12
-		c2["speed"]  = 7
-	e.equip_item(h2, "Shortbow")
-	e.equip_item(h2, "Leather Armor")
-	add_to_collection(h2)
-	set_team_slot(1, h2)
+	pass
 
 func add_to_collection(handle: int) -> void:
 	if handle not in collection:
