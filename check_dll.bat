@@ -4,9 +4,17 @@ echo ============================================================
 echo  Rimvale DLL Load Diagnostic
 echo ============================================================
 echo.
+setlocal
 
-set DLL=C:\Users\Acata\RimvaleGodot\addons\rimvale_engine\bin\Debug\librimvale_engine.windows.debug.x86_64.dll
-set DUMPBIN="C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.50.35717\bin\Hostx64\x64\dumpbin.exe"
+set PROJECT=%~dp0
+set PROJECT=%PROJECT:~0,-1%
+set DLL=%PROJECT%\addons\rimvale_engine\bin\Debug\librimvale_engine.windows.debug.x86_64.dll
+
+rem Try to find dumpbin via vswhere
+set DUMPBIN=
+for /f "tokens=*" %%i in ('"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath 2^>nul') do (
+    for /f "tokens=*" %%d in ('dir /s /b "%%i\dumpbin.exe" 2^>nul ^| findstr "Hostx64\\x64"') do set DUMPBIN="%%d"
+)
 
 echo [1] Checking DLL exists...
 if exist "%DLL%" (
@@ -19,9 +27,10 @@ if exist "%DLL%" (
 echo.
 
 echo [2] DLL Dependencies (dumpbin):
-%DUMPBIN% /dependents "%DLL%" 2>nul
-if %ERRORLEVEL% NEQ 0 (
-    echo     dumpbin not available at expected path, trying PowerShell...
+if defined DUMPBIN (
+    %DUMPBIN% /dependents "%DLL%" 2>nul
+) else (
+    echo     dumpbin not available, trying PowerShell...
     powershell -Command "& { $bytes = [System.IO.File]::ReadAllBytes('%DLL%'); Write-Host 'DLL size:' $bytes.Length 'bytes' }"
 )
 echo.

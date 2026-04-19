@@ -1,9 +1,28 @@
 @echo off
 title Rimvale - Dump API + Rebuild
-set GODOT=C:\Users\Acata\Documents\Lumen movies\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64.exe
-set PROJECT=C:\Users\Acata\RimvaleGodot
+setlocal
+
+set PROJECT=%~dp0
+set PROJECT=%PROJECT:~0,-1%
 set GDEXT=%PROJECT%\gdextension
 set API_OUT=%GDEXT%\extension_api_461.json
+
+rem Load user's Godot path from local_config.bat
+if exist "%PROJECT%\local_config.bat" (
+    call "%PROJECT%\local_config.bat"
+) else (
+    echo [ERROR] local_config.bat not found!
+    echo Copy local_config.bat.example to local_config.bat and set your Godot path.
+    pause
+    exit /b 1
+)
+
+if not exist "%GODOT%" (
+    echo [ERROR] Godot not found at: %GODOT%
+    echo Edit local_config.bat to set the correct path.
+    pause
+    exit /b 1
+)
 
 echo ============================================================
 echo  Step 1: Dumping Godot 4.6.1 extension API...
@@ -53,7 +72,7 @@ for /d /r "%GDEXT%\build" %%d in (*.dir) do (
 echo.
 echo Running cmake build...
 cd /d "%GDEXT%\build"
-"C:\Program Files\CMake\bin\cmake.exe" --build . --config Debug
+cmake --build . --config Debug
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
@@ -65,10 +84,12 @@ if %ERRORLEVEL% NEQ 0 (
     mkdir "%NEWBUILD%"
     cd /d "%NEWBUILD%"
 
-    rem Set up MSVC environment
-    call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+    rem Try to find and set up MSVC environment via vswhere
+    for /f "tokens=*" %%i in ('"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath 2^>nul') do (
+        call "%%i\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+    )
 
-    "C:\Program Files\CMake\bin\cmake.exe" -G Ninja ^
+    cmake -G Ninja ^
         -DCMAKE_BUILD_TYPE=Debug ^
         -DGODOTCPP_TARGET=template_debug ^
         -DGODOTCPP_DEBUG_CRT=OFF ^
@@ -81,7 +102,7 @@ if %ERRORLEVEL% NEQ 0 (
         exit /b 1
     )
 
-    "C:\Program Files\CMake\bin\cmake.exe" --build "%NEWBUILD%"
+    cmake --build "%NEWBUILD%"
     if %ERRORLEVEL% NEQ 0 (
         echo.
         echo BUILD FAILED. See errors above.

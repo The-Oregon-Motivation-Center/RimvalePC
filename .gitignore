@@ -44,6 +44,14 @@ __pycache__/
 # SCons
 .sconsign.dblite
 
+# Local user config (each dev creates their own from local_config.bat.example)
+local_config.bat
+
+# Build log output files
+*_log.txt
+diagnose_log.txt
+detect_log.txt
+
 # OS files
 .DS_Store
 Thumbs.db

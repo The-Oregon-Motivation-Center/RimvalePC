@@ -1,0 +1,9 @@
+@echo off
+rem ============================================================
+rem  LOCAL CONFIGURATION — Copy this file to local_config.bat
+rem  and edit the GODOT path to point to YOUR Godot executable.
+rem  local_config.bat is git-ignored so it won't be committed.
+rem ============================================================
+
+rem Point this to your Godot 4.6.1 executable:
+set GODOT=C:\path\to\Godot_v4.6.1-stable_win64.exe

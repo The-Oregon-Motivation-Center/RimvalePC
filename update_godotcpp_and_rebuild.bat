@@ -2,13 +2,29 @@
 title Rimvale - Update godot-cpp to 4.6.1-stable + Rebuild
 setlocal
 
-set GODOT=C:\Users\Acata\Documents\Lumen movies\Godot_v4.6.1-stable_win64.exe\Godot_v4.6.1-stable_win64.exe
-set PROJECT=C:\Users\Acata\RimvaleGodot
+set PROJECT=%~dp0
+set PROJECT=%PROJECT:~0,-1%
 set GDEXT=%PROJECT%\gdextension
 set GODOTCPP=%GDEXT%\godot-cpp
 set BUILD=%GDEXT%\build_fresh
 set API_FILE=%GDEXT%\extension_api_461_dumped.json
-set CMAKE="C:\Program Files\CMake\bin\cmake.exe"
+
+rem Load user's Godot path from local_config.bat
+if exist "%PROJECT%\local_config.bat" (
+    call "%PROJECT%\local_config.bat"
+) else (
+    echo [ERROR] local_config.bat not found!
+    echo Copy local_config.bat.example to local_config.bat and set your Godot path.
+    pause
+    exit /b 1
+)
+
+if not exist "%GODOT%" (
+    echo [ERROR] Godot not found at: %GODOT%
+    echo Edit local_config.bat to set the correct path.
+    pause
+    exit /b 1
+)
 
 echo ============================================================
 echo  Step 1: Update godot-cpp submodule to godot-4.6.1-stable
@@ -57,7 +73,7 @@ if exist "%BUILD%" (
 mkdir "%BUILD%"
 
 cd /d "%BUILD%"
-%CMAKE% -G "Visual Studio 18 2026" -A x64 ^
+cmake -G "Visual Studio 18 2026" -A x64 ^
     -DGODOTCPP_TARGET=template_debug ^
     -DGODOTCPP_DEBUG_CRT=OFF ^
     -DGODOTCPP_USE_STATIC_CPP=ON ^
@@ -75,7 +91,7 @@ echo.
 echo ============================================================
 echo  Step 4: Build (several minutes)
 echo ============================================================
-%CMAKE% --build "%BUILD%" --config Debug --parallel 4
+cmake --build "%BUILD%" --config Debug --parallel 4
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Build failed
@@ -87,7 +103,8 @@ echo.
 echo ============================================================
 echo  Step 5: Write extension_list.cfg and verify
 echo ============================================================
->"C:\Users\Acata\RimvaleGodot\.godot\extension_list.cfg" echo res://addons/rimvale_engine/rimvale_engine.gdextension
+if not exist "%PROJECT%\.godot" mkdir "%PROJECT%\.godot"
+>"%PROJECT%\.godot\extension_list.cfg" echo res://addons/rimvale_engine/rimvale_engine.gdextension
 
 if exist "%PROJECT%\addons\rimvale_engine\bin\Debug\librimvale_engine.windows.debug.x86_64.dll" (
     echo [OK] DLL present
