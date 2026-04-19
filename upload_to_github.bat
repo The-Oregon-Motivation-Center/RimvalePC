@@ -21,7 +21,7 @@ if errorlevel 1 (
 
 echo.
 set /p COMMIT_MSG="Enter commit message (or press Enter for default): "
-if "%COMMIT_MSG%"=="" set COMMIT_MSG=3D terrain world map with horseshoe mainland, water channels, region zoom, drag panning, Sublimini floating island
+if "%COMMIT_MSG%"=="" set COMMIT_MSG=World map tuning - wider water channel, horseshoe bay, Metro shrunk and repositioned east
 
 echo.
 echo Committing with message: %COMMIT_MSG%

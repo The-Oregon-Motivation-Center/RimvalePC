@@ -475,7 +475,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "plains", "name": "The Plains",
 		"flavor": "Rolling grasslands and the cradle of civilization.",
 		"icon": "🌾",
-		"pos": Vector2(0.64, 0.36),
+		"pos": Vector2(0.70, 0.36),
 		"accent": Color(0.60, 0.85, 0.35, 1.0),
 		"badge": "Plains Badge",
 		"subregions": ["The Plains", "Forest of SubEden", "Kingdom of Qunorum", "Wilds of Endero", "House of Arachana", "Eternal Library"],
@@ -576,7 +576,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "metro", "name": "The Metropolitan",
 		"flavor": "The beating bureaucratic heart of the kingdoms.",
 		"icon": "🏙",
-		"pos": Vector2(0.60, 0.48),
+		"pos": Vector2(0.74, 0.48),
 		"accent": Color(0.95, 0.80, 0.30, 1.0),
 		"badge": "Metropolitan Badge",
 		"subregions": ["Metropolitan", "Upper Forty", "Lower Forty"],
@@ -4582,12 +4582,12 @@ func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
 		height = lerpf(height, -0.6, ch1_t)
 		final_col = final_col.lerp(ocean_col, ch1_t)
 
-	# 2. Vertical channel: western islands (Glass/Titans x<0.30) vs mainland (x>0.38)
+	# 2. Vertical channel: western islands (Glass/Titans x<0.30) vs mainland (x>0.44)
 	#    Only applies in the mainland latitude band (y 0.15 to 0.58)
 	if uv_z > 0.12 and uv_z < 0.60:
 		var ch2_dist: float = absf(uv_x - 0.33)
-		if ch2_dist < 0.06 and best_dist > 0.08:
-			var ch2_t: float = (1.0 - clampf(ch2_dist / 0.06, 0.0, 1.0)) * 0.85
+		if ch2_dist < 0.24 and best_dist > 0.08:
+			var ch2_t: float = (1.0 - clampf(ch2_dist / 0.24, 0.0, 1.0)) * 0.85
 			height = lerpf(height, -0.6, ch2_t)
 			final_col = final_col.lerp(ocean_col, ch2_t)
 
@@ -4632,9 +4632,10 @@ func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
 		height = lerpf(height, -0.6, ocean_t)
 		final_col = final_col.lerp(ocean_col, ocean_t)
 
-	# Too far from any region → ocean
-	if best_dist > 0.18:
-		var far_t: float = clampf((best_dist - 0.18) / 0.08, 0.0, 1.0)
+	# Too far from any region → ocean (Metro has 65% land radius)
+	var ocean_thresh: float = 0.09 if best_id == "metro" else 0.18
+	if best_dist > ocean_thresh:
+		var far_t: float = clampf((best_dist - ocean_thresh) / 0.08, 0.0, 1.0)
 		height = lerpf(height, -0.6, far_t)
 		final_col = final_col.lerp(ocean_col, far_t)
 
