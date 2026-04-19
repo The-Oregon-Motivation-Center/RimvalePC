@@ -1439,17 +1439,16 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 		var eng_dmg_type: int = DAMAGE_TYPE_ENG[_sb_damage_type] if _sb_damage_type < DAMAGE_TYPE_ENG.size() else 3
 		var cond_csv: String  = ",".join(_sb_conditions)
 
+		# Register spell in DB and teach only this hero
+		var teach_handle: int = _handle if (also_learn and _handle != -1) else -2
 		_e.add_custom_spell(
 			sname, _sb_domain, final_cost, _sb_generate_description(),
 			_sb_range_idx, not _sb_is_saving_throw,
 			_sb_die_count, die_sides, eng_dmg_type,
 			_sb_is_healing, dur_rounds, _sb_targets,
-			_sb_area_idx, cond_csv, _sb_is_teleport
+			_sb_area_idx, cond_csv, _sb_is_teleport,
+			false, teach_handle
 		)
-
-		# Also add it to this hero's learned spells immediately
-		if also_learn and _handle != -1:
-			_e.learn_spell(_handle, sname)
 
 		_sb_name = ""
 		_magic_tab = 0

@@ -1,5 +1,5 @@
 ## main.gd
-## Root scene — 5-tab bottom navigation shell.
+## Root scene — 5-tab top navigation shell.
 ## Content area loads each tab's scene on demand.
 
 extends Control
@@ -40,15 +40,15 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	RimvaleUtils.add_bg(self, RimvaleColors.BG_DARK)
 
-	# Content area (fills everything except bottom nav)
-	_content_area = Control.new()
-	_content_area.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_content_area.offset_bottom = -NAV_HEIGHT
-	add_child(_content_area)
-
-	# Bottom nav bar
+	# Top nav bar
 	_nav_bar = _build_nav_bar()
 	add_child(_nav_bar)
+
+	# Content area (fills everything below top nav)
+	_content_area = Control.new()
+	_content_area.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_content_area.offset_top = NAV_HEIGHT
+	add_child(_content_area)
 
 	# Load first tab
 	_switch_tab(GameState.current_tab)
@@ -57,19 +57,19 @@ func _ready() -> void:
 
 func _build_nav_bar() -> Control:
 	var bar = Control.new()
-	bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	bar.custom_minimum_size = Vector2(0, NAV_HEIGHT)
-	bar.offset_top = -NAV_HEIGHT
+	bar.offset_bottom = NAV_HEIGHT
 
 	var bg = ColorRect.new()
 	bg.color = RimvaleColors.BG_NAV
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bar.add_child(bg)
 
-	# Top border line
+	# Bottom border line
 	var line = ColorRect.new()
 	line.color = RimvaleColors.DIVIDER
-	line.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	line.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	line.custom_minimum_size = Vector2(0, 1)
 	bar.add_child(line)
 

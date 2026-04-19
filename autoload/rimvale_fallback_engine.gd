@@ -737,6 +737,9 @@ func forget_spell(handle: int, spell_name: String) -> void:
 	spells.erase(spell_name)
 	_chars[handle]["spells"] = spells
 
+func get_all_character_handles() -> Array:
+	return _chars.keys()
+
 # ── Feats / alignment / domain (Fix #3 & #7) ──────────────────────────────────
 ## Grant a named feat to the character (e.g. "Spell-Shaper", "Domain-Mastery").
 func grant_feat(handle: int, feat_name: String) -> void:
@@ -6126,7 +6129,9 @@ func add_custom_spell(spell_name: String, domain: int, cost: int, description: S
 		range_: int, is_attack: bool, die_count: int, die_sides: int,
 		damage_type: int, is_healing: bool, duration_rounds: int,
 		max_targets: int, area_type: int, conditions_csv: String,
-		is_teleport: bool, is_combustion: bool = false) -> void:
+		is_teleport: bool, is_combustion: bool = false,
+		caster_handle: int = -1, tp_range: int = 0) -> void:
+	_ensure_spell_db()   # guarantee built-in spells exist before adding custom ones
 	# Domain indices match the canonical 4-domain system used across all callers:
 	# 0=Biological, 1=Chemical, 2=Physical, 3=Spiritual
 	var domain_names: Array = ["Biological","Chemical","Physical","Spiritual"]
@@ -6135,8 +6140,9 @@ func add_custom_spell(spell_name: String, domain: int, cost: int, description: S
 	var dmg_names: Array = ["bludgeoning","piercing","slashing","force","fire","cold",
 		"lightning","acid","poison","psychic","radiant","necrotic","thunder"]
 	var dmg_str: String = dmg_names[clampi(damage_type, 0, dmg_names.size() - 1)]
-	# Teleport spells use dynamic distance-based SP cost — always store sc=0
-	var final_cost: int = 0 if is_teleport else cost
+	# Teleport spells: if tp_range > 0 the SP cost is pre-paid (ritual) so store cost.
+	# If tp_range == 0 (ad-hoc teleport), use dynamic distance pricing (sc=0).
+	var final_cost: int = cost if (not is_teleport or tp_range > 0) else 0
 	# Parse conditions CSV into Array to match built-in spell format ("conds")
 	var conds_arr: Array = []
 	if conditions_csv != "":
@@ -6159,23 +6165,42 @@ func add_custom_spell(spell_name: String, domain: int, cost: int, description: S
 		"area": area_type,
 		"conds": conds_arr,
 		"tp":   is_teleport,
+		"tp_range": tp_range,
 		"combustion": is_combustion,
 		"custom": true,
 	}
-	# Auto-learn for all living characters (persistent spell list)
-	for h in _chars:
-		var c: Dictionary = _chars[h]
+	# Teach the spell to the appropriate character(s)
+	if caster_handle >= 0 and caster_handle in _chars:
+		# Only teach the specific caster
+		var c: Dictionary = _chars[caster_handle]
 		var spells: Array = c.get("spells", [])
 		if spell_name not in spells:
 			spells.append(spell_name)
 			c["spells"] = spells
-	# Also sync to active dungeon entities if mid-combat
-	for ent in _dungeon_entities:
-		if bool(ent["is_player"]) and not bool(ent["is_dead"]):
-			var known: Array = Array(ent.get("known_spells", PackedStringArray()))
-			if not spell_name in known:
-				known.append(spell_name)
-				ent["known_spells"] = PackedStringArray(known)
+		# Sync to dungeon entity if mid-combat
+		for ent in _dungeon_entities:
+			if int(ent.get("handle", -1)) == caster_handle and bool(ent["is_player"]):
+				var known: Array = Array(ent.get("known_spells", PackedStringArray()))
+				if not spell_name in known:
+					known.append(spell_name)
+					ent["known_spells"] = PackedStringArray(known)
+	elif caster_handle == -2:
+		# Explicit "teach nobody" — just register in _SPELL_DB
+		pass
+	else:
+		# Legacy / dungeon spell crafter: teach all living characters
+		for h in _chars:
+			var c: Dictionary = _chars[h]
+			var spells: Array = c.get("spells", [])
+			if spell_name not in spells:
+				spells.append(spell_name)
+				c["spells"] = spells
+		for ent in _dungeon_entities:
+			if bool(ent["is_player"]) and not bool(ent["is_dead"]):
+				var known: Array = Array(ent.get("known_spells", PackedStringArray()))
+				if not spell_name in known:
+					known.append(spell_name)
+					ent["known_spells"] = PackedStringArray(known)
 
 func get_custom_spells() -> Array:
 	var result: Array = []
@@ -7182,7 +7207,7 @@ func get_available_spell_actions(entity_id: String) -> Array:
 		elif rt <= 6: range_idx = 2
 		else:         range_idx = 3
 
-		actions.append(_make_action(
+		var act: Dictionary = _make_action(
 			spell_name, "Spell", ACT_CAST_SPELL,
 			next_cost,                # escalating AP cost
 			sc,                       # SP cost
@@ -7194,7 +7219,9 @@ func get_available_spell_actions(entity_id: String) -> Array:
 			bool(s["tp"]),            # is_teleport
 			range_idx,
 			str(s["desc"]) + " (%d AP)" % next_cost
-		))
+		)
+		act["tp_range"] = int(s.get("tp_range", 0))
+		actions.append(act)
 
 	return actions
 
@@ -8657,30 +8684,45 @@ func _dung_dispatch_spell(
 		var tp_dx: int = abs(cx - int(tp_subject["x"]))
 		var tp_dy: int = abs(cy - int(tp_subject["y"]))
 		var dist_tiles: int = maxi(tp_dx, tp_dy)
-		# PHB teleport SP scaling: exponential brackets
+		# Check if teleport has pre-paid range (ritual spell)
+		var tp_max_range: int = int(action.get("tp_range", 0))
 		var extra_sp: int = 0
-		var tp_remaining: int = dist_tiles
-		var bracket: int = 1
-		while tp_remaining > 0:
-			var chunk: int = mini(tp_remaining, 3)
-			extra_sp += chunk * bracket
-			tp_remaining -= chunk
-			bracket += 1
-		extra_sp = maxi(0, extra_sp / 3)
-		if int(caster["sp"]) < extra_sp:
-			return _dung_fail("Not enough SP for teleport distance (need %d extra SP)." % extra_sp)
-		caster["sp"] = maxi(0, int(caster["sp"]) - extra_sp)
-		var tp_handle: int = caster.get("handle", -1)
-		if tp_handle >= 0 and _chars.has(tp_handle): _chars[tp_handle]["sp"] = caster["sp"]
+		if tp_max_range > 0:
+			# Pre-paid ritual teleport: enforce range limit, no extra SP
+			if dist_tiles > tp_max_range:
+				return _dung_fail("Out of range! Max teleport distance: %d tiles (you tried %d)." % [tp_max_range, dist_tiles])
+		else:
+			# Ad-hoc teleport: dynamic SP scaling by distance
+			var tp_remaining: int = dist_tiles
+			var bracket: int = 1
+			while tp_remaining > 0:
+				var chunk: int = mini(tp_remaining, 3)
+				extra_sp += chunk * bracket
+				tp_remaining -= chunk
+				bracket += 1
+			extra_sp = maxi(0, extra_sp / 3)
+			if int(caster["sp"]) < extra_sp:
+				return _dung_fail("Not enough SP for teleport distance (need %d extra SP)." % extra_sp)
+			caster["sp"] = maxi(0, int(caster["sp"]) - extra_sp)
+			var tp_handle: int = caster.get("handle", -1)
+			if tp_handle >= 0 and _chars.has(tp_handle): _chars[tp_handle]["sp"] = caster["sp"]
 		tp_subject["x"] = cx
 		tp_subject["y"] = cy
-		var who_cast: String = caster["name"] if tp_subject == caster else "%s teleports %s" % [caster["name"], tp_subject_name]
-		if tp_subject == caster:
-			return _dung_ok("%s teleports to (%d, %d) [%d tiles, %d extra SP]." % [
-				caster["name"], cx, cy, dist_tiles, extra_sp], ap_cost, sp_cost + extra_sp)
+		if tp_max_range > 0:
+			# Ritual teleport — no extra SP message
+			if tp_subject == caster:
+				return _dung_ok("%s teleports to (%d, %d) [%d tiles]." % [
+					caster["name"], cx, cy, dist_tiles], ap_cost, sp_cost)
+			else:
+				return _dung_ok("%s teleports %s to (%d, %d) [%d tiles]." % [
+					caster["name"], tp_subject_name, cx, cy, dist_tiles], ap_cost, sp_cost)
 		else:
-			return _dung_ok("%s teleports %s to (%d, %d) [%d tiles, %d extra SP]." % [
-				caster["name"], tp_subject_name, cx, cy, dist_tiles, extra_sp], ap_cost, sp_cost + extra_sp)
+			if tp_subject == caster:
+				return _dung_ok("%s teleports to (%d, %d) [%d tiles, %d extra SP]." % [
+					caster["name"], cx, cy, dist_tiles, extra_sp], ap_cost, sp_cost + extra_sp)
+			else:
+				return _dung_ok("%s teleports %s to (%d, %d) [%d tiles, %d extra SP]." % [
+					caster["name"], tp_subject_name, cx, cy, dist_tiles, extra_sp], ap_cost, sp_cost + extra_sp)
 
 	# ── Area spells ──
 	if area_type > 0:

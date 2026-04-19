@@ -75,6 +75,29 @@ var _overworld_region_buttons: Dictionary = {}  # region_id -> Button
 var _overworld_focused_region: String = ""   # which region is currently opened in detail
 var _overworld_location_list_vbox: VBoxContainer  # refreshed when region focused
 
+# ── 3D World Map state ──────────────────────────────────────────────────────
+var _ow_viewport: SubViewport
+var _ow_camera: Camera3D
+var _ow_world_root: Node3D
+var _ow_region_markers: Dictionary = {}   # region_id -> Node3D (beacon)
+var _ow_zoomed_region: String = ""        # "" = full-map view
+var _ow_cam_animating: bool = false
+var _ow_cam_from_pos: Vector3 = Vector3.ZERO
+var _ow_cam_from_look: Vector3 = Vector3.ZERO
+var _ow_cam_to_pos: Vector3 = Vector3.ZERO
+var _ow_cam_to_look: Vector3 = Vector3.ZERO
+var _ow_cam_t: float = 0.0
+var _ow_svc: SubViewportContainer
+var _ow_back_btn: Button
+var _ow_label_overlay: Control
+var _ow_region_label_nodes: Dictionary = {}  # region_id -> PanelContainer
+var _ow_subregion_label_nodes: Array = []    # [{panel, pos}]
+var _ow_map_container: Control
+var _ow_dragging: bool = false
+var _ow_drag_start: Vector2 = Vector2.ZERO
+var _ow_drag_moved: bool = false           # true if mouse moved enough to count as drag
+var _ow_cam_look_target: Vector3 = Vector3(0, 0, -2)  # current look-at point
+
 # ── Ritual tab refs ───────────────────────────────────────────────────────────
 var _ritual_tasks_vbox:   VBoxContainer
 var _ritual_active_vbox:  VBoxContainer
@@ -85,6 +108,7 @@ var _ritual_inner:        VBoxContainer
 var _ritual_preview_lbl:  Label
 var _ritual_breakdown_lbl: Label
 var _ritual_desc_lbl:     Label
+var _rb_tp_range_row:     HBoxContainer  # teleport range slider row (shown/hidden)
 
 # ── Ritual spell builder state (mirrors dungeon.gd PHB builder) ──────────────
 var _rb_name:          String = ""
@@ -101,6 +125,7 @@ var _rb_damage_type:   int = 3
 var _rb_is_healing:    bool = false
 var _rb_is_saving_throw: bool = false
 var _rb_is_teleport:   bool = false
+var _rb_tp_range:      int = 5       # teleport max distance in tiles (when teleport enabled)
 var _rb_is_combustion: bool = false
 var _rb_conditions:    Array = []
 var _rb_handles:       Array = []    # active party handles for caster selection
@@ -450,10 +475,10 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "plains", "name": "The Plains",
 		"flavor": "Rolling grasslands and the cradle of civilization.",
 		"icon": "🌾",
-		"pos": Vector2(0.52, 0.50),
+		"pos": Vector2(0.64, 0.36),
 		"accent": Color(0.60, 0.85, 0.35, 1.0),
 		"badge": "Plains Badge",
-		"subregions": ["The Plains", "Forest of SubEden", "Kingdom of Qunorum", "Wilds of Endero", "Mortal Arena"],
+		"subregions": ["The Plains", "Forest of SubEden", "Kingdom of Qunorum", "Wilds of Endero", "House of Arachana", "Eternal Library"],
 		"acf": [
 			["acf-plains-outpost", "ACF Plains Outpost", "The Plains",
 				"Our regional HQ. Stock up, report findings, pick up Director briefings.", 40, false],
@@ -463,18 +488,20 @@ var OVERWORLD_REGIONS: Array = [
 				"Gilded corridors. The Crown's liaison is feeding the Enclave intel — trace the leak.", 120, false],
 			["acf-endero-lodge", "Endero Wilds Lodge", "Wilds of Endero",
 				"A druidic waystation. Heart-Tree blight is radiating outward in concentric rings.", 120, false],
-			["acf-arena-post", "Arena Command Post", "Mortal Arena",
-				"Blood-sands diplomacy. Survive three exhibition bouts to unlock the real investigation.", 160, true],
+			["acf-arachana-brood", "Arachana Brood Halls", "House of Arachana",
+				"Blood-silk webs. A matriarch brokers souls to the Enclave for safe passage.", 180, false],
+			["acf-eternal-library", "Eternal Library Annex", "Eternal Library",
+				"Archivists are vanishing with their own indexes. Books breathe now.", 180, false],
 		],
 	},
 	{
 		"id": "peaks", "name": "The Peaks of Isolation",
 		"flavor": "Windswept spires that swallow names whole.",
 		"icon": "🏔",
-		"pos": Vector2(0.48, 0.15),
+		"pos": Vector2(0.42, 0.10),
 		"accent": Color(0.75, 0.85, 0.95, 1.0),
 		"badge": "Peaks of Isolation Badge",
-		"subregions": ["Peaks of Isolation", "Pharaoh's Den"],
+		"subregions": ["Peaks of Isolation", "Pharaoh's Den", "The Darkness", "Arcane Collapse", "Argent Hall"],
 		"acf": [
 			["acf-peaks-camp", "Cragborn Highwatch", "Peaks of Isolation",
 				"A frozen watchtower. Pilgrims ascend with names — none return with them.", 100, false],
@@ -482,23 +509,27 @@ var OVERWORLD_REGIONS: Array = [
 				"Where the Rite is performed. Masks line the basalt walls.", 180, false],
 			["acf-pharaohs-den", "Pharaoh's Den Dig Site", "Pharaoh's Den",
 				"Sand-buried tombs. Enclave expeditions are plundering identity-locks.", 140, false],
+			["acf-darkness-threshold", "Threshold of the Dark", "The Darkness",
+				"Where light fails. Shades recruit from anyone who arrives alone.", 140, false],
+			["acf-arcane-collapse", "Arcane Collapse Breach", "Arcane Collapse",
+				"Where magic itself died. Riftborn survivors guard the wound.", 160, false],
+			["acf-argent-hall", "Argent Hall Vestibule", "Argent Hall",
+				"Silver-veined marble. Lightbound guards test every traveller's reflection.", 120, false],
 		],
 	},
 	{
 		"id": "shadows", "name": "The Shadows Beneath",
 		"flavor": "The undercity where whispers become laws.",
 		"icon": "🕳",
-		"pos": Vector2(0.68, 0.75),
+		"pos": Vector2(0.56, 0.22),
 		"accent": Color(0.55, 0.35, 0.75, 1.0),
 		"badge": "Shadows Beneath Badge",
-		"subregions": ["Shadows Beneath", "The Darkness", "House of Arachana", "Crypt at End of Valley", "Spindle York's Schism"],
+		"subregions": ["Shadows Beneath", "Corrupted Marshes", "Crypt at End of Valley", "Spindle York's Schism"],
 		"acf": [
 			["acf-shadows-junction", "Hollow Path Junction", "Shadows Beneath",
 				"A convergence of lightless tunnels. The Enclave is wiring it as a ritual circuit.", 120, false],
-			["acf-darkness-threshold", "Threshold of the Dark", "The Darkness",
-				"Where light fails. Shades recruit from anyone who arrives alone.", 140, false],
-			["acf-arachana-brood", "Arachana Brood Halls", "House of Arachana",
-				"Blood-silk webs. A matriarch brokers souls to the Enclave for safe passage.", 180, false],
+			["acf-marshes-trail", "Corrupted Marshes Boardwalk", "Corrupted Marshes",
+				"Blight creeps up the planks each night. Bogtenders are barely holding.", 140, false],
 			["acf-crypt-end", "Crypt at Valley's End", "Crypt at End of Valley",
 				"Last stop before the river. The tombwalkers are awake — and polite.", 160, false],
 			["acf-spindle", "Spindle Schism Rift", "Spindle York's Schism",
@@ -509,34 +540,32 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "glass", "name": "The Glass Passage",
 		"flavor": "A mirror-lined corridor where reflection is a weapon.",
 		"icon": "🪞",
-		"pos": Vector2(0.15, 0.40),
+		"pos": Vector2(0.15, 0.28),
 		"accent": Color(0.75, 0.95, 1.00, 1.0),
 		"badge": "Glass Passage Badge",
-		"subregions": ["Glass Passage", "Argent Hall", "Sacral Separation"],
+		"subregions": ["Glass Passage", "Sacral Separation", "Infernal Machine"],
 		"acf": [
 			["acf-glass-midpoint", "Mirrored Midpoint", "Glass Passage",
 				"Where the true path diverges from its copy. Do not trust your own footsteps.", 140, false],
-			["acf-argent-hall", "Argent Hall Vestibule", "Argent Hall",
-				"Silver-veined marble. Lightbound guards test every traveller's reflection.", 120, false],
 			["acf-sacral-rift", "Sacral Separation Rift", "Sacral Separation",
 				"Faith splits cleanly here. A seraph's shed flesh warns the rest.", 180, false],
+			["acf-infernal-gate", "Infernal Machine Gate", "Infernal Machine",
+				"Hellforged sentinels guard a gate that should not exist.", 220, false],
 		],
 	},
 	{
 		"id": "isles", "name": "The Isles",
 		"flavor": "Salt-kissed archipelagos and drowned workshops.",
 		"icon": "🏝",
-		"pos": Vector2(0.82, 0.60),
+		"pos": Vector2(0.24, 0.80),
 		"accent": Color(0.20, 0.75, 0.85, 1.0),
 		"badge": "Isles Badge",
-		"subregions": ["The Isles", "Depths of Denorim", "Corrupted Marshes", "Gloamfen Hollow", "Moroboros"],
+		"subregions": ["The Isles", "Depths of Denorim", "Gloamfen Hollow", "Moroboros"],
 		"acf": [
 			["acf-isles-harbor", "Tiderunner Harbor", "The Isles",
 				"Our floating dock-yard. Smugglers run Enclave cores past the blockade nightly.", 120, false],
 			["acf-denorim-depths", "Denorim Deep Shaft", "Depths of Denorim",
 				"Pressure-crushed tunnels. Fathomari miners strike bargains with abyssal things.", 160, false],
-			["acf-marshes-trail", "Corrupted Marshes Boardwalk", "Corrupted Marshes",
-				"Blight creeps up the planks each night. Bogtenders are barely holding.", 140, false],
 			["acf-gloamfen-hollow", "Gloamfen Hollow Basin", "Gloamfen Hollow",
 				"Mossy ruins. Mirelings chant names of drowned gods.", 140, false],
 			["acf-moroboros-den", "Moroboros Den", "Moroboros",
@@ -547,10 +576,10 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "metro", "name": "The Metropolitan",
 		"flavor": "The beating bureaucratic heart of the kingdoms.",
 		"icon": "🏙",
-		"pos": Vector2(0.35, 0.65),
+		"pos": Vector2(0.60, 0.48),
 		"accent": Color(0.95, 0.80, 0.30, 1.0),
 		"badge": "Metropolitan Badge",
-		"subregions": ["Metropolitan", "Upper Forty", "Lower Forty", "Eternal Library", "West End Gullet", "Cradling Depths"],
+		"subregions": ["Metropolitan", "Upper Forty", "Lower Forty"],
 		"acf": [
 			["acf-metro-plaza", "Metropolitan Central Plaza", "Metropolitan",
 				"Civic records are being rewritten in broad daylight. No one notices.", 120, false],
@@ -558,8 +587,21 @@ var OVERWORLD_REGIONS: Array = [
 				"Gilded balconies. Nobles whisper about memory gaps between cocktails.", 120, false],
 			["acf-lower-forty", "Lower Forty Sluice", "Lower Forty",
 				"Sewer tunnels. A rustspawn cell runs Enclave logistics from a scrap-den.", 140, false],
-			["acf-eternal-library", "Eternal Library Annex", "Eternal Library",
-				"Archivists are vanishing with their own indexes. Books breathe now.", 180, false],
+		],
+	},
+	{
+		"id": "astral", "name": "The Astral Tear",
+		"flavor": "A wound in reality that weeps futures.",
+		"icon": "🌌",
+		"pos": Vector2(0.78, 0.80),
+		"accent": Color(0.70, 0.55, 0.95, 1.0),
+		"badge": "Astral Tear Badge",
+		"subregions": ["Astral Tear", "L.I.T.O.", "West End Gullet", "Cradling Depths"],
+		"acf": [
+			["acf-astral-anchor", "Astral Tear Anchor", "Astral Tear",
+				"Final anchor point for the weave-unraveling ritual. Nirael walks there already.", 200, true],
+			["acf-lito-foundry", "L.I.T.O. Clockwork Foundry", "L.I.T.O.",
+				"A city-sized mechanism. Gears the size of cathedrals grind futures to dust.", 200, false],
 			["acf-gullet", "West End Gullet Alley", "West End Gullet",
 				"Where the city dumps what it can't admit. The gullet mimes run the block.", 120, false],
 			["acf-cradling-depths", "Cradling Depths Cistern", "Cradling Depths",
@@ -567,37 +609,20 @@ var OVERWORLD_REGIONS: Array = [
 		],
 	},
 	{
-		"id": "astral", "name": "The Astral Tear",
-		"flavor": "A wound in reality that weeps futures.",
-		"icon": "🌌",
-		"pos": Vector2(0.85, 0.20),
-		"accent": Color(0.70, 0.55, 0.95, 1.0),
-		"badge": "Astral Tear Badge",
-		"subregions": ["Astral Tear", "Arcane Collapse", "L.I.T.O.", "Land of Tomorrow"],
-		"acf": [
-			["acf-astral-anchor", "Astral Tear Anchor", "Astral Tear",
-				"Final anchor point for the weave-unraveling ritual. Nirael walks there already.", 200, true],
-			["acf-arcane-collapse", "Arcane Collapse Breach", "Arcane Collapse",
-				"Where magic itself died. Riftborn survivors guard the wound.", 160, false],
-			["acf-lito-foundry", "L.I.T.O. Clockwork Foundry", "L.I.T.O.",
-				"A city-sized mechanism. Gears the size of cathedrals grind futures to dust.", 200, false],
-			["acf-tomorrow-gate", "Gate of Tomorrow", "Land of Tomorrow",
-				"A threshold where time runs backwards. Dreamer-priests warn: do not linger.", 240, false],
-		],
-	},
-	{
 		"id": "terminus", "name": "The Terminus Volarus",
 		"flavor": "Storm-wracked skies where thunder has orders.",
 		"icon": "⚡",
-		"pos": Vector2(0.20, 0.15),
+		"pos": Vector2(0.86, 0.10),
 		"accent": Color(0.45, 0.70, 0.95, 1.0),
 		"badge": "Terminus Volarus Badge",
-		"subregions": ["Terminus Volarus", "City of Eternal Light", "Hallowed Sacrament"],
+		"subregions": ["Terminus Volarus", "City of Eternal Light", "Land of Tomorrow", "Hallowed Sacrament"],
 		"acf": [
 			["acf-terminus-rod", "Lightning Rod Array", "Terminus Volarus",
 				"A ritual SP-harvester drawing from the storm itself. Rurik commands the array.", 200, true],
 			["acf-eternal-light", "City of Eternal Light Beacon", "City of Eternal Light",
 				"The beacon never dims — and its keepers never sleep. Something is wrong with both facts.", 180, false],
+			["acf-tomorrow-gate", "Gate of Tomorrow", "Land of Tomorrow",
+				"A threshold where time runs backwards. Dreamer-priests warn: do not linger.", 240, false],
 			["acf-hallowed", "Hallowed Sacrament Reliquary", "Hallowed Sacrament",
 				"Soulbinders have infiltrated the reliquary. A convergent prays over an empty seat.", 200, false],
 		],
@@ -606,24 +631,24 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "titans", "name": "The Titan's Lament",
 		"flavor": "Volcanic scar where ancient giants wept iron.",
 		"icon": "🌋",
-		"pos": Vector2(0.68, 0.35),
+		"pos": Vector2(0.13, 0.52),
 		"accent": Color(0.95, 0.50, 0.30, 1.0),
 		"badge": "Titan's Lament Badge",
-		"subregions": ["Titan's Lament", "Vulcan Valley", "Infernal Machine"],
+		"subregions": ["Titan's Lament", "Vulcan Valley", "Mortal Arena"],
 		"acf": [
 			["acf-titan-bound", "Chained Colossus Site", "Titan's Lament",
 				"The Last Chain rattles in its socket. Morthis counts the spirit-names.", 220, true],
 			["acf-vulcan-forge", "Vulcan Valley Forge", "Vulcan Valley",
 				"Volcant smiths hammer soul-iron for the Enclave. Stop the shipments.", 180, false],
-			["acf-infernal-gate", "Infernal Machine Gate", "Infernal Machine",
-				"Hellforged sentinels guard a gate that should not exist.", 220, false],
+			["acf-arena-post", "Arena Command Post", "Mortal Arena",
+				"Blood-sands diplomacy. Survive three exhibition bouts to unlock the real investigation.", 160, true],
 		],
 	},
 	{
 		"id": "sublimini", "name": "Sublimini Dominus",
 		"flavor": "The beating heart of the void. Requires all 9 badges.",
 		"icon": "🕳",
-		"pos": Vector2(0.50, 0.90),
+		"pos": Vector2(0.50, 0.95),
 		"accent": Color(0.95, 0.20, 0.35, 1.0),
 		"badge": "",
 		"subregions": ["Sublimini Dominus", "Beating Heart of The Void"],
@@ -684,9 +709,9 @@ func _on_tab_selected(idx: int) -> void:
 		child.visible = false
 	if idx < _content_area.get_child_count():
 		_content_area.get_child(idx).visible = true
-	# When showing the overworld map, re-run the layout so buttons land correctly.
-	if idx == 0 and _overworld_map_control != null:
-		call_deferred("_overworld_layout_regions")
+	# When showing the overworld map, refresh 3D label positions
+	if idx == 0 and _ow_label_overlay != null:
+		_overworld_refresh_region_highlights()
 	# Auto-save whenever the player navigates — keeps state fresh
 	GameState.save_game()
 
@@ -1578,6 +1603,9 @@ func _on_story_trigger_combat() -> void:
 	if _story_exec_overlay:
 		_story_exec_overlay.visible = false
 
+	# Ensure all ritual spells are registered before entering dungeon
+	GameState.ensure_ritual_spells_registered()
+
 	if is_boss and boss_apex >= 0:
 		# Boss fight — use apex encounter
 		RimvaleAPI.engine.start_apex_dungeon(party, boss_apex, 0)
@@ -2021,6 +2049,8 @@ func _dd_launch() -> void:
 	if handles.is_empty():
 		push_warning("[Dungeon] No active party — assign a strike team first")
 		return
+	# Ensure all ritual spells are registered before entering dungeon
+	GameState.ensure_ritual_spells_registered()
 	match _dd_type:
 		0: # Standard
 			RimvaleAPI.engine.start_dungeon(handles, _dd_enemy_level, 0, _dd_terrain_style)
@@ -2493,7 +2523,11 @@ func _rb_populate_inner() -> void:
 	var tp_chk := CheckBox.new(); tp_chk.text = "Teleport"
 	tp_chk.button_pressed = _rb_is_teleport
 	tp_chk.add_theme_font_size_override("font_size", 12)
-	tp_chk.toggled.connect(func(b: bool): _rb_is_teleport = b; _rb_update_preview())
+	tp_chk.toggled.connect(func(b: bool):
+		_rb_is_teleport = b
+		_rb_tp_range_row.visible = b
+		_rb_update_preview()
+	)
 	flag_row2.add_child(tp_chk)
 	var comb_chk := CheckBox.new(); comb_chk.text = "Combustion (dynamic dmg)"
 	comb_chk.button_pressed = _rb_is_combustion
@@ -2501,6 +2535,35 @@ func _rb_populate_inner() -> void:
 	comb_chk.toggled.connect(func(b: bool): _rb_is_combustion = b; _rb_update_preview())
 	flag_row2.add_child(comb_chk)
 	inner.add_child(flag_row2)
+
+	# ── Teleport range slider (visible only when teleport is checked) ──
+	_rb_tp_range_row = HBoxContainer.new()
+	_rb_tp_range_row.add_theme_constant_override("separation", 8)
+	_rb_tp_range_row.visible = _rb_is_teleport
+	var tp_range_lbl := Label.new()
+	tp_range_lbl.text = "Teleport Range (tiles):"
+	tp_range_lbl.add_theme_font_size_override("font_size", 12)
+	_rb_tp_range_row.add_child(tp_range_lbl)
+	var tp_range_val := Label.new()
+	tp_range_val.text = str(_rb_tp_range)
+	tp_range_val.add_theme_font_size_override("font_size", 13)
+	tp_range_val.add_theme_color_override("font_color", Color(0.40, 0.80, 1.0))
+	tp_range_val.custom_minimum_size = Vector2(30, 0)
+	_rb_tp_range_row.add_child(tp_range_val)
+	var tp_range_slider := HSlider.new()
+	tp_range_slider.min_value = 1
+	tp_range_slider.max_value = 20
+	tp_range_slider.step = 1
+	tp_range_slider.value = _rb_tp_range
+	tp_range_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tp_range_slider.custom_minimum_size = Vector2(120, 0)
+	tp_range_slider.value_changed.connect(func(v: float):
+		_rb_tp_range = int(v)
+		tp_range_val.text = str(_rb_tp_range)
+		_rb_update_preview()
+	)
+	_rb_tp_range_row.add_child(tp_range_slider)
+	inner.add_child(_rb_tp_range_row)
 
 	inner.add_child(HSeparator.new())
 
@@ -2656,6 +2719,16 @@ func _rb_colored_btn(txt: String, col: Color) -> Button:
 	return b
 
 func _rb_calc_cost() -> int:
+	# Teleport spells: cost is based on max range (pre-paid at ritual time)
+	if _rb_is_teleport:
+		# Scaling: 1 SP per 2 tiles of range, minimum 1
+		var tp_cost: int = maxi(1, (_rb_tp_range + 1) / 2)
+		# Add target cost if multi-target
+		if _rb_targets > 1:
+			for i in range(_rb_targets - 1):
+				tp_cost += int(pow(2.0, float(i + 1)))
+		return tp_cost
+
 	var type_cost: int   = 1 if _rb_is_saving_throw else 0
 	var sides_mod: int   = RB_DIE_SIDES_MOD[_rb_die_idx] if _rb_die_idx < RB_DIE_SIDES_MOD.size() else 0
 	var dice_cost: int   = _rb_die_count * (1 + sides_mod)
@@ -2691,42 +2764,54 @@ func _rb_update_preview() -> void:
 		_ritual_preview_lbl.text = "SP Cost: %d · Arcane DC: %d" % [cost, dc]
 
 	if is_instance_valid(_ritual_breakdown_lbl):
-		var effects: Array = RB_DOMAIN_EFFECTS[_rb_domain] if _rb_domain < RB_DOMAIN_EFFECTS.size() else []
-		var effect_name: String = effects[_rb_effect_idx][0] if _rb_effect_idx < effects.size() else "Unknown"
-		var effect_base: int = int(effects[_rb_effect_idx][1]) if _rb_effect_idx < effects.size() else 1
-		var sides_mod: int = RB_DIE_SIDES_MOD[_rb_die_idx] if _rb_die_idx < RB_DIE_SIDES_MOD.size() else 0
-		var dice_cost: int = _rb_die_count * (1 + sides_mod)
-		var dur_mult: int  = RB_DURATION_MULT[_rb_duration_idx] if _rb_duration_idx < RB_DURATION_MULT.size() else 1
-		var range_cost: int = RB_RANGE_SP_COST[_rb_range_idx] if _rb_range_idx < RB_RANGE_SP_COST.size() else 0
-		var target_cost: int = 0
-		if _rb_targets > 1:
-			for i in range(_rb_targets - 1):
-				target_cost += int(pow(2.0, float(i + 1)))
-		var harmful: int = 0; var beneficial: int = 0
-		for cname in _rb_conditions:
-			if cname in RB_CONDITIONS_HARMFUL: harmful += 1
-			else: beneficial += 1
-		var cond_cost: int = (harmful * 3) - (beneficial * 2)
-		var area_mult: int = RB_AREA_MULT[_rb_area_idx] if _rb_area_idx < RB_AREA_MULT.size() else 1
-
 		var lines: PackedStringArray = []
-		lines.append("Base Effect (%s): %d" % [effect_name, effect_base])
-		if dice_cost > 0:
-			lines.append("Dice (%dd%d): +%d" % [_rb_die_count, [4,6,8,10,12][_rb_die_idx], dice_cost])
-		if dur_mult > 1:
-			lines.append("Duration (x%d): applied" % dur_mult)
-		if range_cost > 0:
-			lines.append("Range (%s): +%d" % [RB_RANGE_LABELS[_rb_range_idx], range_cost])
-		if target_cost > 0:
-			lines.append("Multi-target (%d): +%d" % [_rb_targets, target_cost])
-		if cond_cost != 0:
-			lines.append("Conditions: %s%d" % ["+" if cond_cost > 0 else "", cond_cost])
-		if _rb_is_saving_throw:
-			lines.append("Saving throw: +1")
-		if area_mult > 1:
-			lines.append("Area (x%d): applied" % area_mult)
-		if _rb_is_combustion:
-			lines.append("Combustion: damage scales with SP spent")
+		if _rb_is_teleport:
+			# Teleport-specific breakdown
+			var tp_cost: int = maxi(1, (_rb_tp_range + 1) / 2)
+			lines.append("Teleport Range: %d tiles (%dft)" % [_rb_tp_range, _rb_tp_range * 5])
+			lines.append("Range Cost: %d SP (1 SP per 2 tiles)" % tp_cost)
+			var target_cost: int = 0
+			if _rb_targets > 1:
+				for i in range(_rb_targets - 1):
+					target_cost += int(pow(2.0, float(i + 1)))
+				lines.append("Multi-target (%d): +%d" % [_rb_targets, target_cost])
+			lines.append("SP is fully pre-paid — casting costs only AP")
+		else:
+			var effects: Array = RB_DOMAIN_EFFECTS[_rb_domain] if _rb_domain < RB_DOMAIN_EFFECTS.size() else []
+			var effect_name: String = effects[_rb_effect_idx][0] if _rb_effect_idx < effects.size() else "Unknown"
+			var effect_base: int = int(effects[_rb_effect_idx][1]) if _rb_effect_idx < effects.size() else 1
+			var sides_mod: int = RB_DIE_SIDES_MOD[_rb_die_idx] if _rb_die_idx < RB_DIE_SIDES_MOD.size() else 0
+			var dice_cost: int = _rb_die_count * (1 + sides_mod)
+			var dur_mult: int  = RB_DURATION_MULT[_rb_duration_idx] if _rb_duration_idx < RB_DURATION_MULT.size() else 1
+			var range_cost: int = RB_RANGE_SP_COST[_rb_range_idx] if _rb_range_idx < RB_RANGE_SP_COST.size() else 0
+			var target_cost: int = 0
+			if _rb_targets > 1:
+				for i in range(_rb_targets - 1):
+					target_cost += int(pow(2.0, float(i + 1)))
+			var harmful: int = 0; var beneficial: int = 0
+			for cname in _rb_conditions:
+				if cname in RB_CONDITIONS_HARMFUL: harmful += 1
+				else: beneficial += 1
+			var cond_cost: int = (harmful * 3) - (beneficial * 2)
+			var area_mult: int = RB_AREA_MULT[_rb_area_idx] if _rb_area_idx < RB_AREA_MULT.size() else 1
+
+			lines.append("Base Effect (%s): %d" % [effect_name, effect_base])
+			if dice_cost > 0:
+				lines.append("Dice (%dd%d): +%d" % [_rb_die_count, [4,6,8,10,12][_rb_die_idx], dice_cost])
+			if dur_mult > 1:
+				lines.append("Duration (x%d): applied" % dur_mult)
+			if range_cost > 0:
+				lines.append("Range (%s): +%d" % [RB_RANGE_LABELS[_rb_range_idx], range_cost])
+			if target_cost > 0:
+				lines.append("Multi-target (%d): +%d" % [_rb_targets, target_cost])
+			if cond_cost != 0:
+				lines.append("Conditions: %s%d" % ["+" if cond_cost > 0 else "", cond_cost])
+			if _rb_is_saving_throw:
+				lines.append("Saving throw: +1")
+			if area_mult > 1:
+				lines.append("Area (x%d): applied" % area_mult)
+			if _rb_is_combustion:
+				lines.append("Combustion: damage scales with SP spent")
 		lines.append("Ritual DC = 10 + SP Cost = %d (Arcane check)" % dc)
 		_ritual_breakdown_lbl.text = "\n".join(lines)
 
@@ -2744,7 +2829,8 @@ func _rb_gen_description() -> String:
 	var save_desc: String = ". Targets may roll a saving throw to resist." if _rb_is_saving_throw else "."
 
 	if _rb_is_teleport:
-		return "Ritual teleportation. SP cost scales with distance: 10ft=1SP, 20ft=2SP, 30ft=4SP."
+		return "Ritual teleportation. Teleport %s up to %d tiles (%dft). SP fully pre-paid — costs only AP to cast." % [
+			target_desc, _rb_tp_range, _rb_tp_range * 5]
 	if _rb_is_combustion:
 		return "Using the %s domain, you ritually cause a violent combustion targeting %s %s%s. Damage dice scale dynamically with SP spent. Lasts %s%s" % [
 			domain_name, target_desc, range_desc, area_desc, dur_desc, save_desc]
@@ -2919,6 +3005,7 @@ func _on_new_ritual() -> void:
 	_rb_is_healing = false
 	_rb_is_saving_throw = false
 	_rb_is_teleport = false
+	_rb_tp_range = 5
 	_rb_is_combustion = false
 	_rb_conditions.clear()
 	_rb_populate_inner()
@@ -2969,6 +3056,7 @@ func _on_begin_ritual() -> void:
 		"area_type":       _rb_area_idx,
 		"conditions_csv":  cond_csv,
 		"is_teleport":     _rb_is_teleport,
+		"tp_range":        _rb_tp_range if _rb_is_teleport else 0,
 		"is_combustion":   _rb_is_combustion,
 	})
 
@@ -2994,7 +3082,8 @@ func _ritual_make_check(task_id: String) -> void:
 	var total: int = int(str(result[1])) if result.size() > 1 else 0
 
 	if passed:
-		# Register as a real spell via add_custom_spell
+		# Register as a real spell and teach only the caster
+		var tp_range_val: int = int(task.get("tp_range", 0))
 		RimvaleAPI.engine.add_custom_spell(
 			str(task["spell_name"]),
 			int(task.get("domain", 0)),
@@ -3012,16 +3101,16 @@ func _ritual_make_check(task_id: String) -> void:
 			str(task.get("conditions_csv", "")),
 			bool(task.get("is_teleport", false)),
 			bool(task.get("is_combustion", false)),
+			handle,
+			tp_range_val,
 		)
-		# Also teach the caster's character
-		RimvaleAPI.engine.learn_spell(handle, str(task["spell_name"]))
 
 		# Promote to active
 		GameState.ritual_tasks.erase(task)
 		GameState.active_rituals.append(task)
 		_show_ritual_result(
-			"✓ Success! Rolled %d vs DC %d — '%s' learned! All party members can now cast it in dungeons." % [
-				total, dc, str(task["spell_name"])],
+			"✓ Success! Rolled %d vs DC %d — '%s' learned by %s! Usable in dungeons." % [
+				total, dc, str(task["spell_name"]), str(task.get("caster_name", "caster"))],
 			true)
 	else:
 		_show_ritual_result(
@@ -4185,6 +4274,21 @@ func _refresh_forage_tasks() -> void:
 # ── Task completion polling ───────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
+	# ── 3D world-map camera animation ────────────────────────────────────────
+	if _ow_cam_animating:
+		_ow_cam_t += delta * 2.2
+		if _ow_cam_t >= 1.0:
+			_ow_cam_t = 1.0
+			_ow_cam_animating = false
+			_ow_cam_look_target = _ow_cam_to_look
+		var t: float = _ow_cam_t * _ow_cam_t * (3.0 - 2.0 * _ow_cam_t)  # ease-in-out
+		if _ow_camera:
+			_ow_camera.position = _ow_cam_from_pos.lerp(_ow_cam_to_pos, t)
+			var look: Vector3 = _ow_cam_from_look.lerp(_ow_cam_to_look, t)
+			_ow_camera.look_at(look, Vector3.UP)
+	if _ow_label_overlay and _ow_camera and _ow_viewport:
+		_ow_update_labels()
+
 	_task_timer += delta
 	if _task_timer < 1.0:
 		return
@@ -4228,14 +4332,13 @@ func _build_overworld_tab(parent: Control) -> void:
 	_overworld_panel.visible = false
 	parent.add_child(_overworld_panel)
 
-	# Root layout: map on left (2/3) + detail on right (1/3)
 	var hbox = HBoxContainer.new()
 	hbox.anchor_left = 0.0; hbox.anchor_top = 0.0
 	hbox.anchor_right = 1.0; hbox.anchor_bottom = 1.0
 	hbox.add_theme_constant_override("separation", 0)
 	_overworld_panel.add_child(hbox)
 
-	# ── LEFT: Map canvas ────────────────────────────────────────────────────
+	# ── LEFT: 3D Terrain Map ────────────────────────────────────────────────
 	var map_col = VBoxContainer.new()
 	map_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	map_col.size_flags_stretch_ratio = 2.0
@@ -4245,49 +4348,129 @@ func _build_overworld_tab(parent: Control) -> void:
 	# Title strip
 	var title_panel = PanelContainer.new()
 	var title_style = StyleBoxFlat.new()
-	title_style.bg_color = Color(0.08, 0.05, 0.15, 1.0)
+	title_style.bg_color = Color(0.06, 0.04, 0.12, 1.0)
 	title_style.content_margin_left = 12; title_style.content_margin_right = 12
 	title_style.content_margin_top = 8;   title_style.content_margin_bottom = 8
 	title_panel.add_theme_stylebox_override("panel", title_style)
 	var title_hbox = HBoxContainer.new()
 	title_hbox.add_theme_constant_override("separation", 10)
 	title_panel.add_child(title_hbox)
-	title_hbox.add_child(RimvaleUtils.label("🗺", 20, RimvaleColors.GOLD))
-	title_hbox.add_child(RimvaleUtils.label("RIMVALE — Overworld Map", 18, RimvaleColors.ACCENT))
+	title_hbox.add_child(RimvaleUtils.label("🌐", 20, RimvaleColors.GOLD))
+	title_hbox.add_child(RimvaleUtils.label("RIMVALE — World Terrain", 18, RimvaleColors.ACCENT))
 	var spacer = Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_hbox.add_child(spacer)
-	title_hbox.add_child(RimvaleUtils.label("Tap a region to visit.", 11, RimvaleColors.TEXT_GRAY))
+	title_hbox.add_child(RimvaleUtils.label("Click a beacon to explore.", 11, RimvaleColors.TEXT_GRAY))
 	map_col.add_child(title_panel)
 
-	# Map canvas — fills the rest of the left column
-	_overworld_map_control = Control.new()
-	_overworld_map_control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_overworld_map_control.size_flags_vertical   = Control.SIZE_EXPAND_FILL
-	_overworld_map_control.clip_contents = true
-	map_col.add_child(_overworld_map_control)
+	# 3D map container
+	_ow_map_container = Control.new()
+	_ow_map_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ow_map_container.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+	_ow_map_container.clip_contents = true
+	map_col.add_child(_ow_map_container)
 
-	# Map parchment background
-	var parchment = ColorRect.new()
-	parchment.color = Color(0.10, 0.08, 0.14, 1.0)
-	parchment.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_overworld_map_control.add_child(parchment)
+	_ow_svc = SubViewportContainer.new()
+	_ow_svc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ow_svc.stretch = true
+	_ow_map_container.add_child(_ow_svc)
 
-	# Subtle grid overlay
-	var grid = _overworld_grid_overlay()
-	grid.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_overworld_map_control.add_child(grid)
+	_ow_viewport = SubViewport.new()
+	_ow_viewport.size = Vector2i(1024, 768)
+	_ow_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_ow_viewport.transparent_bg = false
+	_ow_svc.add_child(_ow_viewport)
 
-	# Populate region buttons (positioned in _overworld_layout_regions, called deferred)
-	_overworld_region_buttons.clear()
-	for region in OVERWORLD_REGIONS:
-		var btn = _overworld_region_button(region)
-		_overworld_map_control.add_child(btn)
-		_overworld_region_buttons[region["id"]] = btn
+	# ── 3D scene ────────────────────────────────────────────────────────────
+	_ow_world_root = Node3D.new()
+	_ow_world_root.name = "WorldMap3D"
+	_ow_viewport.add_child(_ow_world_root)
 
-	# Reposition whenever the map resizes
-	_overworld_map_control.resized.connect(_overworld_layout_regions)
-	# Initial layout (deferred so size is valid)
-	call_deferred("_overworld_layout_regions")
+	# Environment
+	var env_node = WorldEnvironment.new()
+	var env = Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.02, 0.04, 0.12)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.18, 0.14, 0.28)
+	env.ambient_light_energy = 0.7
+	env.glow_enabled = true
+	env.glow_intensity = 0.6
+	env.glow_bloom = 0.12
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
+	env.ssao_enabled = true
+	env.ssao_radius = 1.0
+	env.ssao_intensity = 1.2
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.04, 0.06, 0.14)
+	env.fog_density = 0.006
+	env.fog_aerial_perspective = 0.5
+	env_node.environment = env
+	_ow_world_root.add_child(env_node)
+
+	# Camera
+	_ow_camera = Camera3D.new()
+	_ow_camera.name = "WorldMapCam"
+	_ow_camera.fov = 50.0
+	_ow_camera.near = 0.1
+	_ow_camera.far = 200.0
+	_ow_camera.current = true
+	_ow_world_root.add_child(_ow_camera)
+	_ow_camera.position = Vector3(0, 28, 14)
+	_ow_camera.look_at(Vector3(0, 0, -2), Vector3.UP)
+
+	# Main sunlight
+	var sun = DirectionalLight3D.new()
+	sun.light_color = Color(0.92, 0.87, 0.97)
+	sun.light_energy = 1.3
+	sun.shadow_enabled = true
+	sun.rotation_degrees = Vector3(-55.0, 30.0, 0.0)
+	_ow_world_root.add_child(sun)
+
+	# Fill light
+	var fill = DirectionalLight3D.new()
+	fill.light_color = Color(0.22, 0.15, 0.38)
+	fill.light_energy = 0.35
+	fill.shadow_enabled = false
+	fill.rotation_degrees = Vector3(30.0, -140.0, 0.0)
+	_ow_world_root.add_child(fill)
+
+	# Terrain mesh
+	_ow_world_root.add_child(_ow_build_terrain())
+
+	# Water plane
+	_ow_world_root.add_child(_ow_build_water())
+
+	# Region beacon markers
+	_ow_build_region_markers()
+
+	# 2D label overlay (projected from 3D)
+	_ow_label_overlay = Control.new()
+	_ow_label_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ow_label_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ow_map_container.add_child(_ow_label_overlay)
+	_ow_build_label_overlay()
+
+	# Back button (visible when zoomed)
+	_ow_back_btn = Button.new()
+	_ow_back_btn.text = "◀ World View"
+	_ow_back_btn.flat = false
+	_ow_back_btn.position = Vector2(12, 12)
+	_ow_back_btn.custom_minimum_size = Vector2(130, 32)
+	_ow_back_btn.visible = false
+	_ow_back_btn.add_theme_font_size_override("font_size", 12)
+	var back_st = StyleBoxFlat.new()
+	back_st.bg_color = Color(0.10, 0.08, 0.18, 0.90)
+	back_st.border_color = RimvaleColors.ACCENT
+	back_st.set_border_width_all(1)
+	back_st.set_corner_radius_all(4)
+	back_st.content_margin_left = 8; back_st.content_margin_right = 8
+	_ow_back_btn.add_theme_stylebox_override("normal", back_st)
+	_ow_back_btn.add_theme_color_override("font_color", RimvaleColors.ACCENT)
+	_ow_back_btn.pressed.connect(_ow_zoom_out)
+	_ow_map_container.add_child(_ow_back_btn)
+
+	# Click handling
+	_ow_svc.gui_input.connect(_ow_on_map_input)
 
 	# ── RIGHT: Detail panel ─────────────────────────────────────────────────
 	var detail_col = PanelContainer.new()
@@ -4311,124 +4494,714 @@ func _build_overworld_tab(parent: Control) -> void:
 	_overworld_detail_vbox.add_theme_constant_override("separation", 8)
 	detail_scroll.add_child(_overworld_detail_vbox)
 
-	# Open the current region (from GameState) in the detail panel
 	var cur: String = GameState.current_region
 	if cur == "": cur = "plains"
 	_overworld_focus_region(cur)
 
 
-func _overworld_grid_overlay() -> Control:
-	# Lightweight crosshatch suggesting a map grid.
-	var c = Control.new()
-	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for i in range(1, 10):
-		var vline = ColorRect.new()
-		vline.color = Color(0.20, 0.18, 0.30, 0.25)
-		vline.anchor_left = i / 10.0; vline.anchor_right = i / 10.0
-		vline.anchor_top = 0.0; vline.anchor_bottom = 1.0
-		vline.offset_left = 0; vline.offset_right = 1
-		vline.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		c.add_child(vline)
-	for j in range(1, 10):
-		var hline = ColorRect.new()
-		hline.color = Color(0.20, 0.18, 0.30, 0.25)
-		hline.anchor_top = j / 10.0; hline.anchor_bottom = j / 10.0
-		hline.anchor_left = 0.0; hline.anchor_right = 1.0
-		hline.offset_top = 0; hline.offset_bottom = 1
-		hline.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		c.add_child(hline)
-	return c
+# ── 3D Terrain Generation ────────────────────────────────────────────────────
+
+const OW_GRID := 80
+const OW_HALF := 16.0
+
+func _ow_region_world_pos(region: Dictionary) -> Vector3:
+	var p: Vector2 = region["pos"]
+	return Vector3((p.x - 0.5) * OW_HALF * 2.0, 0.0, (p.y - 0.5) * OW_HALF * 2.0)
+
+func _ow_terrain_params(region_id: String) -> Array:
+	# [base_height, noise_amplitude, ground_color, highlight_color]
+	match region_id:
+		"plains":    return [0.35, 0.12, Color(0.28, 0.48, 0.16), Color(0.40, 0.60, 0.22)]
+		"peaks":     return [3.2,  1.4,  Color(0.60, 0.65, 0.75), Color(0.80, 0.88, 0.95)]
+		"shadows":   return [0.15, 0.30, Color(0.18, 0.10, 0.28), Color(0.30, 0.18, 0.45)]
+		"glass":     return [0.55, 0.08, Color(0.48, 0.68, 0.78), Color(0.65, 0.85, 0.95)]
+		"isles":     return [0.08, 0.30, Color(0.14, 0.38, 0.45), Color(0.22, 0.55, 0.65)]
+		"metro":     return [0.45, 0.04, Color(0.50, 0.42, 0.20), Color(0.65, 0.55, 0.25)]
+		"astral":    return [0.9,  0.65, Color(0.32, 0.18, 0.50), Color(0.50, 0.30, 0.70)]
+		"terminus":  return [2.6,  0.55, Color(0.28, 0.45, 0.65), Color(0.40, 0.60, 0.85)]
+		"titans":    return [1.4,  0.65, Color(0.52, 0.22, 0.10), Color(0.70, 0.35, 0.15)]
+		"sublimini": return [-0.3, 0.45, Color(0.40, 0.06, 0.10), Color(0.60, 0.12, 0.18)]
+		_:           return [0.0,  0.1,  Color(0.12, 0.12, 0.12), Color(0.20, 0.20, 0.20)]
+
+func _ow_noise(x: float, z: float) -> float:
+	var v: float = 0.0
+	v += sin(x * 1.7 + 0.3) * cos(z * 1.3 + 0.7) * 0.45
+	v += sin(x * 3.1 - z * 2.4 + 1.2) * 0.25
+	v += cos(x * 5.7 + z * 4.8 - 0.5) * 0.15
+	v += sin(x * 8.3 + 1.1) * cos(z * 7.2 - 0.9) * 0.10
+	v += sin(x * 13.0 - z * 11.0 + 2.0) * 0.05
+	return v
+
+func _ow_is_sublimini_unlocked() -> bool:
+	# Sublimini requires all 9 region badges
+	var badge_count: int = 0
+	for r in OVERWORLD_REGIONS:
+		var b: String = str(r.get("badge", ""))
+		if not b.is_empty() and b in GameState.story_earned_badges:
+			badge_count += 1
+	return badge_count >= 9
+
+func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
+	var wx: float = (uv_x - 0.5) * OW_HALF * 2.0
+	var wz: float = (uv_z - 0.5) * OW_HALF * 2.0
+	var ocean_col := Color(0.04, 0.08, 0.22)
+
+	# Find closest region (skip sublimini — it's a floating island)
+	var best_id: String = ""
+	var best_dist: float = 999.0
+	var second_dist: float = 999.0
+	for r in OVERWORLD_REGIONS:
+		if str(r["id"]) == "sublimini": continue
+		var p: Vector2 = r["pos"]
+		var dx: float = uv_x - p.x
+		var dz: float = uv_z - p.y
+		var d: float = sqrt(dx * dx + dz * dz)
+		if d < best_dist:
+			second_dist = best_dist
+			best_dist = d
+			best_id = str(r["id"])
+		elif d < second_dist:
+			second_dist = d
+
+	var params: Array = _ow_terrain_params(best_id)
+	var base_h: float = params[0]
+	var noise_amp: float = params[1]
+	var col: Color = params[2]
+	var col_hi: Color = params[3]
+
+	var n: float = _ow_noise(wx, wz)
+	var height: float = base_h + n * noise_amp
+	var col_t: float = clampf((n + 1.0) * 0.5, 0.0, 1.0)
+	var final_col: Color = col.lerp(col_hi, col_t * 0.4)
+
+	# ── Water channels ──────────────────────────────────────────────────────
+	# 1. Horizontal channel: mainland (y<0.60) vs southern islands (y>0.68)
+	var ch1_dist: float = absf(uv_z - 0.64)
+	if ch1_dist < 0.06 and best_dist > 0.10:
+		var ch1_t: float = (1.0 - clampf(ch1_dist / 0.06, 0.0, 1.0)) * 0.90
+		height = lerpf(height, -0.6, ch1_t)
+		final_col = final_col.lerp(ocean_col, ch1_t)
+
+	# 2. Vertical channel: western islands (Glass/Titans x<0.30) vs mainland (x>0.38)
+	#    Only applies in the mainland latitude band (y 0.15 to 0.58)
+	if uv_z > 0.12 and uv_z < 0.60:
+		var ch2_dist: float = absf(uv_x - 0.33)
+		if ch2_dist < 0.06 and best_dist > 0.08:
+			var ch2_t: float = (1.0 - clampf(ch2_dist / 0.06, 0.0, 1.0)) * 0.85
+			height = lerpf(height, -0.6, ch2_t)
+			final_col = final_col.lerp(ocean_col, ch2_t)
+
+	# 3. Channel isolating Terminus Volarus (northeast island, x>0.74, y<0.22)
+	if uv_x > 0.68 and uv_z < 0.28:
+		# Diagonal water channel running from ~(0.74, 0.02) to ~(0.74, 0.24)
+		var ch3_dist: float = absf(uv_x - 0.74)
+		if ch3_dist < 0.05 and best_dist > 0.08:
+			var ch3_t: float = (1.0 - clampf(ch3_dist / 0.05, 0.0, 1.0)) * 0.85
+			height = lerpf(height, -0.6, ch3_t)
+			final_col = final_col.lerp(ocean_col, ch3_t)
+
+	# 5. Central bay — carves horseshoe shape into the mainland
+	var bay_cx: float = 0.40
+	var bay_top_z: float = 0.30
+	var bay_bot_z: float = 0.64
+	if uv_z > bay_top_z and uv_z < bay_bot_z:
+		var progress: float = (uv_z - bay_top_z) / (bay_bot_z - bay_top_z)
+		var half_w: float = 0.04 + progress * 0.13
+		var dx_bay: float = absf(uv_x - bay_cx)
+		if dx_bay < half_w and best_dist > 0.12:
+			var inner_t: float = 1.0 - clampf(dx_bay / half_w, 0.0, 1.0)
+			var top_fade: float = clampf((uv_z - bay_top_z) / 0.06, 0.0, 1.0)
+			var bay_t: float = inner_t * top_fade * 0.88
+			height = lerpf(height, -0.6, bay_t)
+			final_col = final_col.lerp(ocean_col, bay_t)
+
+	# 4. Vertical channel between Isles (x~0.24) and Astral Tear (x~0.78) in southern ocean
+	if uv_z > 0.68:
+		var ch4_dist: float = absf(uv_x - 0.51)
+		if ch4_dist < 0.10 and best_dist > 0.12:
+			var ch4_t: float = (1.0 - clampf(ch4_dist / 0.10, 0.0, 1.0)) * 0.80
+			height = lerpf(height, -0.6, ch4_t)
+			final_col = final_col.lerp(ocean_col, ch4_t)
+
+	# Continent edge fade to ocean
+	var edge_x: float = 1.0 - absf(uv_x - 0.5) * 2.3
+	var edge_z: float = 1.0 - absf(uv_z - 0.5) * 2.3
+	var continent: float = clampf(minf(edge_x, edge_z), -0.5, 1.0)
+	if continent < 0.25:
+		var ocean_t: float = 1.0 - clampf(continent / 0.25, 0.0, 1.0)
+		height = lerpf(height, -0.6, ocean_t)
+		final_col = final_col.lerp(ocean_col, ocean_t)
+
+	# Too far from any region → ocean
+	if best_dist > 0.18:
+		var far_t: float = clampf((best_dist - 0.18) / 0.08, 0.0, 1.0)
+		height = lerpf(height, -0.6, far_t)
+		final_col = final_col.lerp(ocean_col, far_t)
+
+	return [height, final_col]
+
+func _ow_build_terrain() -> MeshInstance3D:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var grid: Array = []
+	for gz in range(OW_GRID + 1):
+		var row: Array = []
+		for gx in range(OW_GRID + 1):
+			row.append(_ow_sample_terrain(float(gx) / float(OW_GRID), float(gz) / float(OW_GRID)))
+		grid.append(row)
+
+	var step: float = OW_HALF * 2.0 / float(OW_GRID)
+	for gz in range(OW_GRID):
+		for gx in range(OW_GRID):
+			var x0: float = -OW_HALF + gx * step
+			var x1: float = x0 + step
+			var z0: float = -OW_HALF + gz * step
+			var z1: float = z0 + step
+
+			var h00: float = grid[gz][gx][0];     var c00: Color = grid[gz][gx][1]
+			var h10: float = grid[gz][gx + 1][0];  var c10: Color = grid[gz][gx + 1][1]
+			var h01: float = grid[gz + 1][gx][0];  var c01: Color = grid[gz + 1][gx][1]
+			var h11: float = grid[gz + 1][gx + 1][0]; var c11: Color = grid[gz + 1][gx + 1][1]
+
+			st.set_color(c00); st.add_vertex(Vector3(x0, h00, z0))
+			st.set_color(c10); st.add_vertex(Vector3(x1, h10, z0))
+			st.set_color(c01); st.add_vertex(Vector3(x0, h01, z1))
+
+			st.set_color(c10); st.add_vertex(Vector3(x1, h10, z0))
+			st.set_color(c11); st.add_vertex(Vector3(x1, h11, z1))
+			st.set_color(c01); st.add_vertex(Vector3(x0, h01, z1))
+
+	st.generate_normals()
+	var mi := MeshInstance3D.new()
+	mi.name = "Terrain"
+	mi.mesh = st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.roughness = 0.82
+	mat.metallic = 0.05
+	mi.material_override = mat
+	return mi
+
+func _ow_build_water() -> MeshInstance3D:
+	var water_mesh := PlaneMesh.new()
+	water_mesh.size = Vector2(OW_HALF * 2.5, OW_HALF * 2.5)
+	var mi := MeshInstance3D.new()
+	mi.name = "Water"
+	mi.mesh = water_mesh
+	mi.position = Vector3(0, -0.15, 0)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.06, 0.14, 0.32, 0.80)
+	mat.roughness = 0.15
+	mat.metallic = 0.40
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.emission_enabled = true
+	mat.emission = Color(0.03, 0.08, 0.20)
+	mat.emission_energy_multiplier = 0.5
+	mi.material_override = mat
+	return mi
+
+func _ow_build_region_markers() -> void:
+	_ow_region_markers.clear()
+	for region in OVERWORLD_REGIONS:
+		var rid: String = str(region["id"])
+		var accent: Color = region.get("accent", RimvaleColors.ACCENT)
+		var wpos: Vector3 = _ow_region_world_pos(region)
+
+		# Sublimini is a special floating island — handled separately
+		if rid == "sublimini":
+			_ow_build_sublimini_island(region)
+			continue
+
+		var p: Vector2 = region["pos"]
+		var sample: Array = _ow_sample_terrain(p.x, p.y)
+		var wy: float = maxf(sample[0], 0.0) + 0.1
+
+		var marker := Node3D.new()
+		marker.name = "Marker_" + rid
+		marker.position = Vector3(wpos.x, wy, wpos.z)
+
+		# Glowing pillar
+		var pillar_mesh := CylinderMesh.new()
+		pillar_mesh.top_radius = 0.12
+		pillar_mesh.bottom_radius = 0.22
+		pillar_mesh.height = 1.8
+		var pillar := MeshInstance3D.new()
+		pillar.mesh = pillar_mesh
+		pillar.position.y = 0.9
+		var pmat := StandardMaterial3D.new()
+		pmat.albedo_color = Color(accent.r, accent.g, accent.b, 0.75)
+		pmat.emission_enabled = true
+		pmat.emission = accent
+		pmat.emission_energy_multiplier = 2.5
+		pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		pmat.roughness = 0.2
+		pillar.material_override = pmat
+		marker.add_child(pillar)
+
+		# Crystal orb on top
+		var cap_mesh := SphereMesh.new()
+		cap_mesh.radius = 0.20
+		cap_mesh.height = 0.40
+		var cap := MeshInstance3D.new()
+		cap.mesh = cap_mesh
+		cap.position.y = 1.9
+		var cmat := StandardMaterial3D.new()
+		cmat.albedo_color = accent
+		cmat.emission_enabled = true
+		cmat.emission = accent
+		cmat.emission_energy_multiplier = 4.0
+		cmat.roughness = 0.1
+		cap.material_override = cmat
+		marker.add_child(cap)
+
+		# Point light
+		var light := OmniLight3D.new()
+		light.light_color = accent
+		light.light_energy = 2.0
+		light.omni_range = 5.0
+		light.position.y = 1.2
+		light.shadow_enabled = false
+		marker.add_child(light)
+
+		# Ground ring
+		var ring_mesh := CylinderMesh.new()
+		ring_mesh.top_radius = 0.8
+		ring_mesh.bottom_radius = 0.8
+		ring_mesh.height = 0.05
+		var ring := MeshInstance3D.new()
+		ring.mesh = ring_mesh
+		ring.position.y = 0.03
+		var rmat := StandardMaterial3D.new()
+		rmat.albedo_color = Color(accent.r, accent.g, accent.b, 0.35)
+		rmat.emission_enabled = true
+		rmat.emission = accent
+		rmat.emission_energy_multiplier = 1.0
+		rmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		ring.material_override = rmat
+		marker.add_child(ring)
+
+		_ow_world_root.add_child(marker)
+		_ow_region_markers[rid] = marker
 
 
-func _overworld_region_button(region: Dictionary) -> Control:
-	# A clickable region marker: icon + short name + glow when visited/current.
-	var btn = Button.new()
-	btn.custom_minimum_size = Vector2(140, 72)
-	btn.flat = false
-	btn.clip_text = true
-	btn.text = "%s  %s" % [str(region["icon"]), str(region["name"])]
-	btn.add_theme_font_size_override("font_size", 12)
-
+func _ow_build_sublimini_island(region: Dictionary) -> void:
+	# Sublimini Dominus — a floating island high above the map center.
+	# Only visible when all 9 region badges are earned (unlocked).
 	var accent: Color = region.get("accent", RimvaleColors.ACCENT)
-	var bg = StyleBoxFlat.new()
-	bg.bg_color = Color(0.12, 0.08, 0.18, 0.92)
-	bg.border_color = accent
-	bg.border_width_left = 2; bg.border_width_right = 2
-	bg.border_width_top = 2;  bg.border_width_bottom = 2
-	bg.corner_radius_top_left = 6; bg.corner_radius_top_right = 6
-	bg.corner_radius_bottom_left = 6; bg.corner_radius_bottom_right = 6
-	bg.content_margin_left = 6; bg.content_margin_right = 6
-	btn.add_theme_stylebox_override("normal", bg)
+	var unlocked: bool = _ow_is_sublimini_unlocked()
 
-	var hover = bg.duplicate()
-	hover.bg_color = Color(0.18, 0.12, 0.26, 0.95)
-	btn.add_theme_stylebox_override("hover", hover)
+	var island := Node3D.new()
+	island.name = "Sublimini_Island"
+	# Float above the center of the map
+	island.position = Vector3(0.0, 12.0, -2.0)
+	island.visible = unlocked
 
-	var pressed = bg.duplicate()
-	pressed.bg_color = Color(0.22, 0.14, 0.32, 1.0)
-	btn.add_theme_stylebox_override("pressed", pressed)
+	# Floating rock platform — jagged inverted cone shape
+	var rock_mesh := CylinderMesh.new()
+	rock_mesh.top_radius = 2.5
+	rock_mesh.bottom_radius = 0.6
+	rock_mesh.height = 2.0
+	var rock := MeshInstance3D.new()
+	rock.mesh = rock_mesh
+	rock.position.y = -1.0
+	var rock_mat := StandardMaterial3D.new()
+	rock_mat.albedo_color = Color(0.15, 0.05, 0.08)
+	rock_mat.roughness = 0.9
+	rock_mat.metallic = 0.1
+	rock.material_override = rock_mat
+	island.add_child(rock)
 
-	btn.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
-	btn.add_theme_color_override("font_hover_color", accent)
+	# Surface layer — dark crimson terrain
+	var surface_mesh := CylinderMesh.new()
+	surface_mesh.top_radius = 2.5
+	surface_mesh.bottom_radius = 2.5
+	surface_mesh.height = 0.15
+	var surface := MeshInstance3D.new()
+	surface.mesh = surface_mesh
+	surface.position.y = 0.0
+	var surf_mat := StandardMaterial3D.new()
+	surf_mat.albedo_color = Color(0.35, 0.06, 0.10)
+	surf_mat.emission_enabled = true
+	surf_mat.emission = Color(0.30, 0.04, 0.08)
+	surf_mat.emission_energy_multiplier = 0.5
+	surf_mat.roughness = 0.7
+	surface.material_override = surf_mat
+	island.add_child(surface)
 
-	var rid: String = str(region["id"])
-	btn.pressed.connect(func(): _overworld_focus_region(rid))
-	return btn
+	# Void eye — pulsing dark sphere at center
+	var void_mesh := SphereMesh.new()
+	void_mesh.radius = 0.6
+	void_mesh.height = 1.2
+	var void_orb := MeshInstance3D.new()
+	void_orb.mesh = void_mesh
+	void_orb.position.y = 0.8
+	var void_mat := StandardMaterial3D.new()
+	void_mat.albedo_color = Color(0.0, 0.0, 0.0, 0.9)
+	void_mat.emission_enabled = true
+	void_mat.emission = accent
+	void_mat.emission_energy_multiplier = 6.0
+	void_mat.roughness = 0.0
+	void_mat.metallic = 1.0
+	void_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	void_orb.material_override = void_mat
+	island.add_child(void_orb)
+
+	# Crimson beacon pillar
+	var pillar_mesh := CylinderMesh.new()
+	pillar_mesh.top_radius = 0.08
+	pillar_mesh.bottom_radius = 0.15
+	pillar_mesh.height = 2.0
+	var pillar := MeshInstance3D.new()
+	pillar.mesh = pillar_mesh
+	pillar.position.y = 1.8
+	var pmat := StandardMaterial3D.new()
+	pmat.albedo_color = Color(accent.r, accent.g, accent.b, 0.70)
+	pmat.emission_enabled = true
+	pmat.emission = accent
+	pmat.emission_energy_multiplier = 3.0
+	pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	pillar.material_override = pmat
+	island.add_child(pillar)
+
+	# Ominous red light
+	var light := OmniLight3D.new()
+	light.light_color = accent
+	light.light_energy = 5.0
+	light.omni_range = 12.0
+	light.position.y = 1.5
+	light.shadow_enabled = true
+	island.add_child(light)
+
+	# Chains hanging down (thin cylinders angled outward)
+	for ci in range(4):
+		var chain_angle: float = (float(ci) / 4.0) * TAU
+		var chain_mesh := CylinderMesh.new()
+		chain_mesh.top_radius = 0.03
+		chain_mesh.bottom_radius = 0.03
+		chain_mesh.height = 6.0
+		var chain := MeshInstance3D.new()
+		chain.mesh = chain_mesh
+		chain.position = Vector3(cos(chain_angle) * 1.2, -4.0, sin(chain_angle) * 1.2)
+		chain.rotation_degrees = Vector3(sin(chain_angle) * 15.0, 0, cos(chain_angle) * 15.0)
+		var ch_mat := StandardMaterial3D.new()
+		ch_mat.albedo_color = Color(0.20, 0.08, 0.12, 0.50)
+		ch_mat.emission_enabled = true
+		ch_mat.emission = Color(0.30, 0.05, 0.08)
+		ch_mat.emission_energy_multiplier = 1.0
+		ch_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		chain.material_override = ch_mat
+		island.add_child(chain)
+
+	_ow_world_root.add_child(island)
+	_ow_region_markers["sublimini"] = island
 
 
-func _overworld_layout_regions() -> void:
-	# Position each region button at its (pos × map_size) coordinate.
-	if _overworld_map_control == null: return
-	var sz: Vector2 = _overworld_map_control.size
-	if sz.x < 40.0 or sz.y < 40.0: return  # not laid out yet
+# ── 2D Label Overlay (projected from 3D) ─────────────────────────────────────
+
+func _ow_build_label_overlay() -> void:
+	_ow_region_label_nodes.clear()
+	for region in OVERWORLD_REGIONS:
+		var rid: String = str(region["id"])
+		# Sublimini label only shown when unlocked
+		if rid == "sublimini" and not _ow_is_sublimini_unlocked():
+			continue
+		var accent: Color = region.get("accent", RimvaleColors.ACCENT)
+
+		var lbl_panel := PanelContainer.new()
+		var st := StyleBoxFlat.new()
+		st.bg_color = Color(0.05, 0.03, 0.10, 0.75)
+		st.border_color = Color(accent.r, accent.g, accent.b, 0.50)
+		st.set_border_width_all(1)
+		st.set_corner_radius_all(3)
+		st.content_margin_left = 6; st.content_margin_right = 6
+		st.content_margin_top = 2;  st.content_margin_bottom = 2
+		lbl_panel.add_theme_stylebox_override("panel", st)
+		lbl_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+		var lbl_hbox := HBoxContainer.new()
+		lbl_hbox.add_theme_constant_override("separation", 4)
+		lbl_hbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lbl_panel.add_child(lbl_hbox)
+
+		var icon_lbl := Label.new()
+		icon_lbl.text = str(region["icon"])
+		icon_lbl.add_theme_font_size_override("font_size", 14)
+		icon_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lbl_hbox.add_child(icon_lbl)
+
+		var name_lbl := Label.new()
+		name_lbl.text = str(region["name"])
+		name_lbl.add_theme_font_size_override("font_size", 11)
+		name_lbl.add_theme_color_override("font_color", accent)
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lbl_hbox.add_child(name_lbl)
+
+		_ow_label_overlay.add_child(lbl_panel)
+		_ow_region_label_nodes[rid] = lbl_panel
+
+func _ow_update_labels() -> void:
+	if not _ow_camera or not _ow_viewport or not _ow_map_container: return
+	var vp_size: Vector2 = Vector2(_ow_viewport.size)
+	var cs: Vector2 = _ow_map_container.size
 
 	for region in OVERWORLD_REGIONS:
 		var rid: String = str(region["id"])
-		if not _overworld_region_buttons.has(rid): continue
-		var btn: Button = _overworld_region_buttons[rid]
-		var pos: Vector2 = region["pos"]
-		var bx: float = pos.x * sz.x - btn.custom_minimum_size.x * 0.5
-		var by: float = pos.y * sz.y - btn.custom_minimum_size.y * 0.5
-		btn.position = Vector2(bx, by)
-		btn.size = btn.custom_minimum_size
+		if not _ow_region_label_nodes.has(rid): continue
+		var panel: Control = _ow_region_label_nodes[rid]
 
-	_overworld_refresh_region_highlights()
+		# Hide non-focused labels when zoomed
+		if _ow_zoomed_region != "" and rid != _ow_zoomed_region:
+			panel.visible = false
+			continue
+
+		var wpos: Vector3 = Vector3.ZERO
+		if _ow_region_markers.has(rid):
+			if rid == "sublimini":
+				wpos = _ow_region_markers[rid].global_position + Vector3(0, 3.5, 0)
+			else:
+				wpos = _ow_region_markers[rid].global_position + Vector3(0, 2.2, 0)
+
+		if not _ow_camera.is_position_behind(wpos):
+			var sp: Vector2 = _ow_camera.unproject_position(wpos)
+			sp.x = sp.x * cs.x / vp_size.x
+			sp.y = sp.y * cs.y / vp_size.y
+			panel.position = Vector2(sp.x - panel.size.x * 0.5, sp.y - panel.size.y)
+			panel.visible = true
+		else:
+			panel.visible = false
+
+	for sub_data in _ow_subregion_label_nodes:
+		var sub_panel: Control = sub_data["panel"]
+		var sub_pos: Vector3 = sub_data["pos"]
+		if not _ow_camera.is_position_behind(sub_pos):
+			var sp: Vector2 = _ow_camera.unproject_position(sub_pos)
+			sp.x = sp.x * cs.x / vp_size.x
+			sp.y = sp.y * cs.y / vp_size.y
+			sub_panel.position = Vector2(sp.x - sub_panel.size.x * 0.5, sp.y - sub_panel.size.y)
+			sub_panel.visible = true
+		else:
+			sub_panel.visible = false
+
+
+# ── Camera Control ───────────────────────────────────────────────────────────
+
+func _ow_animate_camera(to_pos: Vector3, to_look: Vector3) -> void:
+	if _ow_camera == null: return
+	_ow_cam_from_pos = _ow_camera.position
+	_ow_cam_from_look = _ow_camera.position + _ow_camera.basis * Vector3(0, 0, -20)
+	_ow_cam_to_pos = to_pos
+	_ow_cam_to_look = to_look
+	_ow_cam_t = 0.0
+	_ow_cam_animating = true
+
+func _ow_zoom_to_region(rid: String) -> void:
+	_ow_zoomed_region = rid
+	if _ow_back_btn: _ow_back_btn.visible = true
+
+	var region: Dictionary = _overworld_find_region(rid)
+	if region.is_empty(): return
+
+	if rid == "sublimini":
+		# Sublimini is a floating island above the map
+		var island_pos := Vector3(0.0, 12.0, -2.0)
+		_ow_animate_camera(
+			Vector3(island_pos.x + 3.0, island_pos.y + 6.0, island_pos.z + 8.0),
+			island_pos
+		)
+	else:
+		var wpos: Vector3 = _ow_region_world_pos(region)
+		var p: Vector2 = region["pos"]
+		var sample: Array = _ow_sample_terrain(p.x, p.y)
+		var th: float = maxf(sample[0], 0.0)
+		_ow_animate_camera(
+			Vector3(wpos.x + 2.0, th + 10.0, wpos.z + 7.0),
+			Vector3(wpos.x, th, wpos.z)
+		)
+
+	_ow_clear_subregion_labels()
+	_ow_build_subregion_labels(region)
+
+func _ow_zoom_out() -> void:
+	_ow_zoomed_region = ""
+	if _ow_back_btn: _ow_back_btn.visible = false
+	_ow_clear_subregion_labels()
+	_ow_animate_camera(Vector3(0, 28, 14), Vector3(0, 0, -2))
+
+func _ow_clear_subregion_labels() -> void:
+	for sub_data in _ow_subregion_label_nodes:
+		if sub_data.has("panel") and is_instance_valid(sub_data["panel"]):
+			sub_data["panel"].queue_free()
+	_ow_subregion_label_nodes.clear()
+
+func _ow_build_subregion_labels(region: Dictionary) -> void:
+	var subs: Array = region.get("subregions", [])
+	var accent: Color = region.get("accent", RimvaleColors.ACCENT)
+	var rid: String = str(region["id"])
+	var center: Vector3
+	var base_h: float
+	if rid == "sublimini":
+		center = Vector3(0.0, 12.0, -2.0)
+		base_h = 12.0
+	else:
+		center = _ow_region_world_pos(region)
+		var p: Vector2 = region["pos"]
+		var sample: Array = _ow_sample_terrain(p.x, p.y)
+		base_h = maxf(sample[0], 0.0)
+
+	for si in range(subs.size()):
+		var sub_name: String = str(subs[si])
+		var angle: float = (float(si) / float(maxi(subs.size(), 1))) * TAU
+		var radius: float = 2.5
+		var sub_pos := Vector3(
+			center.x + cos(angle) * radius,
+			base_h + 0.5,
+			center.z + sin(angle) * radius
+		)
+
+		var panel := PanelContainer.new()
+		var st := StyleBoxFlat.new()
+		st.bg_color = Color(0.08, 0.05, 0.14, 0.85)
+		st.border_color = accent
+		st.set_border_width_all(1)
+		st.set_corner_radius_all(3)
+		st.content_margin_left = 8; st.content_margin_right = 8
+		st.content_margin_top = 3;  st.content_margin_bottom = 3
+		panel.add_theme_stylebox_override("panel", st)
+		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+		var lbl := Label.new()
+		lbl.text = sub_name
+		lbl.add_theme_font_size_override("font_size", 10)
+		lbl.add_theme_color_override("font_color", accent)
+		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		panel.add_child(lbl)
+
+		_ow_label_overlay.add_child(panel)
+		_ow_subregion_label_nodes.append({"panel": panel, "pos": sub_pos})
+
+
+# ── 3D Input Handling ────────────────────────────────────────────────────────
+
+func _ow_on_map_input(event: InputEvent) -> void:
+	if not _ow_camera or not _ow_viewport: return
+
+	# ── Mouse button: start/end drag or click ────────────────────────────
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_ow_dragging = true
+			_ow_drag_start = event.position
+			_ow_drag_moved = false
+		else:
+			_ow_dragging = false
+			if not _ow_drag_moved:
+				# This was a click, not a drag — try to pick a region
+				_ow_try_pick_region(event.position)
+		return
+
+	# ── Mouse motion while dragging: pan camera ─────────────────────────
+	if event is InputEventMouseMotion and _ow_dragging:
+		var delta: Vector2 = event.relative
+		if delta.length() > 2.0:
+			_ow_drag_moved = true
+		if _ow_drag_moved and not _ow_cam_animating:
+			# Pan speed scales with camera height (higher = faster pan)
+			var cam_h: float = _ow_camera.position.y
+			var speed: float = cam_h * 0.0035
+			# Move camera and look target along the ground plane
+			var right: Vector3 = _ow_camera.basis.x
+			var forward: Vector3 = _ow_camera.basis.z
+			# Project to XZ plane
+			right.y = 0; right = right.normalized()
+			forward.y = 0; forward = forward.normalized()
+			var offset: Vector3 = -right * delta.x * speed + forward * delta.y * speed
+			_ow_camera.position += offset
+			_ow_cam_look_target += offset
+			_ow_camera.look_at(_ow_cam_look_target, Vector3.UP)
+
+
+func _ow_try_pick_region(mouse_pos: Vector2) -> void:
+	var container_size: Vector2 = _ow_svc.size if _ow_svc else Vector2(1024, 768)
+	var vp_size: Vector2 = Vector2(_ow_viewport.size)
+	var scaled_pos := Vector2(
+		mouse_pos.x * vp_size.x / container_size.x,
+		mouse_pos.y * vp_size.y / container_size.y
+	)
+
+	var from: Vector3 = _ow_camera.project_ray_origin(scaled_pos)
+	var dir: Vector3 = _ow_camera.project_ray_normal(scaled_pos)
+
+	var best_rid: String = ""
+	var best_dist: float = 3.0
+	for region in OVERWORLD_REGIONS:
+		var rid: String = str(region["id"])
+		if not _ow_region_markers.has(rid): continue
+		if rid == "sublimini" and not _ow_is_sublimini_unlocked(): continue
+		var marker_pos: Vector3 = _ow_region_markers[rid].global_position + Vector3(0, 0.9, 0)
+		var to_marker: Vector3 = marker_pos - from
+		var proj: float = to_marker.dot(dir)
+		if proj < 0: continue
+		var closest: Vector3 = from + dir * proj
+		var d: float = closest.distance_to(marker_pos)
+		if d < best_dist:
+			best_dist = d
+			best_rid = rid
+
+	if best_rid != "":
+		_ow_zoom_to_region(best_rid)
+		_overworld_focus_region(best_rid)
 
 
 func _overworld_refresh_region_highlights() -> void:
+	# Update 3D marker brightness and label styles based on game state
+	# Toggle Sublimini floating island visibility
+	if _ow_region_markers.has("sublimini"):
+		_ow_region_markers["sublimini"].visible = _ow_is_sublimini_unlocked()
+
 	for region in OVERWORLD_REGIONS:
 		var rid: String = str(region["id"])
-		if not _overworld_region_buttons.has(rid): continue
-		var btn: Button = _overworld_region_buttons[rid]
 		var accent: Color = region.get("accent", RimvaleColors.ACCENT)
 		var is_current: bool = GameState.current_region == rid
 		var is_visited: bool = rid in GameState.visited_regions
 		var badge: String = str(region.get("badge", ""))
 		var has_badge: bool = (not badge.is_empty()) and badge in GameState.story_earned_badges
 
-		var bg = StyleBoxFlat.new()
-		bg.bg_color = (
-			Color(0.30, 0.24, 0.10, 0.95) if has_badge
-			else Color(0.20, 0.14, 0.28, 0.95) if is_current
-			else Color(0.14, 0.10, 0.20, 0.92) if is_visited
-			else Color(0.10, 0.08, 0.14, 0.88)
-		)
-		bg.border_color = accent
-		bg.border_width_left = 3 if is_current else 2
-		bg.border_width_right = 3 if is_current else 2
-		bg.border_width_top = 3 if is_current else 2
-		bg.border_width_bottom = 3 if is_current else 2
-		bg.corner_radius_top_left = 6; bg.corner_radius_top_right = 6
-		bg.corner_radius_bottom_left = 6; bg.corner_radius_bottom_right = 6
-		bg.content_margin_left = 6; bg.content_margin_right = 6
-		btn.add_theme_stylebox_override("normal", bg)
+		# Adjust marker light intensity
+		if _ow_region_markers.has(rid):
+			var marker_node: Node3D = _ow_region_markers[rid]
+			for child in marker_node.get_children():
+				if child is OmniLight3D:
+					child.light_energy = (
+						4.0 if has_badge
+						else 3.0 if is_current
+						else 1.5 if is_visited
+						else 1.0
+					)
 
-		# Rebuild button label showing state markers
-		var marker: String = ""
-		if has_badge: marker = " 🏅"
-		elif is_current: marker = " ●"
-		elif is_visited: marker = " ·"
-		btn.text = "%s  %s%s" % [str(region["icon"]), str(region["name"]), marker]
+		# Update label styling
+		if _ow_region_label_nodes.has(rid):
+			var lp: PanelContainer = _ow_region_label_nodes[rid]
+			var lst := StyleBoxFlat.new()
+			lst.bg_color = (
+				Color(0.20, 0.16, 0.05, 0.85) if has_badge
+				else Color(0.12, 0.08, 0.18, 0.85) if is_current
+				else Color(0.05, 0.03, 0.10, 0.75)
+			)
+			lst.border_color = Color(accent.r, accent.g, accent.b, 0.70 if is_current else 0.40)
+			lst.set_border_width_all(1)
+			lst.set_corner_radius_all(3)
+			lst.content_margin_left = 6; lst.content_margin_right = 6
+			lst.content_margin_top = 2;  lst.content_margin_bottom = 2
+			lp.add_theme_stylebox_override("panel", lst)
+
+			var lbl_hbox = lp.get_child(0)
+			if lbl_hbox and lbl_hbox.get_child_count() >= 2:
+				var name_lbl: Label = lbl_hbox.get_child(1) as Label
+				var mk: String = ""
+				if has_badge: mk = " 🏅"
+				elif is_current: mk = " ●"
+				elif is_visited: mk = " ·"
+				name_lbl.text = str(region["name"]) + mk
 
 
 func _overworld_find_region(rid: String) -> Dictionary:

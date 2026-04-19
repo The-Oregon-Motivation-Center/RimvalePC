@@ -131,6 +131,7 @@ var _area_mode: bool              = false
 var _area_action: Dictionary      = {}
 var _area_radius: int             = 0
 var _area_preview: Vector2i       = Vector2i(-1, -1)  # tile under cursor
+var _area_tp_origin: Vector2i     = Vector2i(-1, -1)  # teleport range center (caster pos)
 
 const MAP_SIZE: int  = 25
 const TILE_SIZE: int = 32
@@ -286,6 +287,8 @@ var _loot_entity_id:      String = ""
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 func _ready() -> void:
 	_e = RimvaleAPI.engine
+	# Ensure all ritual spells are registered before combat begins
+	GameState.ensure_ritual_spells_registered()
 	_map = _e.get_dungeon_map()
 	if _map.is_empty():
 		var handles: Array = GameState.get_active_handles()
@@ -2158,24 +2161,42 @@ func _build_bottom_bar() -> Control:
 	util_row.add_child(_btn_end_phase)
 
 	# ── Battle log ────────────────────────────────────────────────────────────
+	# Top accent line — gold strip to draw the eye
+	var log_accent := ColorRect.new()
+	log_accent.color = Color(0.75, 0.55, 0.15, 0.70)
+	log_accent.custom_minimum_size = Vector2(0, 2)
+	outer.add_child(log_accent)
+
 	var log_bg := ColorRect.new()
-	log_bg.color = Color(0.04, 0.04, 0.06)
-	log_bg.custom_minimum_size = Vector2(0, 58)
+	log_bg.color = Color(0.05, 0.04, 0.08)
+	log_bg.custom_minimum_size = Vector2(0, 110)
 	outer.add_child(log_bg)
 
 	var log_margin := MarginContainer.new()
 	log_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for s in ["left","right","top","bottom"]:
-		log_margin.add_theme_constant_override("margin_" + s, 5)
+	for s in ["left","right"]:
+		log_margin.add_theme_constant_override("margin_" + s, 8)
+	log_margin.add_theme_constant_override("margin_top", 4)
+	log_margin.add_theme_constant_override("margin_bottom", 6)
 	log_bg.add_child(log_margin)
+
+	var log_inner := VBoxContainer.new()
+	log_inner.add_theme_constant_override("separation", 2)
+	log_margin.add_child(log_inner)
+
+	var log_header := Label.new()
+	log_header.text = "📜 BATTLE LOG"
+	log_header.add_theme_font_size_override("font_size", 11)
+	log_header.add_theme_color_override("font_color", Color(0.75, 0.60, 0.25))
+	log_inner.add_child(log_header)
 
 	_log_text = RichTextLabel.new()
 	_log_text.bbcode_enabled = true
 	_log_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_log_text.add_theme_font_size_override("normal_font_size", 11)
-	_log_text.add_theme_color_override("default_color", Color(0.85, 0.85, 0.80))
+	_log_text.add_theme_font_size_override("normal_font_size", 13)
+	_log_text.add_theme_color_override("default_color", Color(0.90, 0.88, 0.82))
 	_log_text.scroll_following = true
-	log_margin.add_child(_log_text)
+	log_inner.add_child(_log_text)
 
 	return outer
 
@@ -3688,7 +3709,23 @@ func _update_3d_overlays() -> void:
 		var ax: int = _area_preview.x
 		var ay: int = _area_preview.y
 		var r: int  = _area_radius
-		if r == 0:
+		if _area_tp_origin.x >= 0 and r > 0:
+			# Teleport range: show range circle around caster/subject origin
+			var ox: int = _area_tp_origin.x
+			var oy: int = _area_tp_origin.y
+			var range_mat := _make_mat(Color(0.20, 0.55, 0.85, 0.25), 0.0, 0.2,
+				Color(0.30, 0.65, 1.0), 0.2)
+			range_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			for ary in range(oy - r, oy + r + 1):
+				for arx in range(ox - r, ox + r + 1):
+					if arx < 0 or arx >= MAP_SIZE or ary < 0 or ary >= MAP_SIZE: continue
+					if maxi(abs(arx - ox), abs(ary - oy)) <= r:
+						_make_mesh_inst(hl_mesh, range_mat,
+							float(arx) + 0.5, slab_y, float(ary) + 0.5, _overlay_root)
+			# Highlight the hovered destination tile brighter
+			_make_mesh_inst(hl_mesh, area_mat,
+				float(ax) + 0.5, slab_y, float(ay) + 0.5, _overlay_root)
+		elif r == 0:
 			_make_mesh_inst(hl_mesh, area_mat,
 				float(ax) + 0.5, slab_y, float(ay) + 0.5, _overlay_root)
 		else:
@@ -4193,20 +4230,24 @@ func _on_action_pressed(action: Dictionary) -> void:
 
 	# Teleport: self-range → click destination tile; other range → pick target first
 	if is_tp:
+		var tp_max: int = int(action.get("tp_range", 0))
+		var range_hint: String = " (range: %d tiles)" % tp_max if tp_max > 0 else " (SP scales with distance)"
 		if range_idx == 0:
 			# Self teleport: go straight to tile selection
+			var sel_ent: Dictionary = _get_entity(_selected_id)
 			_area_mode    = true
 			_area_action  = action.duplicate()
-			_area_radius  = 0
+			_area_radius  = tp_max   # show range circle if pre-paid
 			_area_preview = Vector2i(-1, -1)
-			_action_mode_lbl.text = "Click a floor tile to teleport to…  [ESC to cancel]"
+			_area_tp_origin = Vector2i(int(sel_ent.get("x", -1)), int(sel_ent.get("y", -1))) if tp_max > 0 else Vector2i(-1, -1)
+			_action_mode_lbl.text = "Click a floor tile to teleport to…%s  [ESC to cancel]" % range_hint
 			_update_3d_view()
 		else:
 			# Teleport another unit: first pick the target, then destination
 			_pending_action = action.duplicate()
 			_pending_action["_target_friendly"] = true
 			_pending_action["_teleport_pick_target"] = true
-			_action_mode_lbl.text = "Click a unit to teleport…  [ESC to cancel]"
+			_action_mode_lbl.text = "Click a unit to teleport…%s  [ESC to cancel]" % range_hint
 			_update_3d_view()
 		return
 
@@ -4241,13 +4282,16 @@ func _execute_action_on_target(target_id: String) -> void:
 		action.erase("_teleport_pick_target")
 		action.erase("_target_friendly")
 		action["_teleport_target_id"] = target_id
+		var tp_max: int = int(action.get("tp_range", 0))
+		var tgt_ent: Dictionary = _get_entity(target_id)
 		_area_mode    = true
 		_area_action  = action.duplicate()
-		_area_radius  = 0
+		_area_radius  = tp_max   # show range circle if pre-paid
 		_area_preview = Vector2i(-1, -1)
-		var tgt_ent: Dictionary = _get_entity(target_id)
+		_area_tp_origin = Vector2i(int(tgt_ent.get("x", -1)), int(tgt_ent.get("y", -1))) if tp_max > 0 else Vector2i(-1, -1)
 		var tgt_name: String = str(tgt_ent.get("name", "target"))
-		_action_mode_lbl.text = "Click a floor tile to teleport %s to…  [ESC to cancel]" % tgt_name
+		var range_hint: String = " (range: %d tiles)" % tp_max if tp_max > 0 else ""
+		_action_mode_lbl.text = "Click a floor tile to teleport %s to…%s  [ESC to cancel]" % [tgt_name, range_hint]
 		_update_3d_view()
 		return
 
@@ -4261,6 +4305,7 @@ func _cancel_pending_action() -> void:
 	_area_action     = {}
 	_area_radius     = 0
 	_area_preview    = Vector2i(-1, -1)
+	_area_tp_origin  = Vector2i(-1, -1)
 	_action_mode_lbl.text = ""
 	_update_3d_view()
 
@@ -4526,8 +4571,8 @@ func _entity_at(tx: int, ty: int) -> Dictionary:
 
 func _add_log(text: String) -> void:
 	_log_lines.append(text)
-	if _log_lines.size() > 80:
-		_log_lines = _log_lines.slice(_log_lines.size() - 80)
+	if _log_lines.size() > 120:
+		_log_lines = _log_lines.slice(_log_lines.size() - 120)
 	_log_text.clear()
 	for line in _log_lines:
 		_log_text.append_text(line + "\n")
@@ -4866,18 +4911,19 @@ func _sc_register_spell() -> void:
 	var die_sides: int = [4,6,8,10,12][_sc_die_idx]
 	var dur_rounds: int = SC_DURATION_ROUNDS[_sc_duration_idx]
 	var cond_csv: String = ",".join(_sc_conditions)
+	# Register spell and teach only the selected unit
+	var sc_handle: int = -2
+	if _selected_id != "":
+		var ent = _get_entity(_selected_id)
+		sc_handle = int(ent.get("handle", -2))
 	_e.add_custom_spell(
 		sname, _sc_domain, cost, _sc_description(),
 		_sc_range_idx, not _sc_is_saving_throw,
 		_sc_die_count, die_sides, _sc_damage_type,
 		_sc_is_healing, dur_rounds, _sc_targets,
-		_sc_area_idx, cond_csv, _sc_is_teleport
+		_sc_area_idx, cond_csv, _sc_is_teleport,
+		false, sc_handle
 	)
-	# Learn it for the currently selected unit
-	if _selected_id != "":
-		var ent = _get_entity(_selected_id)
-		var h: int = int(ent.get("handle", -1))
-		if h >= 0: _e.learn_spell(h, sname)
 	var display_cost: int = 0 if _sc_is_teleport else cost
 	_add_log("[color=#bd66ff]%s registered and learned: %s (%d SP)[/color]" % [sname, _sc_description().left(60), display_cost])
 	_sc_name = ""

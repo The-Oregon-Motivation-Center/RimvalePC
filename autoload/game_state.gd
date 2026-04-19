@@ -77,6 +77,49 @@ var ritual_tasks: Array = []
 ## Active rituals (cast successfully, ready to use in dungeon)
 var active_rituals: Array = []
 
+## Ensure all completed ritual spells are registered in the engine's spell DB
+## and taught to the caster only.  Safe to call multiple times (idempotent).
+## Also cleans up old saves where ritual spells were incorrectly given to everyone.
+func ensure_ritual_spells_registered() -> void:
+	var e = RimvaleAPI.engine
+	if e == null: return
+	# Build a map of spell_name → caster_handle for cleanup
+	var ritual_owners: Dictionary = {}
+	for r in active_rituals:
+		var sp_name: String = str(r.get("spell_name", ""))
+		var handle: int = int(r.get("caster_handle", -1))
+		if sp_name != "":
+			ritual_owners[sp_name] = handle
+		var sp_cost: int = int(r.get("sp_cost", r.get("sp_committed", 1)))
+		e.add_custom_spell(
+			sp_name,
+			int(r.get("domain", 0)),
+			sp_cost,
+			str(r.get("spell_desc", "")),
+			int(r.get("range_idx", 1)),
+			bool(r.get("is_attack", true)),
+			int(r.get("die_count", 1)),
+			int(r.get("die_sides", 6)),
+			int(r.get("damage_type", 3)),
+			bool(r.get("is_healing", false)),
+			int(r.get("duration_rounds", 0)),
+			int(r.get("max_targets", 1)),
+			int(r.get("area_type", 0)),
+			str(r.get("conditions_csv", "")),
+			bool(r.get("is_teleport", false)),
+			bool(r.get("is_combustion", false)),
+			handle,
+			int(r.get("tp_range", 0)),
+		)
+	# Clean up: remove ritual spells from characters who aren't the caster
+	for sp_name in ritual_owners:
+		var owner_h: int = ritual_owners[sp_name]
+		if owner_h < 0: continue
+		var all_handles: Array = e.get_all_character_handles() if e.has_method("get_all_character_handles") else []
+		for h in all_handles:
+			if int(h) != owner_h:
+				e.forget_spell(int(h), sp_name)
+
 # ── Story ─────────────────────────────────────────────────────────────────────
 ## IDs of completed story/training missions
 var story_completed_missions: Array = []
@@ -680,6 +723,7 @@ func save_game() -> bool:
 		if cd == null:
 			continue
 		var entry: Dictionary = {
+			"handle":        h,   # save original handle for ritual caster_handle remapping
 			"name":          e.get_character_name(h),
 			"lineage":       e.get_character_lineage_name(h),
 			"age":           int(cd.get("age",       25)),
@@ -895,41 +939,26 @@ func load_game() -> bool:
 		set_busy(int(t.get("character_handle", -1)), true)
 
 	# Restore ritual tasks + active rituals (full PHB spell builder params)
+	# NOTE: Spell re-registration happens AFTER character recreation below
 	ritual_tasks.clear()
 	for t in Array(data.get("ritual_tasks", [])):
 		ritual_tasks.append(_deserialize_ritual(t))
 	active_rituals.clear()
 	for r in Array(data.get("active_rituals", [])):
 		active_rituals.append(_deserialize_ritual(r))
-		# Re-register completed ritual spells in the engine so they're castable
-		var sp_cost: int = int(r.get("sp_cost", r.get("sp_committed", 1)))
-		RimvaleAPI.engine.add_custom_spell(
-			str(r.get("spell_name", "")),
-			int(r.get("domain", 0)),
-			sp_cost,
-			str(r.get("spell_desc", "")),
-			int(r.get("range_idx", 1)),
-			bool(r.get("is_attack", true)),
-			int(r.get("die_count", 1)),
-			int(r.get("die_sides", 6)),
-			int(r.get("damage_type", 3)),
-			bool(r.get("is_healing", false)),
-			int(r.get("duration_rounds", 0)),
-			int(r.get("max_targets", 1)),
-			int(r.get("area_type", 0)),
-			str(r.get("conditions_csv", "")),
-			bool(r.get("is_teleport", false)),
-			bool(r.get("is_combustion", false)),
-		)
 
 	# Recreate characters in the engine
 	var chars_data: Array = Array(data.get("characters", []))
 	var handle_list: Array = []
+	var handle_remap: Dictionary = {}   # old_handle → new_handle
 	for cd in chars_data:
 		var cname:   String = str(cd.get("name",    "Unknown"))
 		var lineage: String = str(cd.get("lineage", "Human"))
 		var age:     int    = int(cd.get("age",     25))
+		var old_h: int = int(cd.get("handle", -1))
 		var h: int = e.create_character(cname, lineage, age)
+		if old_h >= 0:
+			handle_remap[old_h] = h
 		var char_dict = e.get_char_dict(h)
 		if char_dict != null:
 			# Restore lifespan fields (override the random max_age from create_character)
@@ -995,6 +1024,52 @@ func load_game() -> bool:
 		if ci >= 0 and ci < handle_list.size():
 			active_team[i] = handle_list[ci]
 
+	# Build name→handle map for fallback when old saves lack "handle" field
+	var name_to_handle: Dictionary = {}
+	for h in handle_list:
+		var n: String = str(e.get_character_name(h))
+		if n != "": name_to_handle[n] = h
+
+	# Remap ritual caster_handle values from old session handles to new ones
+	for r in ritual_tasks:
+		var old_ch: int = int(r.get("caster_handle", -1))
+		if old_ch in handle_remap:
+			r["caster_handle"] = handle_remap[old_ch]
+		elif old_ch < 0 or old_ch not in handle_remap:
+			# Fallback: match by caster name
+			var cname: String = str(r.get("caster_name", ""))
+			if cname in name_to_handle:
+				r["caster_handle"] = name_to_handle[cname]
+	for r in active_rituals:
+		var old_ch: int = int(r.get("caster_handle", -1))
+		if old_ch in handle_remap:
+			r["caster_handle"] = handle_remap[old_ch]
+		elif old_ch < 0 or old_ch not in handle_remap:
+			var cname: String = str(r.get("caster_name", ""))
+			if cname in name_to_handle:
+				r["caster_handle"] = name_to_handle[cname]
+
+	# Also remap crafting + forage task handles
+	for t in crafting_tasks:
+		var old_ch: int = int(t.get("character_handle", -1))
+		if old_ch in handle_remap:
+			t["character_handle"] = handle_remap[old_ch]
+		else:
+			var cname: String = str(t.get("character_name", ""))
+			if cname in name_to_handle:
+				t["character_handle"] = name_to_handle[cname]
+	for t in forage_tasks:
+		var old_ch: int = int(t.get("character_handle", -1))
+		if old_ch in handle_remap:
+			t["character_handle"] = handle_remap[old_ch]
+		else:
+			var cname: String = str(t.get("character_name", ""))
+			if cname in name_to_handle:
+				t["character_handle"] = name_to_handle[cname]
+
+	# Re-register completed ritual spells AFTER characters exist and handles remapped
+	ensure_ritual_spells_registered()
+
 	return true
 
 # ── Ritual serialization helpers ─────────────────────────────────────────────
@@ -1022,6 +1097,7 @@ func _serialize_ritual(r: Dictionary) -> Dictionary:
 		"area_type":       int(r.get("area_type", 0)),
 		"conditions_csv":  str(r.get("conditions_csv", "")),
 		"is_teleport":     bool(r.get("is_teleport", false)),
+		"tp_range":        int(r.get("tp_range", 0)),
 		"is_combustion":   bool(r.get("is_combustion", false)),
 	}
 
@@ -1048,5 +1124,6 @@ func _deserialize_ritual(d: Dictionary) -> Dictionary:
 		"area_type":       int(d.get("area_type", 0)),
 		"conditions_csv":  str(d.get("conditions_csv", "")),
 		"is_teleport":     bool(d.get("is_teleport", false)),
+		"tp_range":        int(d.get("tp_range", 0)),
 		"is_combustion":   bool(d.get("is_combustion", false)),
 	}

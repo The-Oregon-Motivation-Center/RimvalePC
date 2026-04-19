@@ -21,7 +21,7 @@ if errorlevel 1 (
 
 echo.
 set /p COMMIT_MSG="Enter commit message (or press Enter for default): "
-if "%COMMIT_MSG%"=="" set COMMIT_MSG=Update game systems - attunement, lifespan, safeguard, rituals, shop fixes
+if "%COMMIT_MSG%"=="" set COMMIT_MSG=3D terrain world map with horseshoe mainland, water channels, region zoom, drag panning, Sublimini floating island
 
 echo.
 echo Committing with message: %COMMIT_MSG%
