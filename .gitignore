@@ -1,3 +1,50 @@
+# Godot editor cache and generated files
 .godot/
+
+# GDExtension build directories (machine-specific compiled output)
 gdextension/build/
-gdextension/build_fresh/ 
+gdextension/build_fresh/
+
+# GDExtension API dump (6.5MB, can be regenerated)
+gdextension/extension_api_*_dumped.json
+
+# Compiled addon binaries (must be built locally per platform)
+addons/rimvale_engine/bin/
+
+# Compiled binaries and debug symbols
+*.obj
+*.o
+*.lib
+*.dll
+*.so
+*.dylib
+*.pdb
+*.exp
+*.exe
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+
+# Visual Studio / IDE files
+.vs/
+.vscode/
+.idea/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Python cache
+__pycache__/
+*.pyc
+
+# SCons
+.sconsign.dblite
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
