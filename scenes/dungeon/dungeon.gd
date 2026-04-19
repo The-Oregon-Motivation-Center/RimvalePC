@@ -51,21 +51,68 @@ var _stash_list_vbox: VBoxContainer
 var _stash_header:    Label
 var _btn_stash:       Button   # header shortcut button
 
-# UI — custom spell dialog
+# UI — custom spell dialog (full PHB spell builder)
 var _spell_overlay:        Control
-var _spell_name_edit:      LineEdit
-var _spell_domain_opt:     OptionButton
-var _spell_cost_edit:      LineEdit
-var _spell_dice_count:     LineEdit
-var _spell_dice_sides:     LineEdit
-var _spell_is_attack:      CheckBox
-var _spell_is_healing:     CheckBox
-var _spell_is_teleport:    CheckBox
-var _spell_duration:       LineEdit
-var _spell_max_targets:    LineEdit
-var _spell_area_opt:       OptionButton
-var _spell_dmg_type_opt:   OptionButton
-var _spell_conds_edit:     LineEdit
+var _spell_inner:          VBoxContainer   # rebuilt each time domain/effect changes
+
+# PHB spell builder state
+var _sb_name:          String = ""
+var _sb_domain:        int = 0
+var _sb_effect_idx:    int = 0
+var _sb_duration_idx:  int = 0
+var _sb_range_idx:     int = 1   # default Touch
+var _sb_targets:       int = 1
+var _sb_area_idx:      int = 0
+var _sb_die_count:     int = 1
+var _sb_die_idx:       int = 0   # 0=d4, 1=d6 ...
+var _sb_damage_type:   int = 3   # default Force
+var _sb_is_healing:    bool = false
+var _sb_is_saving_throw: bool = false
+var _sb_is_teleport:   bool = false
+var _sb_is_combustion: bool = false
+var _sb_conditions:    Array = []
+var _sb_preview_lbl:   Label
+var _sb_breakdown_lbl: Label
+var _sb_desc_lbl:      Label
+
+# PHB spell formula constants (mirror level_up.gd)
+const SB_DOMAIN_NAMES: PackedStringArray = ["Biological", "Chemical", "Physical", "Spiritual"]
+const SB_DOMAIN_EFFECTS: Array = [
+	[["Augment Trait", 1], ["Health Regeneration", 1], ["Memory Edit", 4],
+	 ["Mind Control", 6], ["Revivify", 5], ["Terrain Manipulation", 1],
+	 ["Undeath", 1], ["Weather Resistance", 1]],
+	[["Combustion", 4], ["Damage an Object", 1], ["Mend an Object", 2],
+	 ["Remove Grime", 1], ["Transmutation", 40]],
+	[["Accuracy", 1], ["Ambient Temperature", 1], ["Create Construct", 2],
+	 ["Damage Output Increase", 1], ["Damage Reduction", 2], ["Illusions", 2],
+	 ["Light", 2], ["Shield", 1], ["Telekinesis", 1], ["Teleportation", 1],
+	 ["Time Manipulation", 2]],
+	[["Bless", 1], ["Conjure Damage or Healing", 1], ["Curse", 1],
+	 ["Intangibility", 4], ["Suppress Magic", 2], ["Summon", 2]],
+]
+const SB_CONDITIONS_BENEFICIAL: PackedStringArray = [
+	"Calm", "Dodging", "Flying", "Hidden", "Invisible",
+	"Invulnerable", "Resistance", "Shielded", "Silent", "Stoneskin"
+]
+const SB_CONDITIONS_HARMFUL: PackedStringArray = [
+	"Bleed", "Blinded", "Charm", "Confused", "Dazed", "Deafened",
+	"Depleted", "Diseased", "Enraged", "Exhausted", "Fear", "Fever",
+	"Incapacitated", "Paralyzed", "Petrified", "Poisoned", "Prone",
+	"Restrained", "Slowed", "Squeeze", "Stunned", "Unconscious", "Vulnerable"
+]
+const SB_DAMAGE_TYPES: PackedStringArray = [
+	"Bludgeoning", "Piercing", "Slashing", "Force", "Fire", "Cold",
+	"Lightning", "Acid", "Poison", "Psychic", "Radiant", "Necrotic", "Thunder"
+]
+const SB_DURATION_LABELS: PackedStringArray = ["Instant", "1 Minute", "10 Minutes", "1 Hour", "1 Day"]
+const SB_DURATION_ROUNDS: PackedInt32Array  = [0, 10, 100, 600, 14400]
+const SB_DURATION_MULT:   PackedInt32Array  = [1, 2, 3, 5, 10]
+const SB_RANGE_LABELS:   PackedStringArray = ["Self", "Touch", "15 ft", "30 ft", "100 ft", "500 ft", "1000 ft"]
+const SB_RANGE_SP_COST:  PackedInt32Array  = [0, 0, 1, 2, 3, 6, 10]
+const SB_AREA_LABELS: PackedStringArray = ["Single Target", "Small (10 ft cube)", "Large (30 ft cube)", "Massive (100 ft cube)"]
+const SB_AREA_MULT:   PackedInt32Array  = [1, 2, 3, 10]
+const SB_DIE_LABELS:    PackedStringArray = ["d4", "d6", "d8", "d10", "d12"]
+const SB_DIE_SIDES_MOD: PackedInt32Array  = [0, 1, 2, 3, 4]
 
 # UI — terrain selector dialog
 var _terrain_overlay:      Control
@@ -170,6 +217,8 @@ var _entity_root:       Node3D         = null
 var _overlay_root:      Node3D         = null
 var _torch_root:        Node3D         = null
 var _fog_root:          Node3D         = null
+var _particle_root:     Node3D         = null
+var _env_node:          WorldEnvironment = null
 var _map_dirty:         bool           = true   # full tile rebuild needed
 
 # ── Camera orbit state ────────────────────────────────────────────────────────
@@ -329,6 +378,108 @@ func _load_terrain_palette() -> void:
 	var fc2 = pal.get("fog_color", [0.08, 0.06, 0.04])
 	_biome_fog_color    = Color(float(fc2[0]), float(fc2[1]), float(fc2[2]))
 	_biome_fog_density  = float(pal.get("fog_density", 0.3))
+
+## Update WorldEnvironment to match current biome palette.
+func _update_biome_environment() -> void:
+	if _env_node == null: return
+	var env: Environment = _env_node.environment
+	if env == null: return
+
+	# Background — derived from biome fog color, deeper
+	env.background_color = _biome_fog_color.darkened(0.6)
+
+	# Ambient light — tinted from biome light color
+	env.ambient_light_color = _biome_light_color.lerp(Color(0.15, 0.12, 0.20), 0.6)
+	env.ambient_light_energy = 0.5 + _biome_light_energy * 0.08
+
+	# Fog — from biome palette
+	env.fog_light_color = _biome_fog_color
+	env.fog_density = _biome_fog_density * 0.08  # scale down for 3D view
+
+	# Glow — warmer for fire/volcanic, cooler for ice/void
+	match _biome_prop_set:
+		"volcanic", "infernal":
+			env.glow_intensity = 0.9; env.glow_bloom = 0.25
+		"ice", "frozen":
+			env.glow_intensity = 0.5; env.glow_bloom = 0.10
+		"void":
+			env.glow_intensity = 1.0; env.glow_bloom = 0.30
+		_:
+			env.glow_intensity = 0.6; env.glow_bloom = 0.15
+
+	# Update directional lights to match biome
+	for child in _world3d_root.get_children():
+		if child is DirectionalLight3D:
+			if child.name == "SunLight":
+				child.light_color = _biome_light_color.lerp(Color(0.85, 0.78, 0.95), 0.5)
+				child.light_energy = 0.8 + _biome_light_energy * 0.1
+			elif child.name == "FillLight":
+				child.light_color = _biome_fog_color.lightened(0.3)
+
+## Spawn ambient particles based on current biome.
+func _spawn_biome_particles() -> void:
+	if _particle_root == null: return
+	for c in _particle_root.get_children():
+		c.queue_free()
+
+	var half: float = MAP_SIZE * 0.5
+	var center: Vector3 = Vector3(half, 4.0, half)
+
+	match _biome_prop_set:
+		"cave":
+			_add_ambient_particles(center, Color(0.45, 0.35, 0.20, 0.3), 0.08, 40, Vector3(0, -0.3, 0))
+		"grassland":
+			_add_ambient_particles(center, Color(0.80, 0.85, 0.50, 0.2), 0.04, 24, Vector3(0.2, 0.1, 0.1))
+		"forest", "overgrown":
+			_add_ambient_particles(center, Color(0.40, 0.60, 0.15, 0.3), 0.05, 36, Vector3(0.05, -0.15, 0.05))
+		"volcanic", "infernal":
+			_add_ambient_particles(center, Color(1.0, 0.45, 0.10, 0.5), 0.06, 50, Vector3(0, 0.6, 0))
+		"ice", "frozen":
+			_add_ambient_particles(center, Color(0.80, 0.90, 1.0, 0.4), 0.05, 40, Vector3(0.1, -0.4, 0.15))
+		"aquatic", "coral":
+			_add_ambient_particles(center, Color(0.30, 0.60, 0.85, 0.3), 0.06, 32, Vector3(0.05, 0.15, 0.05))
+		"void":
+			_add_ambient_particles(center, Color(0.50, 0.20, 0.80, 0.4), 0.04, 30, Vector3(0, 0.2, 0))
+		"desert":
+			_add_ambient_particles(center, Color(0.85, 0.75, 0.50, 0.2), 0.05, 28, Vector3(0.3, -0.1, 0.2))
+		"swamp":
+			_add_ambient_particles(center, Color(0.30, 0.50, 0.15, 0.35), 0.07, 40, Vector3(0, 0.1, 0))
+		"necropolis":
+			_add_ambient_particles(center, Color(0.20, 0.55, 0.15, 0.3), 0.05, 32, Vector3(0, 0.3, 0))
+		"arcane":
+			_add_ambient_particles(center, Color(0.55, 0.30, 0.90, 0.4), 0.04, 36, Vector3(0, 0.2, 0))
+		"clockwork":
+			_add_ambient_particles(center, Color(0.80, 0.60, 0.20, 0.2), 0.03, 20, Vector3(0, 0.15, 0))
+		_:
+			_add_ambient_particles(center, Color(0.50, 0.45, 0.35, 0.2), 0.05, 30, Vector3(0, -0.2, 0))
+
+func _add_ambient_particles(pos: Vector3, color: Color, size: float,
+		amount: int, direction: Vector3) -> void:
+	var particles := GPUParticles3D.new()
+	particles.amount = amount
+	particles.lifetime = 6.0
+	particles.randomness = 0.8
+	particles.visibility_aabb = AABB(Vector3(-15, -3, -15), Vector3(30, 10, 30))
+	particles.position = pos
+
+	var mat := ParticleProcessMaterial.new()
+	mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	mat.emission_box_extents = Vector3(12.0, 3.0, 12.0)
+	mat.direction = direction.normalized() if direction.length() > 0 else Vector3(0, -1, 0)
+	mat.spread = 45.0
+	mat.initial_velocity_min = 0.1
+	mat.initial_velocity_max = 0.5
+	mat.gravity = Vector3(0.0, -0.05, 0.0)
+	mat.damping_min = 0.5; mat.damping_max = 1.5
+	mat.scale_min = 0.5; mat.scale_max = 1.5
+	mat.color = color
+	particles.process_material = mat
+
+	var mesh := SphereMesh.new()
+	mesh.radius = size; mesh.height = size * 2
+	particles.draw_pass_1 = mesh
+
+	_particle_root.add_child(particles)
 
 # ── Encounter banner ──────────────────────────────────────────────────────────
 ## Builds a thin colour-coded strip that sits above the content area.
@@ -701,7 +852,115 @@ func _show_outcome_modal(result: String) -> void:
 
 	_modal.visible = true
 
-# ── Custom Spell Dialog ───────────────────────────────────────────────────────
+# ── Custom Spell Dialog (Full PHB Spell Builder) ─────────────────────────────
+
+func _sb_calc_cost() -> int:
+	var type_cost: int   = 1 if _sb_is_saving_throw else 0
+	var sides_mod: int   = SB_DIE_SIDES_MOD[_sb_die_idx] if _sb_die_idx < SB_DIE_SIDES_MOD.size() else 0
+	var dice_cost: int   = _sb_die_count * (1 + sides_mod)
+	var dur_mult: int    = SB_DURATION_MULT[_sb_duration_idx] if _sb_duration_idx < SB_DURATION_MULT.size() else 1
+	var effects: Array   = SB_DOMAIN_EFFECTS[_sb_domain] if _sb_domain < SB_DOMAIN_EFFECTS.size() else []
+	var effect_base: int = int(effects[_sb_effect_idx][1]) if _sb_effect_idx < effects.size() else 1
+	var base_effect: int = effect_base + dice_cost
+	var base_with_dur: int = base_effect if _sb_duration_idx == 0 else base_effect * dur_mult
+	var range_cost: int  = SB_RANGE_SP_COST[_sb_range_idx] if _sb_range_idx < SB_RANGE_SP_COST.size() else 0
+	var target_cost: int = 0
+	if _sb_targets > 1:
+		for i in range(_sb_targets - 1):
+			target_cost += int(pow(2.0, float(i + 1)))
+	var harmful: int    = 0
+	var beneficial: int = 0
+	for cname in _sb_conditions:
+		if cname in SB_CONDITIONS_HARMFUL: harmful += 1
+		else: beneficial += 1
+	var cond_cost: int   = (harmful * 3) - (beneficial * 2)
+	var area_mult: int   = SB_AREA_MULT[_sb_area_idx] if _sb_area_idx < SB_AREA_MULT.size() else 1
+	var base_sum: int    = type_cost + base_with_dur + range_cost + target_cost + cond_cost
+	var total: int       = base_sum * area_mult
+	if total <= 0 and (dur_mult > 1 or area_mult > 1):
+		total = 1
+	elif total < 0:
+		total = 0
+	return total
+
+func _sb_update_preview() -> void:
+	if not is_instance_valid(_sb_preview_lbl): return
+	var cost: int = _sb_calc_cost()
+	_sb_preview_lbl.text = "Total SP Cost: %d" % cost
+
+	if is_instance_valid(_sb_breakdown_lbl):
+		var effects: Array = SB_DOMAIN_EFFECTS[_sb_domain] if _sb_domain < SB_DOMAIN_EFFECTS.size() else []
+		var effect_name: String = effects[_sb_effect_idx][0] if _sb_effect_idx < effects.size() else "Unknown"
+		var effect_base: int = int(effects[_sb_effect_idx][1]) if _sb_effect_idx < effects.size() else 1
+		var sides_mod: int = SB_DIE_SIDES_MOD[_sb_die_idx] if _sb_die_idx < SB_DIE_SIDES_MOD.size() else 0
+		var dice_cost: int = _sb_die_count * (1 + sides_mod)
+		var dur_mult: int  = SB_DURATION_MULT[_sb_duration_idx] if _sb_duration_idx < SB_DURATION_MULT.size() else 1
+		var range_cost: int = SB_RANGE_SP_COST[_sb_range_idx] if _sb_range_idx < SB_RANGE_SP_COST.size() else 0
+		var target_cost: int = 0
+		if _sb_targets > 1:
+			for i in range(_sb_targets - 1):
+				target_cost += int(pow(2.0, float(i + 1)))
+		var harmful: int = 0; var beneficial: int = 0
+		for cname in _sb_conditions:
+			if cname in SB_CONDITIONS_HARMFUL: harmful += 1
+			else: beneficial += 1
+		var cond_cost: int = (harmful * 3) - (beneficial * 2)
+		var area_mult: int = SB_AREA_MULT[_sb_area_idx] if _sb_area_idx < SB_AREA_MULT.size() else 1
+
+		var lines: PackedStringArray = []
+		lines.append("Base Effect (%s): %d" % [effect_name, effect_base])
+		if dice_cost > 0:
+			lines.append("Dice (%dd%d): +%d" % [_sb_die_count, [4,6,8,10,12][_sb_die_idx], dice_cost])
+		if dur_mult > 1:
+			lines.append("Duration (x%d): applied" % dur_mult)
+		if range_cost > 0:
+			lines.append("Range (%s): +%d" % [SB_RANGE_LABELS[_sb_range_idx], range_cost])
+		if target_cost > 0:
+			lines.append("Multi-target (%d): +%d" % [_sb_targets, target_cost])
+		if cond_cost != 0:
+			lines.append("Conditions: %s%d" % ["+" if cond_cost > 0 else "", cond_cost])
+		if _sb_is_saving_throw:
+			lines.append("Saving throw: +1")
+		if area_mult > 1:
+			lines.append("Area (x%d): applied" % area_mult)
+		if _sb_is_combustion:
+			lines.append("Combustion: damage scales with SP spent")
+		_sb_breakdown_lbl.text = "\n".join(lines)
+
+	if is_instance_valid(_sb_desc_lbl):
+		_sb_desc_lbl.text = _sb_gen_description()
+
+func _sb_gen_description() -> String:
+	var effects_arr: Array = SB_DOMAIN_EFFECTS[_sb_domain] if _sb_domain < SB_DOMAIN_EFFECTS.size() else []
+	var effect_name: String = effects_arr[_sb_effect_idx][0] if _sb_effect_idx < effects_arr.size() else "Unknown"
+	var domain_name: String = SB_DOMAIN_NAMES[_sb_domain] if _sb_domain < SB_DOMAIN_NAMES.size() else "Unknown"
+	var target_desc: String = "a single target" if _sb_targets <= 1 else "up to %d targets" % _sb_targets
+	var range_desc: String = "on yourself" if _sb_range_idx == 0 else "within %s" % SB_RANGE_LABELS[_sb_range_idx]
+	var area_desc: String = "" if _sb_area_idx == 0 else " affecting a %s" % SB_AREA_LABELS[_sb_area_idx]
+	var dur_desc: String = SB_DURATION_LABELS[_sb_duration_idx]
+	var save_desc: String = ". Targets may roll a saving throw to resist." if _sb_is_saving_throw else "."
+
+	if _sb_is_teleport:
+		return "Instantly teleport to a selected location. SP cost scales with distance: 10ft=1SP, 20ft=2SP, 30ft=4SP."
+
+	if _sb_is_combustion:
+		return "Using the %s domain, you cause a violent combustion targeting %s %s%s. Damage dice scale dynamically with total SP spent (half SP on the scaling table). Lasts %s%s" % [
+			domain_name, target_desc, range_desc, area_desc, dur_desc, save_desc]
+
+	var action_word: String = "heals for" if _sb_is_healing else "deals"
+	var dice_desc: String = ""
+	if _sb_die_count > 0:
+		dice_desc = " %dd%d" % [_sb_die_count, [4,6,8,10,12][_sb_die_idx]]
+	var type_desc: String = ""
+	if not _sb_is_healing and _sb_die_count > 0:
+		type_desc = " %s damage" % SB_DAMAGE_TYPES[_sb_damage_type]
+	elif _sb_is_healing and _sb_die_count > 0:
+		type_desc = " hit points"
+
+	return "Using the %s domain, you weave a spell of %s that %s%s%s targeting %s %s%s. Lasts %s%s" % [
+		domain_name, effect_name, action_word, dice_desc, type_desc,
+		target_desc, range_desc, area_desc, dur_desc, save_desc]
+
 func _build_custom_spell_dialog() -> void:
 	_spell_overlay = ColorRect.new()
 	(_spell_overlay as ColorRect).color = Color(0.0, 0.0, 0.0, 0.72)
@@ -709,141 +968,398 @@ func _build_custom_spell_dialog() -> void:
 	_spell_overlay.visible = false
 	add_child(_spell_overlay)
 
-	var panel := ColorRect.new()
-	panel.color = Color(0.08, 0.07, 0.12)
-	panel.custom_minimum_size = Vector2(420, 440)
+	# Scrollable panel so the full builder fits on any screen
+	var panel := PanelContainer.new()
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.08, 0.07, 0.12)
+	panel_style.corner_radius_top_left = 8; panel_style.corner_radius_top_right = 8
+	panel_style.corner_radius_bottom_left = 8; panel_style.corner_radius_bottom_right = 8
+	panel.add_theme_stylebox_override("panel", panel_style)
 	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.offset_left   = -210.0
-	panel.offset_right  =  210.0
-	panel.offset_top    = -220.0
-	panel.offset_bottom =  220.0
+	panel.offset_left   = -260.0
+	panel.offset_right  =  260.0
+	panel.offset_top    = -340.0
+	panel.offset_bottom =  340.0
 	_spell_overlay.add_child(panel)
 
-	var vbox := VBoxContainer.new()
-	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var m := MarginContainer.new()
-	for side in ["left","right","top","bottom"]: m.add_theme_constant_override("margin_" + side, 16)
-	panel.add_child(m)
-	var inner := VBoxContainer.new()
-	inner.add_theme_constant_override("separation", 8)
-	m.add_child(inner)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
 
+	var margin := MarginContainer.new()
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for side in ["left","right","top","bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 16)
+	scroll.add_child(margin)
+
+	_spell_inner = VBoxContainer.new()
+	_spell_inner.add_theme_constant_override("separation", 6)
+	_spell_inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.add_child(_spell_inner)
+
+	_sb_populate_inner()
+
+func _sb_populate_inner() -> void:
+	# Remove all existing children immediately (not queue_free, so they're gone now)
+	for c in _spell_inner.get_children():
+		_spell_inner.remove_child(c)
+		c.queue_free()
+	var inner: VBoxContainer = _spell_inner
+	_sb_preview_lbl = null
+	_sb_breakdown_lbl = null
+	_sb_desc_lbl = null
+
+	# ── Title ──
 	var title_lbl := Label.new()
-	title_lbl.text = "✨ Learn Custom Spell"
+	title_lbl.text = "✨ PHB Spell Builder"
 	title_lbl.add_theme_font_size_override("font_size", 17)
 	title_lbl.add_theme_color_override("font_color", Color(0.85, 0.70, 1.0))
 	inner.add_child(title_lbl)
 	inner.add_child(_hsep())
 
-	_spell_name_edit = LineEdit.new()
-	_spell_name_edit.placeholder_text = "Spell name…"
-	_spell_name_edit.custom_minimum_size = Vector2(200, 0)
-	inner.add_child(_spell_row("Name:", _spell_name_edit))
+	# ── Spell Name ──
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Spell name..."
+	name_edit.text = _sb_name
+	name_edit.custom_minimum_size = Vector2(200, 36)
+	name_edit.add_theme_font_size_override("font_size", 14)
+	name_edit.text_changed.connect(func(t: String): _sb_name = t)
+	inner.add_child(_spell_row("Name:", name_edit))
 
-	_spell_domain_opt = OptionButton.new()
-	for d in ["Biological","Chemical","Physical","Spiritual"]:
-		_spell_domain_opt.add_item(d)
-	inner.add_child(_spell_row("Domain:", _spell_domain_opt))
+	# ── Domain ──
+	var domain_opt := OptionButton.new()
+	for dn in SB_DOMAIN_NAMES:
+		domain_opt.add_item(dn)
+	domain_opt.selected = _sb_domain
+	domain_opt.item_selected.connect(func(i: int):
+		_sb_domain = i
+		_sb_effect_idx = 0
+		_sb_populate_inner()
+	)
+	inner.add_child(_spell_row("Domain:", domain_opt))
 
-	_spell_cost_edit = LineEdit.new()
-	_spell_cost_edit.placeholder_text = "SP cost (0–20)"
-	_spell_cost_edit.custom_minimum_size = Vector2(100, 0)
-	inner.add_child(_spell_row("SP Cost:", _spell_cost_edit))
+	# ── Effect (per domain) ──
+	var effect_opt := OptionButton.new()
+	var effects_for_domain: Array = SB_DOMAIN_EFFECTS[_sb_domain] if _sb_domain < SB_DOMAIN_EFFECTS.size() else []
+	for ef in effects_for_domain:
+		effect_opt.add_item(ef[0])
+	effect_opt.selected = mini(_sb_effect_idx, max(0, effects_for_domain.size() - 1))
+	effect_opt.item_selected.connect(func(i: int):
+		_sb_effect_idx = i
+		_sb_update_preview()
+	)
+	inner.add_child(_spell_row("Effect:", effect_opt))
 
-	var dice_row := HBoxContainer.new()
-	var dice_lbl := Label.new()
-	dice_lbl.text = "Dice:"
-	dice_lbl.custom_minimum_size = Vector2(120, 0)
-	dice_lbl.add_theme_font_size_override("font_size", 13)
-	dice_row.add_child(dice_lbl)
-	_spell_dice_count = LineEdit.new()
-	_spell_dice_count.placeholder_text = "d count"
-	_spell_dice_count.custom_minimum_size = Vector2(60, 0)
-	dice_row.add_child(_spell_dice_count)
-	var d_sep := Label.new(); d_sep.text = "d"
-	dice_row.add_child(d_sep)
-	_spell_dice_sides = LineEdit.new()
-	_spell_dice_sides.placeholder_text = "sides"
-	_spell_dice_sides.custom_minimum_size = Vector2(60, 0)
-	dice_row.add_child(_spell_dice_sides)
-	inner.add_child(dice_row)
+	# ── Duration ──
+	var dur_opt := OptionButton.new()
+	for dl in SB_DURATION_LABELS:
+		dur_opt.add_item(dl)
+	dur_opt.selected = _sb_duration_idx
+	dur_opt.item_selected.connect(func(i: int):
+		_sb_duration_idx = i
+		_sb_update_preview()
+	)
+	inner.add_child(_spell_row("Duration:", dur_opt))
 
-	_spell_dmg_type_opt = OptionButton.new()
-	for dt in ["force","fire","cold","lightning","poison","necrotic","radiant","psychic"]:
-		_spell_dmg_type_opt.add_item(dt)
-	inner.add_child(_spell_row("Damage Type:", _spell_dmg_type_opt))
+	# ── Range ──
+	var range_opt := OptionButton.new()
+	for rl in SB_RANGE_LABELS:
+		range_opt.add_item(rl)
+	range_opt.selected = _sb_range_idx
+	range_opt.item_selected.connect(func(i: int):
+		_sb_range_idx = i
+		_sb_update_preview()
+	)
+	inner.add_child(_spell_row("Range:", range_opt))
 
-	_spell_area_opt = OptionButton.new()
-	for at in ["single","line","cone","burst","nova","wall","aura"]:
-		_spell_area_opt.add_item(at)
-	inner.add_child(_spell_row("Area:", _spell_area_opt))
+	# ── Targets (slider 1-10) ──
+	var tgt_lbl := Label.new()
+	tgt_lbl.text = "Targets: %d" % _sb_targets
+	tgt_lbl.add_theme_font_size_override("font_size", 13)
+	tgt_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.75))
+	inner.add_child(tgt_lbl)
+	var tgt_slider := HSlider.new()
+	tgt_slider.min_value = 1; tgt_slider.max_value = 10; tgt_slider.step = 1
+	tgt_slider.value = _sb_targets
+	tgt_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tgt_slider.value_changed.connect(func(v: float):
+		_sb_targets = int(v)
+		tgt_lbl.text = "Targets: %d" % _sb_targets
+		_sb_update_preview()
+	)
+	inner.add_child(tgt_slider)
 
-	_spell_duration = LineEdit.new()
-	_spell_duration.placeholder_text = "rounds (0=instant)"
-	_spell_duration.custom_minimum_size = Vector2(100, 0)
-	inner.add_child(_spell_row("Duration:", _spell_duration))
-
-	_spell_max_targets = LineEdit.new()
-	_spell_max_targets.placeholder_text = "1"
-	_spell_max_targets.custom_minimum_size = Vector2(60, 0)
-	inner.add_child(_spell_row("Max Targets:", _spell_max_targets))
-
-	_spell_conds_edit = LineEdit.new()
-	_spell_conds_edit.placeholder_text = "e.g. poisoned,slowed"
-	_spell_conds_edit.custom_minimum_size = Vector2(200, 0)
-	inner.add_child(_spell_row("Conditions:", _spell_conds_edit))
-
-	var flag_row := HBoxContainer.new()
-	_spell_is_attack  = CheckBox.new(); _spell_is_attack.text  = "Attack"
-	_spell_is_healing = CheckBox.new(); _spell_is_healing.text = "Healing"
-	_spell_is_teleport = CheckBox.new(); _spell_is_teleport.text = "Teleport"
-	flag_row.add_child(_spell_is_attack)
-	flag_row.add_child(_spacer_h(12))
-	flag_row.add_child(_spell_is_healing)
-	flag_row.add_child(_spacer_h(12))
-	flag_row.add_child(_spell_is_teleport)
-	inner.add_child(flag_row)
+	# ── Area ──
+	var area_opt := OptionButton.new()
+	for al in SB_AREA_LABELS:
+		area_opt.add_item(al)
+	area_opt.selected = _sb_area_idx
+	area_opt.item_selected.connect(func(i: int):
+		_sb_area_idx = i
+		_sb_update_preview()
+	)
+	inner.add_child(_spell_row("Area:", area_opt))
 
 	inner.add_child(_hsep())
 
+	# ── Dice Count (slider 0-10) ──
+	var dice_lbl := Label.new()
+	dice_lbl.text = "Dice Count: %d" % _sb_die_count
+	dice_lbl.add_theme_font_size_override("font_size", 13)
+	dice_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.75))
+	inner.add_child(dice_lbl)
+	var dice_slider := HSlider.new()
+	dice_slider.min_value = 0; dice_slider.max_value = 10; dice_slider.step = 1
+	dice_slider.value = _sb_die_count
+	dice_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dice_slider.value_changed.connect(func(v: float):
+		_sb_die_count = int(v)
+		dice_lbl.text = "Dice Count: %d" % _sb_die_count
+		_sb_update_preview()
+	)
+	inner.add_child(dice_slider)
+
+	# ── Die Type (d4 d6 d8 d10 d12 buttons) ──
+	var die_lbl := Label.new()
+	die_lbl.text = "Die Type"
+	die_lbl.add_theme_font_size_override("font_size", 13)
+	die_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.75))
+	inner.add_child(die_lbl)
+	var die_row := HBoxContainer.new()
+	die_row.add_theme_constant_override("separation", 4)
+	var die_btns: Array = []
+	for di in range(SB_DIE_LABELS.size()):
+		var di_cap: int = di
+		var col: Color = Color(0.55, 0.35, 0.85) if di == _sb_die_idx else Color(0.45, 0.45, 0.50)
+		var dbtn := _colored_btn(SB_DIE_LABELS[di], col)
+		dbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		dbtn.custom_minimum_size = Vector2(0, 30)
+		var btns_ref: Array = die_btns
+		dbtn.pressed.connect(func():
+			_sb_die_idx = di_cap
+			for k in range(btns_ref.size()):
+				var c2: Color = Color(0.55, 0.35, 0.85) if k == _sb_die_idx else Color(0.45, 0.45, 0.50)
+				var sb2 := StyleBoxFlat.new()
+				sb2.bg_color = c2
+				sb2.corner_radius_top_left = 4; sb2.corner_radius_top_right = 4
+				sb2.corner_radius_bottom_left = 4; sb2.corner_radius_bottom_right = 4
+				btns_ref[k].add_theme_stylebox_override("normal", sb2)
+			_sb_update_preview()
+		)
+		die_btns.append(dbtn)
+		die_row.add_child(dbtn)
+	inner.add_child(die_row)
+
+	# ── Damage Type (all 13 PHB types) ──
+	var dmg_opt := OptionButton.new()
+	for dt in SB_DAMAGE_TYPES:
+		dmg_opt.add_item(dt)
+	dmg_opt.selected = _sb_damage_type
+	dmg_opt.item_selected.connect(func(i: int):
+		_sb_damage_type = i
+		_sb_update_preview()
+	)
+	inner.add_child(_spell_row("Damage Type:", dmg_opt))
+
+	inner.add_child(_hsep())
+
+	# ── Flags row: Healing, Saving Throw, Teleport, Combustion ──
+	var flag_row1 := HBoxContainer.new()
+	flag_row1.add_theme_constant_override("separation", 14)
+	var heal_chk := CheckBox.new(); heal_chk.text = "Healing"
+	heal_chk.button_pressed = _sb_is_healing
+	heal_chk.add_theme_font_size_override("font_size", 12)
+	heal_chk.toggled.connect(func(b: bool): _sb_is_healing = b; _sb_update_preview())
+	flag_row1.add_child(heal_chk)
+	var save_chk := CheckBox.new(); save_chk.text = "Save (no atk)"
+	save_chk.button_pressed = _sb_is_saving_throw
+	save_chk.add_theme_font_size_override("font_size", 12)
+	save_chk.toggled.connect(func(b: bool): _sb_is_saving_throw = b; _sb_update_preview())
+	flag_row1.add_child(save_chk)
+	inner.add_child(flag_row1)
+
+	var flag_row2 := HBoxContainer.new()
+	flag_row2.add_theme_constant_override("separation", 14)
+	var tp_chk := CheckBox.new(); tp_chk.text = "Teleport"
+	tp_chk.button_pressed = _sb_is_teleport
+	tp_chk.add_theme_font_size_override("font_size", 12)
+	tp_chk.toggled.connect(func(b: bool): _sb_is_teleport = b; _sb_update_preview())
+	flag_row2.add_child(tp_chk)
+	var comb_chk := CheckBox.new(); comb_chk.text = "Combustion (dynamic dmg)"
+	comb_chk.button_pressed = _sb_is_combustion
+	comb_chk.add_theme_font_size_override("font_size", 12)
+	comb_chk.toggled.connect(func(b: bool): _sb_is_combustion = b; _sb_update_preview())
+	flag_row2.add_child(comb_chk)
+	inner.add_child(flag_row2)
+
+	inner.add_child(_hsep())
+
+	# ── Conditions (two columns: Beneficial | Harmful) ──
+	var cond_title := Label.new()
+	cond_title.text = "Conditions"
+	cond_title.add_theme_font_size_override("font_size", 14)
+	cond_title.add_theme_color_override("font_color", Color.WHITE)
+	inner.add_child(cond_title)
+
+	var cond_outer := HBoxContainer.new()
+	cond_outer.add_theme_constant_override("separation", 12)
+	inner.add_child(cond_outer)
+
+	# Beneficial column
+	var ben_col := VBoxContainer.new()
+	ben_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ben_col.add_theme_constant_override("separation", 0)
+	cond_outer.add_child(ben_col)
+	var ben_hdr := Label.new()
+	ben_hdr.text = "Beneficial (-2 SP each)"
+	ben_hdr.add_theme_font_size_override("font_size", 11)
+	ben_hdr.add_theme_color_override("font_color", Color(0.30, 0.69, 0.31))
+	ben_col.add_child(ben_hdr)
+	for cname in SB_CONDITIONS_BENEFICIAL:
+		var cn_cap: String = cname
+		var chk := CheckBox.new()
+		chk.text = cname
+		chk.button_pressed = cname in _sb_conditions
+		chk.add_theme_font_size_override("font_size", 11)
+		chk.toggled.connect(func(b: bool):
+			if b:
+				if cn_cap not in _sb_conditions: _sb_conditions.append(cn_cap)
+			else:
+				_sb_conditions.erase(cn_cap)
+			_sb_update_preview()
+		)
+		ben_col.add_child(chk)
+
+	# Harmful column
+	var harm_col := VBoxContainer.new()
+	harm_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	harm_col.add_theme_constant_override("separation", 0)
+	cond_outer.add_child(harm_col)
+	var harm_hdr := Label.new()
+	harm_hdr.text = "Harmful (+3 SP each)"
+	harm_hdr.add_theme_font_size_override("font_size", 11)
+	harm_hdr.add_theme_color_override("font_color", Color(0.90, 0.40, 0.40))
+	harm_col.add_child(harm_hdr)
+	for cname in SB_CONDITIONS_HARMFUL:
+		var cn_cap: String = cname
+		var chk := CheckBox.new()
+		chk.text = cname
+		chk.button_pressed = cname in _sb_conditions
+		chk.add_theme_font_size_override("font_size", 11)
+		chk.toggled.connect(func(b: bool):
+			if b:
+				if cn_cap not in _sb_conditions: _sb_conditions.append(cn_cap)
+			else:
+				_sb_conditions.erase(cn_cap)
+			_sb_update_preview()
+		)
+		harm_col.add_child(chk)
+
+	inner.add_child(_hsep())
+
+	# ── SP Cost Preview Card ──
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var card_style := StyleBoxFlat.new()
+	card_style.bg_color = Color(0.14, 0.12, 0.22, 1.0)
+	card_style.corner_radius_top_left = 8; card_style.corner_radius_top_right = 8
+	card_style.corner_radius_bottom_left = 8; card_style.corner_radius_bottom_right = 8
+	card_style.content_margin_left = 14.0; card_style.content_margin_right = 14.0
+	card_style.content_margin_top = 12.0; card_style.content_margin_bottom = 12.0
+	card.add_theme_stylebox_override("panel", card_style)
+	inner.add_child(card)
+
+	var card_vbox := VBoxContainer.new()
+	card_vbox.add_theme_constant_override("separation", 4)
+	card.add_child(card_vbox)
+
+	_sb_preview_lbl = Label.new()
+	_sb_preview_lbl.text = "Total SP Cost: --"
+	_sb_preview_lbl.add_theme_font_size_override("font_size", 18)
+	_sb_preview_lbl.add_theme_color_override("font_color", Color(0.74, 0.40, 1.0))
+	card_vbox.add_child(_sb_preview_lbl)
+
+	_sb_breakdown_lbl = Label.new()
+	_sb_breakdown_lbl.text = ""
+	_sb_breakdown_lbl.add_theme_font_size_override("font_size", 11)
+	_sb_breakdown_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.60))
+	_sb_breakdown_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	card_vbox.add_child(_sb_breakdown_lbl)
+
+	var desc_hdr := Label.new()
+	desc_hdr.text = "Description:"
+	desc_hdr.add_theme_font_size_override("font_size", 12)
+	desc_hdr.add_theme_color_override("font_color", Color.WHITE)
+	card_vbox.add_child(desc_hdr)
+
+	_sb_desc_lbl = Label.new()
+	_sb_desc_lbl.text = ""
+	_sb_desc_lbl.add_theme_font_size_override("font_size", 11)
+	_sb_desc_lbl.add_theme_color_override("font_color", Color(0.70, 0.75, 0.85))
+	_sb_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	card_vbox.add_child(_sb_desc_lbl)
+
+	_sb_update_preview()
+
+	# ── Buttons ──
 	var btn_row := HBoxContainer.new()
-	var btn_learn := _colored_btn("✨ Learn Spell", Color(0.22, 0.10, 0.35))
-	btn_learn.pressed.connect(_on_learn_custom_spell)
-	btn_row.add_child(btn_learn)
-	btn_row.add_child(_spacer_h(12))
-	var btn_cancel_spell := Button.new()
-	btn_cancel_spell.text = "Cancel"
-	btn_cancel_spell.pressed.connect(func(): _spell_overlay.visible = false)
-	btn_row.add_child(btn_cancel_spell)
+	btn_row.add_theme_constant_override("separation", 10)
 	inner.add_child(btn_row)
 
+	var btn_learn := _colored_btn("✨ Learn Spell", Color(0.22, 0.10, 0.35))
+	btn_learn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_learn.pressed.connect(_on_learn_custom_spell)
+	btn_row.add_child(btn_learn)
+
+	var btn_cancel := Button.new()
+	btn_cancel.text = "Cancel"
+	btn_cancel.custom_minimum_size = Vector2(80, 34)
+	btn_cancel.pressed.connect(func(): _spell_overlay.visible = false)
+	btn_row.add_child(btn_cancel)
+
 func _on_open_custom_spell() -> void:
+	# Reset builder state for a fresh spell
+	_sb_name = ""
+	_sb_domain = 0
+	_sb_effect_idx = 0
+	_sb_duration_idx = 0
+	_sb_range_idx = 1
+	_sb_targets = 1
+	_sb_area_idx = 0
+	_sb_die_count = 1
+	_sb_die_idx = 0
+	_sb_damage_type = 3
+	_sb_is_healing = false
+	_sb_is_saving_throw = false
+	_sb_is_teleport = false
+	_sb_is_combustion = false
+	_sb_conditions.clear()
+	_sb_populate_inner()
 	_spell_overlay.visible = true
 
 func _on_learn_custom_spell() -> void:
-	var spell_name: String = _spell_name_edit.text.strip_edges()
+	var spell_name: String = _sb_name.strip_edges()
 	if spell_name.is_empty():
 		_add_log("[color=red]Spell name cannot be empty.[/color]")
 		_spell_overlay.visible = false
 		return
-	var domain: int  = _spell_domain_opt.selected
-	var cost: int    = int(_spell_cost_edit.text) if _spell_cost_edit.text.is_valid_int() else 2
-	var dc: int      = int(_spell_dice_count.text) if _spell_dice_count.text.is_valid_int() else 1
-	var ds: int      = int(_spell_dice_sides.text) if _spell_dice_sides.text.is_valid_int() else 6
-	var dmg_type: int = _spell_dmg_type_opt.selected
-	var area_type: int = _spell_area_opt.selected
-	var dur: int     = int(_spell_duration.text) if _spell_duration.text.is_valid_int() else 0
-	var mt: int      = int(_spell_max_targets.text) if _spell_max_targets.text.is_valid_int() else 1
-	var conds: String = _spell_conds_edit.text.strip_edges()
-	var is_atk: bool  = _spell_is_attack.button_pressed
-	var is_heal: bool = _spell_is_healing.button_pressed
-	var is_tp: bool   = _spell_is_teleport.button_pressed
-	var desc: String  = "%dd%d %s %s spell" % [dc, ds, _spell_dmg_type_opt.get_item_text(dmg_type),
-		_spell_domain_opt.get_item_text(domain)]
 
-	_e.add_custom_spell(spell_name, domain, cost, desc, 6, is_atk, dc, ds,
-		dmg_type, is_heal, dur, mt, area_type, conds, is_tp)
-	_add_log("[color=violet]✨ %s learned by all players![/color]" % spell_name)
+	var final_cost: int = _sb_calc_cost()
+	var die_sides: int  = [4, 6, 8, 10, 12][_sb_die_idx]
+	var dur_rounds: int = SB_DURATION_ROUNDS[_sb_duration_idx] if _sb_duration_idx < SB_DURATION_ROUNDS.size() else 0
+	var cond_csv: String = ",".join(_sb_conditions)
+	var desc: String = _sb_gen_description()
+
+	_e.add_custom_spell(
+		spell_name, _sb_domain, final_cost, desc,
+		_sb_range_idx, not _sb_is_saving_throw,
+		_sb_die_count, die_sides, _sb_damage_type,
+		_sb_is_healing, dur_rounds, _sb_targets,
+		_sb_area_idx, cond_csv, _sb_is_teleport,
+		_sb_is_combustion
+	)
+	_add_log("[color=violet]✨ %s learned by all players! (SP Cost: %d)[/color]" % [spell_name, final_cost])
 	_spell_overlay.visible = false
 	_populate_action_columns()
 
@@ -995,6 +1511,8 @@ func _on_terrain_confirm() -> void:
 	# Reload scene data — must refresh _map too since the dungeon was regenerated
 	_map       = _e.get_dungeon_map()
 	_load_terrain_palette()
+	_update_biome_environment()
+	_spawn_biome_particles()
 	_entities  = _e.get_dungeon_entities()
 	_fog       = _e.get_dungeon_fog()
 	_elevation = _e.get_dungeon_elevation()
@@ -1261,8 +1779,8 @@ func _build_center_panel() -> Control:
 	_world3d_root.name = "World3D"
 	_viewport_3d.add_child(_world3d_root)
 
-	# WorldEnvironment — ambient glow, fog, background
-	var env_node := WorldEnvironment.new()
+	# WorldEnvironment — ambient glow, fog, background (updated per-biome)
+	_env_node = WorldEnvironment.new()
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.03, 0.01, 0.06)
@@ -1280,8 +1798,8 @@ func _build_center_panel() -> Control:
 	env.fog_light_color      = Color(0.04, 0.02, 0.08)
 	env.fog_density          = 0.02
 	env.fog_aerial_perspective = 0.3
-	env_node.environment = env
-	_world3d_root.add_child(env_node)
+	_env_node.environment = env
+	_world3d_root.add_child(_env_node)
 
 	# Camera — orbit rig driven by _cam_yaw / _cam_pitch / _cam_dist.
 	# Scroll wheel = zoom  |  Right-drag = rotate
@@ -1318,6 +1836,7 @@ func _build_center_panel() -> Control:
 	_overlay_root = Node3D.new(); _overlay_root.name = "Overlays"; _world3d_root.add_child(_overlay_root)
 	_torch_root   = Node3D.new(); _torch_root.name   = "Torches";  _world3d_root.add_child(_torch_root)
 	_fog_root     = Node3D.new(); _fog_root.name     = "Fog";      _world3d_root.add_child(_fog_root)
+	_particle_root = Node3D.new(); _particle_root.name = "Particles"; _world3d_root.add_child(_particle_root)
 
 	return bg
 
@@ -3074,8 +3593,7 @@ func _update_3d_entities() -> void:
 				_make_mesh_inst(cyl_mesh, mat, cx, base_y + 0.425, cz, _entity_root)
 
 		# Selected glow ring
-		var ent_id: String = str(ent["id"])
-		if ent_id == _selected_id:
+		if str(ent["id"]) == _selected_id:
 			var ring_mesh := TorusMesh.new()
 			ring_mesh.inner_radius = 0.33
 			ring_mesh.outer_radius = 0.46
@@ -3095,7 +3613,7 @@ func _update_3d_entities() -> void:
 		if not is_dead:
 			var glow := OmniLight3D.new()
 			glow.light_color  = emit_col if emit_str > 0.0 else body_col
-			glow.light_energy = 0.8 + (0.5 if ent_id == _selected_id else 0.0)
+			glow.light_energy = 0.8 + (0.5 if str(ent["id"]) == _selected_id else 0.0)
 			glow.omni_range   = 2.2
 			glow.shadow_enabled = false
 			glow.position = Vector3(cx, base_y + 0.9, cz)
@@ -3306,11 +3824,11 @@ func _on_grid_input(event: InputEvent) -> void:
 		return
 	# ── End camera controls ────────────────────────────────────────────────────
 
+	if not (event is InputEventMouseButton): return
 	var tile_coord: Vector2i = _screen_to_tile(event.position)
 	var tx: int = tile_coord.x
 	var ty: int = tile_coord.y
 
-	if not (event is InputEventMouseButton): return
 	if not event.pressed: return
 	if event.button_index != MOUSE_BUTTON_LEFT: return
 	if tile_coord.x < 0: return   # ray missed the floor plane
@@ -3813,14 +4331,35 @@ func _sync_dungeon_injuries() -> void:
 func _on_back() -> void:
 	# ── Persist injuries from dungeon entities back to character dicts ─────────
 	_sync_dungeon_injuries()
+	var was_story_combat: bool = GameState.quest_state.get("story_combat_active", false)
+	var combat_victory: bool = (_outcome == "victory")
 	_e.end_dungeon()
 	GameState.save_game()   # persist character HP, gold etc. earned in dungeon
 	# Navigate back through the main scene shell so the bottom nav bar is restored.
 	var main = get_parent().get_parent() if get_parent() else null
 	if main and main.has_method("pop_screen"):
 		main.pop_screen()
+		# If returning from story combat, notify the world scene
+		if was_story_combat:
+			call_deferred("_notify_story_combat_result", main, combat_victory)
 	else:
 		get_tree().change_scene_to_file("res://scenes/main/main.tscn")
+
+func _notify_story_combat_result(main_node: Node, victory: bool) -> void:
+	# The world scene is now the active child of main's content area.
+	# Walk the tree to find any node with _on_story_combat_resolved.
+	# NOTE: No await here — this runs deferred so world scene is already loaded,
+	# and this dungeon node is queued for free so awaiting would cancel the coroutine.
+	_find_and_call_story_handler(main_node, victory)
+
+func _find_and_call_story_handler(node: Node, victory: bool) -> bool:
+	if node.has_method("_on_story_combat_resolved"):
+		node._on_story_combat_resolved(victory)
+		return true
+	for child in node.get_children():
+		if _find_and_call_story_handler(child, victory):
+			return true
+	return false
 
 # ── Selection & state ─────────────────────────────────────────────────────────
 func _select_entity(id: String) -> void:

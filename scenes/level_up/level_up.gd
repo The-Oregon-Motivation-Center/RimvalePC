@@ -189,8 +189,13 @@ func _refresh_header() -> void:
 	name_row.add_child(rename_btn)
 	_header_vbox.add_child(name_row)
 
-	# Level + Lineage
-	_header_vbox.add_child(RimvaleUtils.label("Level %d  %s" % [level_, lineage_], 13, RimvaleColors.TEXT_GRAY))
+	# Level + Lineage + Age
+	var char_age_: int = _e.get_character_age(_handle)
+	var char_insanity_: int = _e.get_character_insanity(_handle)
+	var age_str: String = "  Age %d" % char_age_
+	if char_insanity_ > 0:
+		age_str += "  Insanity %d" % char_insanity_
+	_header_vbox.add_child(RimvaleUtils.label("Level %d  %s%s" % [level_, lineage_, age_str], 13, RimvaleColors.TEXT_GRAY))
 
 	# Societal role
 	if not role_.is_empty():
@@ -756,24 +761,21 @@ func _build_feat_card(feat_name: String, tier: int, category: String, tree_name:
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		vbox.add_child(desc_lbl)
 
-	var bottom_row = HBoxContainer.new()
-	bottom_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(bottom_row)
-
-	bottom_row.add_child(RimvaleUtils.label(category, 10, Color(0.61, 0.15, 0.69)))
-	var sp2 = Control.new()
-	sp2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bottom_row.add_child(sp2)
-
+	# Unlock button / status sits directly below the description
 	if can_unlock and not is_unlocked and feat_pts > 0:
 		var fn_cap: String = feat_name
 		var tier_cap: int = tier
 		var unlock_btn = RimvaleUtils.button("Unlock (T%d)" % tier, RimvaleColors.GOLD, 32, 12)
 		unlock_btn.pressed.connect(func(): _confirm_feat_unlock(fn_cap, tier_cap))
-		bottom_row.add_child(unlock_btn)
+		vbox.add_child(unlock_btn)
 	elif is_unlocked:
-		bottom_row.add_child(RimvaleUtils.label("Unlocked T%d" % _e.get_character_feat_tier(_handle, feat_name),
+		vbox.add_child(RimvaleUtils.label("Unlocked T%d" % _e.get_character_feat_tier(_handle, feat_name),
 			10, Color(0.30, 0.69, 0.31)))
+
+	var bottom_row = HBoxContainer.new()
+	bottom_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(bottom_row)
+	bottom_row.add_child(RimvaleUtils.label(category, 10, Color(0.61, 0.15, 0.69)))
 
 	return card
 

@@ -53,6 +53,20 @@ var _dd_type_btns: Array   = []
 var _story_sections_vbox: VBoxContainer  # rebuilt when badges change
 var _story_badge_lbl: Label
 
+# ── Story mission execution state ────────────────────────────────────────────
+var _story_exec_overlay: Control          # full-screen mission execution panel
+var _story_exec_mission: Dictionary = {}  # current mission data dict
+var _story_exec_quest: Dictionary = {}    # quest state (part, challenge, log, etc.)
+var _story_exec_agent_handle: int = 0     # selected agent for current challenge
+var _story_exec_log_rtl: RichTextLabel    # mission log display
+var _story_exec_header_lbl: Label
+var _story_exec_progress_bar: ProgressBar
+var _story_exec_progress_lbl: Label
+var _story_exec_team_hbox: HBoxContainer
+var _story_exec_action_vbox: VBoxContainer
+var _story_exec_agent_bars: Dictionary = {}  # handle -> {name_lbl, hp_bar, sp_bar}
+var _story_exec_is_rolling: bool = false
+
 # ── Overworld state ──────────────────────────────────────────────────────────
 var _overworld_panel: Control
 var _overworld_map_control: Control           # canvas holding region nodes
@@ -66,6 +80,69 @@ var _ritual_tasks_vbox:   VBoxContainer
 var _ritual_active_vbox:  VBoxContainer
 var _ritual_result_lbl:   Label
 var _ritual_empty_lbl:    Label
+var _ritual_overlay:      Control   # full-screen spell builder overlay
+var _ritual_inner:        VBoxContainer
+var _ritual_preview_lbl:  Label
+var _ritual_breakdown_lbl: Label
+var _ritual_desc_lbl:     Label
+
+# ── Ritual spell builder state (mirrors dungeon.gd PHB builder) ──────────────
+var _rb_name:          String = ""
+var _rb_caster_idx:    int = 0
+var _rb_domain:        int = 0
+var _rb_effect_idx:    int = 0
+var _rb_duration_idx:  int = 0
+var _rb_range_idx:     int = 1
+var _rb_targets:       int = 1
+var _rb_area_idx:      int = 0
+var _rb_die_count:     int = 1
+var _rb_die_idx:       int = 0
+var _rb_damage_type:   int = 3
+var _rb_is_healing:    bool = false
+var _rb_is_saving_throw: bool = false
+var _rb_is_teleport:   bool = false
+var _rb_is_combustion: bool = false
+var _rb_conditions:    Array = []
+var _rb_handles:       Array = []    # active party handles for caster selection
+
+# PHB spell formula constants (same as dungeon.gd)
+const RB_DOMAIN_NAMES: PackedStringArray = ["Biological", "Chemical", "Physical", "Spiritual"]
+const RB_DOMAIN_EFFECTS: Array = [
+	[["Augment Trait", 1], ["Health Regeneration", 1], ["Memory Edit", 4],
+	 ["Mind Control", 6], ["Revivify", 5], ["Terrain Manipulation", 1],
+	 ["Undeath", 1], ["Weather Resistance", 1]],
+	[["Combustion", 4], ["Damage an Object", 1], ["Mend an Object", 2],
+	 ["Remove Grime", 1], ["Transmutation", 40]],
+	[["Accuracy", 1], ["Ambient Temperature", 1], ["Create Construct", 2],
+	 ["Damage Output Increase", 1], ["Damage Reduction", 2], ["Illusions", 2],
+	 ["Light", 2], ["Shield", 1], ["Telekinesis", 1], ["Teleportation", 1],
+	 ["Time Manipulation", 2]],
+	[["Bless", 1], ["Conjure Damage or Healing", 1], ["Curse", 1],
+	 ["Intangibility", 4], ["Suppress Magic", 2], ["Summon", 2]],
+]
+const RB_CONDITIONS_BENEFICIAL: PackedStringArray = [
+	"Calm", "Dodging", "Flying", "Hidden", "Invisible",
+	"Invulnerable", "Resistance", "Shielded", "Silent", "Stoneskin"
+]
+const RB_CONDITIONS_HARMFUL: PackedStringArray = [
+	"Bleed", "Blinded", "Charm", "Confused", "Dazed", "Deafened",
+	"Depleted", "Diseased", "Enraged", "Exhausted", "Fear", "Fever",
+	"Incapacitated", "Paralyzed", "Petrified", "Poisoned", "Prone",
+	"Restrained", "Slowed", "Squeeze", "Stunned", "Unconscious", "Vulnerable"
+]
+const RB_DAMAGE_TYPES: PackedStringArray = [
+	"Bludgeoning", "Piercing", "Slashing", "Force", "Fire", "Cold",
+	"Lightning", "Acid", "Poison", "Psychic", "Radiant", "Necrotic", "Thunder"
+]
+const RB_DURATION_LABELS: PackedStringArray = ["Instant", "1 Minute", "10 Minutes", "1 Hour", "1 Day"]
+const RB_DURATION_ROUNDS: PackedInt32Array  = [0, 10, 100, 600, 14400]
+const RB_DURATION_MULT:   PackedInt32Array  = [1, 2, 3, 5, 10]
+const RB_RANGE_LABELS:   PackedStringArray = ["Self", "Touch", "15 ft", "30 ft", "100 ft", "500 ft", "1000 ft"]
+const RB_RANGE_SP_COST:  PackedInt32Array  = [0, 0, 1, 2, 3, 6, 10]
+const RB_AREA_LABELS: PackedStringArray = ["Single Target", "Small (10 ft cube)", "Large (30 ft cube)", "Massive (100 ft cube)"]
+const RB_AREA_MULT:   PackedInt32Array  = [1, 2, 3, 10]
+const RB_DIE_LABELS:    PackedStringArray = ["d4", "d6", "d8", "d10", "d12"]
+const RB_DIE_SIDES_MOD: PackedInt32Array  = [0, 1, 2, 3, 4]
 
 const DD_TERRAIN_NAMES: Array = [
 	"Cave", "Grassland", "Dense Forest", "City Ruins",
@@ -143,111 +220,213 @@ const DD_MILITIAS: Array = [
 	["Sacred Vigil",     "Sacred Militia — Lv.5",     "10 temple guards. Divine Zeal, Priest commander. AC 18, +1d4 radiant vs undead. Healing costs –2 SP."],
 ]
 
+# ── Contact NPCs ─────────────────────────────────────────────────────────────
+# Each entry: section_id -> {name, lineage, intro, sendoff}
+const STORY_CONTACTS: Dictionary = {
+	"plains": {"name": "Lyra", "lineage": "Lyra",
+		"intro": "Lyra, ACF Plains Liaison. I've been embedded here for weeks — this is worse than the reports suggest.",
+		"sendoff": "The Plains are counting on you. Good luck out there."},
+	"shadows": {"name": "Seris", "lineage": "Twilightkin",
+		"intro": "Seris. Shadows Beneath contact. Listen more than you look — sight fails in the deep.",
+		"sendoff": "Stay quiet. Stay whole. Good luck out there."},
+	"astral": {"name": "Gronk", "lineage": "Tetrasimian",
+		"intro": "Gronk. Astral Tear contact. I'll keep this short — the planar static cuts transmissions.",
+		"sendoff": "Don't let the void take your name. Good hunting."},
+	"terminus": {"name": "Unit 4", "lineage": "Watchling",
+		"intro": "Unit 4, Terminus Volarus station. Operational status: active. Weather interference: significant.",
+		"sendoff": "Signal acknowledged. Good luck, agent."},
+	"glass": {"name": "Arvane", "lineage": "Hellforged",
+		"intro": "Arvane. Glass Passage. Trust nothing you see reflected — the Enclave has salted every surface.",
+		"sendoff": "See clearly. Strike true. Do not let the glass keep you."},
+	"isles": {"name": "Loxy", "lineage": "Cloudling",
+		"intro": "Loxy here! Isles liaison — yes, I'm the one with the boat. Try not to sink it.",
+		"sendoff": "Wind at your backs! Good luck out there!"},
+	"metro": {"name": "Calder", "lineage": "Corvian",
+		"intro": "Calder, Metro contact. I've been pulling threads on this one for three weeks. The picture's not pretty.",
+		"sendoff": "Watch the rooftops. Good luck, agent."},
+	"titans": {"name": "Veyraen", "lineage": "Drakari",
+		"intro": "Veyraen. I have walked the Lament for centuries. What the Enclave has done here is desecration.",
+		"sendoff": "May the Titans bear witness. Do not fail them. Good luck."},
+	"peaks": {"name": "Edda", "lineage": "Archivist",
+		"intro": "Edda, Peaks Liaison. I've cross-referenced every shrine record. The pattern is undeniable.",
+		"sendoff": "Knowledge is armor. Stay sharp. Good luck, agent."},
+	"sublimini": {"name": "Director Victor Sorn", "lineage": "Regal Human",
+		"intro": "Director Sorn, ACF Command. All nine regional nodes have been dismantled. This is the endgame. The entire operation has led here.",
+		"sendoff": "Don't make me write the after-action report myself. Good hunting."},
+}
+
 # ── Training missions ──────────────────────────────────────────────────────────
-# Each entry: [id, title, region, teaser, xp_reward, is_boss_fight]
+# Each entry: [id, title, region, teaser, flavor, xp_reward, is_boss, boss_name, boss_level, boss_apex_idx]
 const TRAINING_MISSIONS: Array = [
 	["t1", "Training I: Tainted Waters", "Kingdom of Qunorum",
 		"Illness is spreading through a Qunorum village. Purify the drinking source and root out who is responsible.",
-		80, false],
+		"Reports of sickness have reached ACF command. A village well in the Kingdom of Qunorum has been deliberately contaminated. Locate the underground cistern, clear any hostile presence, and purify the water supply. Investigators who came before found strange markings near the well — someone has been here, and they were thorough.",
+		80, false, "", 0, -1],
 	["t2", "Training II: The Defiled Grotto", "House of Arachana",
-		"A cave in the House of Arachana runs foul with corrupted ichor.",
-		80, false],
+		"A cave in the House of Arachana runs foul with corrupted ichor. The same hand that fouled Qunorum's water is at work here.",
+		"The spider-silk territories of the House of Arachana report corrupted ichor pooling in the deep grottos. Creatures behave erratically and the web-keepers have retreated. The same strange sigils found in Qunorum mark the cavern walls — a deliberate pattern is emerging. Purify the grotto and confirm what is being done and why.",
+		80, false, "", 0, -1],
 	["t3", "Training III: The Poisoned Spring", "The Forest of SubEden",
 		"A sacred spring in SubEden has turned black. The fae have fled. The Sinister Agent's trail grows clearer.",
-		80, false],
+		"A spring sacred to the fae of SubEden has been fouled with dark energies. The surrounding forest is dying. The fae will not return until it is cleansed. Commune with the spirits if you can — they have witnessed the agent at work and may know the identity of whoever is orchestrating this.",
+		80, false, "", 0, -1],
 	["t4", "Training IV: The Heart-Tree", "The Wilds of Endero",
-		"The ancient Heart-Tree of Endero is dying. Its roots have been deliberately poisoned.",
-		80, false],
+		"The ancient Heart-Tree of Endero is dying. Its roots have been deliberately poisoned. This is the final site before the convergence.",
+		"The Heart-Tree of the Wilds of Endero — revered by the Tetrasimian and Cervin lineages for generations — is dying from a corruption laced into its roots. Ritual implements and camp remnants surround it. Purify the tree, destroy the ritual anchors, and recover whatever the agent left behind.",
+		80, false, "", 0, -1],
 	["t5", "Training V: The Sinister Agent", "Kingdom of Qunorum",
-		"Velmara Dusk — a corrupted scholar — has been identified. Return to where it began and stop them.",
-		200, true],
+		"Velmara Dusk — a corrupted scholar — has been identified. Return to where it began and stop them before the ritual is complete.",
+		"The agent is Velmara Dusk, a corrupted scholar once of the Eternal Library who seeks to destabilize the world's natural anchors to fuel a dark ascension ritual. Each poisoned source was a node in a vast working. The convergence point traces back to Qunorum — where it all began. Your team must confront and stop Velmara Dusk before the final rite is enacted.",
+		200, true, "Velmara Dusk", 5, -1],
 ]
 
 # ── Story sections ─────────────────────────────────────────────────────────────
 # Each entry: [section_id, title, badge_name_or_empty, requires_all_badges, missions_array]
-# Mission entry: [mission_id, title, region, teaser, xp, is_boss]
+# Mission entry: [id, title, region, teaser, flavor, xp, is_boss, boss_name, boss_level, boss_apex_idx]
 const STORY_SECTIONS: Array = [
 	["plains", "The Plains", "Plains Badge", false, [
 		["plains-1", "Plains I: Wilted Wanderers", "The Plains",
-			"Fae-touched plants are siphoning memories from Plains villagers.", 100, false],
+			"Fae-touched plants are siphoning memories from Plains villagers. A pattern points toward a deliberate hand.",
+			"Farmers across the Plains wake unable to recall their names. Strange root-webs have grown overnight, pulsing with dim light. Local fae report a woman whispering to the plants — a tracker who should not know these lands. Find the source before the harvest completes.",
+			100, false, "", 0, -1],
 		["plains-2", "Plains II: The Root Network", "The Plains",
-			"A memory-harvest network woven through ancient root systems. The Enclave's geometry is unmistakable.", 100, false],
+			"A memory-harvest network woven through ancient root systems. The Enclave's geometry is unmistakable.",
+			"Following the trails of dying crops and forgotten faces, your team has traced the memory-drain to a vast underground root network. Enclave ritual anchors pulse at every node. Destroy the anchors before the harvest feeds back to Sublimini Dominus.",
+			100, false, "", 0, -1],
 		["plains-boss", "Plains III: The Tracker Revealed", "The Plains",
-			"Seraphina Windwalker — Fae-Touched Wilderness Tracker — stands at the convergence point.", 300, true],
+			"Seraphina Windwalker — Fae-Touched Wilderness Tracker of the Eclipsed Enclave — stands at the convergence point.",
+			"Seraphina Windwalker has completed the first node of the Final Rite. She speaks to the roots as though they are kin. She will not stop unless stopped. End her ritual here, in the heart of the Plains.",
+			300, true, "Seraphina Windwalker", 5, 14],
 	]],
 	["shadows", "The Shadows Beneath", "Shadows Beneath Badge", false, [
 		["shadows-1", "Shadows I: Voices in the Dark", "The Shadows Beneath",
-			"Underground settlements report memory-stealing shadows.", 100, false],
+			"Underground settlements report memory-stealing shadows. No culprit. No trace. Only silence where names once were.",
+			"The deep settlements of the Shadows Beneath have been experiencing targeted identity erasure. Witnesses describe shadows that move against the light — and a woman's laughter where there is no woman. ACF agents went missing. Follow the geometric patterns on the tunnel walls.",
+			100, false, "", 0, -1],
 		["shadows-2", "Shadows II: The Hollow Path", "The Shadows Beneath",
-			"Enclave ritual geometry marks every junction. The tunnels are a circuit being charged.", 100, false],
+			"Enclave ritual geometry marks every junction. The tunnels are a circuit. Something is being charged.",
+			"The tunnel network of the Shadows Beneath has been mapped with Enclave ritual geometry — every crossroads is a node, every dead-end a capacitor. Disable the circuit before it completes its cycle and collapses the identities of everyone in the undercity.",
+			100, false, "", 0, -1],
 		["shadows-boss", "Shadows III: Blade of Forgotten Names", "The Shadows Beneath",
-			"Thalia Darksong — Shadowblade of the Eclipsed Enclave — steps from the dark.", 300, true],
+			"Thalia Darksong — Shadowblade of the Eclipsed Enclave — steps from the dark to protect the circuit's final node.",
+			"Thalia Darksong does not speak. She moves through shadow, collects names, and adds them to her silence. She has stolen the identities of three ACF agents before you arrived. You will not give her yours.",
+			300, true, "Thalia Darksong", 5, 12],
 	]],
 	["astral", "The Astral Tear", "Astral Tear Badge", false, [
 		["astral-1", "Astral I: Shattered Visions", "The Astral Tear",
-			"Travelers through the Astral Tear return without their identities. The planar membrane fractures.", 100, false],
+			"Travelers through the Astral Tear return without their identities. The planar membrane has begun to fracture.",
+			"The Astral Tear was already an unstable crossing. Now it is a weapon. Those who pass through arrive on the other side hollow — no name, no past. The fracture is deliberate. Someone has placed ritual anchors in the planar membrane itself.",
+			100, false, "", 0, -1],
 		["astral-2", "Astral II: The Weave Unraveling", "The Astral Tear",
-			"Void energy seeps through fractured planar seams. The anchor network is almost complete.", 100, false],
+			"Void energy seeps through fractured planar seams. The anchor network is almost complete.",
+			"The fractured planar membrane of the Astral Tear has become a conduit for Void energy. The anchor network powering it runs across three seam-nodes deep in the metaphysical layer. Destroy them before the full fracture opens and makes the Tear impassable permanently.",
+			100, false, "", 0, -1],
 		["astral-boss", "Astral III: Oracle of Dissolution", "The Astral Tear",
-			"Nirael of the Glass Veil guards the final anchor and speaks in futures already passed.", 300, true],
+			"Nirael of the Glass Veil — Oracle of Fractured Timelines — guards the final anchor and speaks in futures that have already passed.",
+			"Nirael answered your questions before you asked them. She has been watching this moment in fractured timeline after fractured timeline. In every one, the Tear opens. Prove her wrong.",
+			300, true, "Nirael of the Glass Veil", 5, 21],
 	]],
 	["terminus", "The Terminus Volarus", "Terminus Volarus Badge", false, [
 		["terminus-1", "Terminus I: Static in the Sky", "The Terminus Volarus",
-			"Unnatural storms have grounded all air travel and severed communication lines.", 100, false],
+			"Unnatural storms have grounded all air travel and severed communication lines across the Terminus.",
+			"The sky routes of the Terminus Volarus — lifelines of trade and communication — have gone dark. Crackling static erases messages mid-transmission. The storms form perfect geometric patterns over key relay towers. Someone is conducting them.",
+			100, false, "", 0, -1],
 		["terminus-2", "Terminus II: The Storm Conductor", "The Terminus Volarus",
-			"A ritual lightning-rod network converts storm energy to SP. The Choir's coffers are being filled from the sky.", 100, false],
+			"A ritual lightning-rod network converts storm energy directly into SP. The Choir's coffers are being filled from the sky.",
+			"Each tower in the Terminus is a link in a ritual circuit converting storm energy to SP, funneled directly to Sublimini Dominus. Dismantle the network. The Stormclad who built it will not let you do so quietly.",
+			100, false, "", 0, -1],
 		["terminus-boss", "Terminus III: Tempest of Forgetting", "The Terminus Volarus",
-			"Rurik Stormbringer — Elemental Mage of the Eclipsed Enclave — calls down his storm for one final performance.", 300, true],
+			"Rurik Stormbringer — Elemental Mage of the Eclipsed Enclave — calls down his storm for one final performance.",
+			"Rurik strikes dramatic poses and narrates every bolt of lightning. He believes his work is art. Dismantle his masterpiece and end his contribution to the Final Rite.",
+			300, true, "Rurik Stormbringer", 5, 15],
 	]],
 	["glass", "The Glass Passage", "Glass Passage Badge", false, [
 		["glass-1", "Glass I: Mirror in the Path", "The Glass Passage",
-			"Travelers encounter perfect copies of themselves that lead them into traps.", 100, false],
+			"Travelers encounter perfect copies of themselves that speak with their voices — and lead them into traps.",
+			"No one who enters the Glass Passage alone returns the same person. The reflections are too perfect. They know things they should not know. The Enclave has layered illusions into the passage's refractive walls as a memory-trap and identity-siphon.",
+			100, false, "", 0, -1],
 		["glass-2", "Glass II: A Reflection of Nothing", "The Glass Passage",
-			"Two illusionists have replaced the passage's true geography with a false reality.", 100, false],
+			"Two illusionists have replaced the passage's true geography with a false reality. Navigating it requires seeing through the lie.",
+			"The Vorath Twins have rebuilt the Glass Passage in their own image — an overlapping maze of false terrain and stolen faces. The only path through is to dismantle the illusion anchors placed at three mirror-nodes deep in the false geography.",
+			100, false, "", 0, -1],
 		["glass-boss", "Glass III: Twin Reflections", "The Glass Passage",
-			"Ilyra and Kael Vorath — Mirrorborn dual illusionists — finish each other's sentences and attacks.", 300, true],
+			"Ilyra and Kael Vorath — Mirrorborn dual illusionists — finish each other's sentences and each other's attacks.",
+			"They speak in unison. When one moves, the other mirrors it. Their illusions stack into false realities within false realities. Both must be stopped — and only when both fall does the passage become real again.",
+			300, true, "Vorath Twins", 5, 17],
 	]],
 	["isles", "The Isles", "Isles Badge", false, [
 		["isles-1", "Isles I: Iron in the Water", "The Isles",
-			"Strange mechanical anchors on the seabed are drawing something up — or sending something down.", 100, false],
+			"Strange mechanical anchors on the seabed are drawing something up — or sending something down.",
+			"Fishermen haul up machine-parts instead of fish. Divers report vast metal scaffolding below the surface between the Isles. Enclave sigils run along every strut. Something is being built — or harvested — from the ocean floor.",
+			100, false, "", 0, -1],
 		["isles-2", "Isles II: The Engine Below", "The Isles",
-			"An underwater workshop harvests SP from the ocean's natural currents. It is almost at capacity.", 100, false],
+			"An underwater workshop harvests SP from the ocean's natural currents. It is almost at capacity.",
+			"The scaffolding conceals a vast SP-harvesting engine built into an underwater cavern. Gorrim Ironfist has been tinkering with it for months. The ocean's own energy is being siphoned to Sublimini Dominus. Disable it before the transfer completes.",
+			100, false, "", 0, -1],
 		["isles-boss", "Isles III: The Tinkering Binder", "The Isles",
-			"Gorrim Ironfist — Battle Engineer of the Eclipsed Enclave — does not intend to stop tinkering.", 300, true],
+			"Gorrim Ironfist — Battle Engineer of the Eclipsed Enclave — is still tinkering when you arrive, and does not intend to stop.",
+			"Gorrim is deeply annoyed by your interruption. He has seventeen gadgets half-assembled and a very large engine to protect. He will fight you with all of them.",
+			300, true, "Gorrim Ironfist", 5, 13],
 	]],
 	["metro", "The Metropolitan", "Metropolitan Badge", false, [
 		["metro-1", "Metro I: The Academic Conspiracy", "The Metropolitan",
-			"A prestigious arcane academy has been quietly recruiting students for Enclave rituals.", 100, false],
+			"A prestigious arcane academy has been quietly recruiting students for Enclave rituals. The dean has no memory of approving this.",
+			"The most respected arcane academy in the Metropolitan has students it cannot name and classes it cannot explain. Enrollment has doubled. SP reserves have tripled. The Enclave is using the academy's infrastructure to train ritual conduits for the Final Rite.",
+			100, false, "", 0, -1],
 		["metro-2", "Metro II: City Under Influence", "The Metropolitan",
-			"Civic records are being rewritten. Hundreds report memory gaps. An entire city prepared for identity erasure.", 120, false],
+			"Civic records are being rewritten across the city. Hundreds report memory gaps. The Enclave is preparing an entire city for identity erasure.",
+			"The Metropolitan's administrative core has been infiltrated at every level. Records offices report logs written in hands that do not match their scribes. Identity erasure has been slow and surgical — preparing the population for the Rite of Hollow Identity on a city-wide scale.",
+			120, false, "", 0, -1],
 		["metro-boss", "Metro III: Draconic Reckoning", "The Metropolitan",
-			"Zorin Blackscale — Arcane Strategist — has turned the Metropolitan's arcane infrastructure into his fortress.", 400, true],
+			"Zorin Blackscale — Arcane Strategist of the Eclipsed Enclave — has turned the Metropolitan's own arcane infrastructure into his fortress.",
+			"Zorin quotes obscure arcane texts while directing city-wide wards and countermeasures against your team. He has transformed the academy's ley-line grid into a combat arena. And then he enters his draconic form.",
+			400, true, "Zorin Blackscale", 8, 11],
 	]],
 	["titans", "The Titan's Lament", "Titan's Lament Badge", false, [
 		["titans-1", "Titan I: Chains in the Deep", "The Titan's Lament",
-			"Ancient Titan ruins have been disturbed. Ritual chains and arcane anchors litter the sacred sites.", 100, false],
+			"Ancient Titan ruins have been disturbed. Ritual chains and arcane anchors litter the sacred sites.",
+			"The Titan's Lament has always been a place of mourning — but the mourning has taken a new shape. Enclave chains run between every ruin. The sacred silence of the Titans has been replaced with a low hum of bound SP. Someone is harvesting the grief of an age.",
+			100, false, "", 0, -1],
 		["titans-2", "Titan II: The Bound Echoes", "The Titan's Lament",
-			"The spirits of the Titans are being captured in soul shackles and converted to raw SP.", 100, false],
+			"The spirits of the Titans are being captured in soul shackles and converted to raw SP. The lament has become a factory.",
+			"Morthis the Binder has chained the echo-spirits of the Titans themselves to his collection apparatus. Each bound spirit feeds the Final Rite. The chains must be broken from the inside — which means entering the ruins that no one returns from unchanged.",
+			100, false, "", 0, -1],
 		["titans-boss", "Titan III: The Last Chain", "The Titan's Lament",
-			"Morthis the Binder — Soulbinder Ritualist — mutters the names of each bound Titan spirit as you approach.", 300, true],
+			"Morthis the Binder — Soulbinder Ritualist of the Eclipsed Enclave — mutters the names of the bound Titan spirits as you approach.",
+			"Morthis knows each soul he has bound by name. He considers this respectful. He will add your names to the list. His iron chains reach 30 feet in every direction, and he has not slept since the binding began.",
+			300, true, "Morthis the Binder", 5, 18],
 	]],
 	["peaks", "The Peaks of Isolation", "Peaks of Isolation Badge", false, [
 		["peaks-1", "Peaks I: The Nameless Pilgrims", "The Peaks of Isolation",
-			"Hermits and wanderers of the Peaks have forgotten their names and walk toward an unknown destination.", 100, false],
+			"Hermits and wanderers of the Peaks have forgotten their names and are walking toward an unknown destination.",
+			"The solitary figures who keep the mountain shrines have abandoned their posts, walking downward in silence. They respond to nothing. Their faces are wrong — borrowed expressions, stolen postures. Something is drawing them somewhere, and emptying them as it does.",
+			100, false, "", 0, -1],
 		["peaks-2", "Peaks II: Masks Among the Stones", "The Peaks of Isolation",
-			"The Rite of Hollow Identity has been performed at multiple mountain shrines. Faces have been collected.", 100, false],
+			"The Rite of Hollow Identity has been performed at multiple mountain shrines. Faces have been collected.",
+			"Every shrine in the Peaks bears evidence of the Rite of Hollow Identity. Bone-masks carved from the faces of the willing and unwilling alike are stacked at each altar. This is not theft of memory — it is collection. Someone is wearing the faces of the forgotten.",
+			100, false, "", 0, -1],
 		["peaks-boss", "Peaks III: The Face Collector", "The Peaks of Isolation",
-			"Kaelen the Hollow — Identity Thief — wears a different face every time you look at him.", 300, true],
+			"Kaelen the Hollow — Identity Thief of the Eclipsed Enclave — wears a different face every time you look at him.",
+			"Kaelen speaks in stolen voices and watches you through borrowed eyes. His masks are made from fragments of the people he has unmade. He has been collecting faces for years, and he intends to add yours to his collection.",
+			300, true, "Kaelen the Hollow", 5, 19],
 	]],
 	["sublimini", "Sublimini Dominus", "", true, [
 		["sub-1", "Sublimini I: The Threshold", "Sublimini Dominus",
-			"Enter Sublimini Dominus through metaphysical resonance. The Culled are everywhere. The Heart is beating.", 200, false],
+			"Enter Sublimini Dominus through metaphysical resonance. The Culled are everywhere. The Heart is beating.",
+			"Sublimini Dominus does not exist on any map. It is reached through metaphysical resonance — a shared frequency with the Beating Heart of the Void. The transition is dreamlike. The geometry is wrong. The Culled patrol in absolute silence. The Final Rite is already underway. Move carefully.",
+			200, false, "", 0, -1],
 		["sub-2", "Sublimini II: Through the Culled", "Sublimini Dominus",
-			"Eighty minds erased into one. The Culled stand between you and the inner sanctum.", 400, true],
+			"Eighty minds erased into one. The Culled stand between you and the inner sanctum.",
+			"The Culled do not speak. They do not remember. They chant in harmonic unison and move as a single organism. Their constant whispering disrupts focus and makes ranged combat unreliable. They must be broken through. All of them.",
+			400, true, "The Culled", 16, 10],
 		["sub-3", "Sublimini III: Flames and Echoes", "Sublimini Dominus",
-			"Korrin of the Forgotten Flame and Veyra's Echo guard the approach to the Beating Heart of the Void.", 500, true],
+			"Korrin of the Forgotten Flame and Veyra's Echo guard the approach to the Beating Heart of the Void.",
+			"Korrin converts everything he touches into entropy and fire. Veyra's Echo has no face and no past — she interprets the pulses of the Beating Heart as divine commands. They guard the final approach. They believe what they are doing is mercy. Convince them otherwise, or end the debate.",
+			500, true, "Korrin of the Forgotten Flame", 15, 9],
 		["sub-final", "Sublimini IV: The Architect of Oblivion", "Sublimini Dominus",
-			"High Null Sereth conducts the Final Rite. Stop the Architect. Stop the Heart.", 1000, true],
+			"High Null Sereth conducts the Final Rite. The Beating Heart of the Void pulses in perfect rhythm with the chant.",
+			"High Null Sereth burned his own name from the records of the Eternal Library. He has no name, no past — only the Rite. The Beating Heart pulses beneath you as he channels over 100,000 SP into the vessel that will become The Rewritten. Stop the Rite. Stop the Architect. Stop the Heart. This is the end of what the Choir began.",
+			1000, true, "High Null Sereth", 15, 7],
 	]],
 ]
 
@@ -772,13 +951,13 @@ func _build_story_section_card(
 	return card
 
 func _build_story_mission_row(m_data: Array) -> Control:
-	# m_data: [id, title, region, teaser, xp, is_boss]
+	# m_data: [id, title, region, teaser, flavor, xp, is_boss, boss_name, boss_level, boss_apex_idx]
 	var mid: String     = m_data[0]
 	var mtitle: String  = m_data[1]
 	var mregion: String = m_data[2]
 	var mteaser: String = m_data[3]
-	var mxp: int        = m_data[4]
-	var is_boss: bool   = m_data[5]
+	var mxp: int        = m_data[5]
+	var is_boss: bool   = m_data[6]
 	var completed: bool = mid in GameState.story_completed_missions
 
 	var row = HBoxContainer.new()
@@ -821,87 +1000,736 @@ func _build_story_mission_row(m_data: Array) -> Control:
 	var btn_lbl: String  = "Replay" if completed else "Begin"
 	var play_btn = RimvaleUtils.button(btn_lbl, btn_color, 28, 11)
 	play_btn.custom_minimum_size = Vector2(60, 28)
-	var cap_mid = mid; var cap_title = mtitle
-	var cap_teaser = mteaser; var cap_xp = mxp
+	var cap_m_data: Array = m_data.duplicate()
 	play_btn.pressed.connect(func():
-		_start_story_mission(cap_mid, cap_title, cap_teaser, cap_xp))
+		_on_story_mission_play(cap_m_data))
 	right_vbox.add_child(play_btn)
 
 	return row
 
-func _start_story_mission(mid: String, title: String, teaser: String, xp: int) -> void:
+# ══════════════════════════════════════════════════════════════════════════════
+#  STORY MISSION SYSTEM — Contact Dialogue + Quest Execution + Combat
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Challenge grid: stat_id, stat_name, skill_id, skill_name per (part, challenge)
+const CHALLENGE_GRID: Array = [
+	# Part 1
+	[[1, "Speed",     8,  "Nimble"],
+	 [3, "Vitality",  4,  "Exertion"],
+	 [0, "Strength", 13,  "Survival"]],
+	# Part 2
+	[[2, "Intellect", 6,  "Learnedness"],
+	 [1, "Speed",    11,  "Sneak"],
+	 [4, "Divinity",  0,  "Arcane"]],
+	# Part 3
+	[[0, "Strength",  4,  "Exertion"],
+	 [2, "Intellect", 5,  "Intuition"],
+	 [3, "Vitality", 13,  "Survival"]],
+]
+
+## Called when a story mission "Begin" / "Replay" button is pressed.
+func _on_story_mission_play(m_data: Array) -> void:
 	var party: Array = GameState.get_active_handles()
 	if party.is_empty():
 		push_warning("[Story] No active party")
 		return
 
-	var dialog = AcceptDialog.new()
-	dialog.title = title
-	dialog.get_ok_button().text = "Complete Mission"
-	dialog.min_size = Vector2i(460, 340)
+	# Find which section this mission belongs to (for contact lookup)
+	var section_id: String = ""
+	for sec in STORY_SECTIONS:
+		for m in sec[4]:
+			if m[0] == m_data[0]:
+				section_id = sec[0]; break
+		if not section_id.is_empty(): break
+	if section_id.is_empty():
+		# Check training missions
+		for m in TRAINING_MISSIONS:
+			if m[0] == m_data[0]:
+				section_id = "training"; break
 
-	var dvbox = VBoxContainer.new()
-	dvbox.add_theme_constant_override("separation", 8)
-	dialog.add_child(dvbox)
+	# Show contact dialogue on first play (if contact exists and not yet shown)
+	var mid: String = m_data[0]
+	if mid not in GameState.story_shown_contacts and section_id in STORY_CONTACTS:
+		_show_contact_dialogue(section_id, m_data)
+		return
 
-	var teaser_lbl = RimvaleUtils.label(teaser, 12, RimvaleColors.TEXT_WHITE)
+	# Otherwise go directly to mission execution
+	_start_quest_execution(m_data)
+
+# ── Contact Dialogue Modal ────────────────────────────────────────────────────
+
+func _show_contact_dialogue(section_id: String, m_data: Array) -> void:
+	var contact: Dictionary = STORY_CONTACTS[section_id]
+	var mid: String = m_data[0]
+
+	var overlay = PanelContainer.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg_style = StyleBoxFlat.new()
+	bg_style.bg_color = Color(0.0, 0.0, 0.0, 0.85)
+	overlay.add_theme_stylebox_override("panel", bg_style)
+	add_child(overlay)
+
+	var center = CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var card = PanelContainer.new()
+	card.custom_minimum_size = Vector2(440, 0)
+	var card_s = StyleBoxFlat.new()
+	card_s.bg_color = Color(0.10, 0.08, 0.16, 1.0)
+	card_s.corner_radius_top_left = 8; card_s.corner_radius_top_right = 8
+	card_s.corner_radius_bottom_left = 8; card_s.corner_radius_bottom_right = 8
+	card_s.content_margin_left = 20; card_s.content_margin_right = 20
+	card_s.content_margin_top = 16; card_s.content_margin_bottom = 16
+	card_s.border_width_top = 2; card_s.border_color = Color(0.45, 0.35, 0.70)
+	card.add_theme_stylebox_override("panel", card_s)
+	center.add_child(card)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	card.add_child(vbox)
+
+	# Contact name + lineage
+	var name_lbl = RimvaleUtils.label(contact["name"], 16, Color(0.85, 0.75, 1.0))
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(name_lbl)
+	var lineage_lbl = RimvaleUtils.label(contact["lineage"], 11, RimvaleColors.TEXT_GRAY)
+	lineage_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(lineage_lbl)
+
+	vbox.add_child(HSeparator.new())
+
+	# Intro line
+	var intro_lbl = RimvaleUtils.label(contact["intro"], 12, RimvaleColors.TEXT_WHITE)
+	intro_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(intro_lbl)
+
+	vbox.add_child(HSeparator.new())
+
+	# Mission teaser in italics
+	var teaser_lbl = RimvaleUtils.label(
+		"\"%s\"" % m_data[3], 11, Color(0.70, 0.70, 0.80))
 	teaser_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	dvbox.add_child(teaser_lbl)
-	dvbox.add_child(HSeparator.new())
+	vbox.add_child(teaser_lbl)
 
-	# Simple skill check log
-	var dc: int = 12
-	var log_rtl = RichTextLabel.new()
-	log_rtl.bbcode_enabled = true
-	log_rtl.fit_content = true
-	log_rtl.scroll_active = false
-	log_rtl.add_theme_font_size_override("normal_font_size", 12)
-	log_rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	dvbox.add_child(log_rtl)
+	vbox.add_child(HSeparator.new())
 
-	var checks: Array = ["Perception", "Exertion", "Survival"]
-	var log_text: String = ""
-	var successes: int = 0
-	for skill in checks:
-		var best: PackedStringArray = PackedStringArray()
-		var best_total: int = 0
-		for ph in party:
-			var result: PackedStringArray = RimvaleAPI.engine.execute_skill_challenge(ph, skill, dc)
-			if result.is_empty(): continue
-			var total: int = int(str(result[1]))
-			if total > best_total:
-				best_total = total; best = result
-		if best.is_empty():
-			best = RimvaleAPI.engine.execute_skill_challenge(-1, skill, dc)
-		var passed: bool = (not best.is_empty()) and best[0] == "1"
-		if passed: successes += 1
-		var detail: String = str(best[4]) if best.size() > 4 else "No roll data"
-		var col: String = "#88dd88" if passed else "#dd8888"
-		log_text += "[b]%s check (DC %d)[/b]\n[color=%s]%s[/color]\n\n" % [skill, dc, col, detail]
-	log_rtl.text = log_text
+	# Sendoff
+	var sendoff_lbl = RimvaleUtils.label(contact["sendoff"], 12, Color(0.90, 0.85, 0.70))
+	sendoff_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(sendoff_lbl)
 
-	var victory: bool = successes >= ceili(checks.size() / 2.0)
-	if victory:
-		dvbox.add_child(RimvaleUtils.label(
-			"✓ MISSION COMPLETE — +%d XP" % xp, 14, Color(0.50, 0.90, 0.50)))
-	else:
-		dvbox.add_child(RimvaleUtils.label(
-			"✗ MISSION FAILED — %d/%d checks passed" % [successes, checks.size()],
-			14, Color(0.90, 0.40, 0.40)))
+	# Buttons
+	var btn_row = HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 12)
+	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(btn_row)
 
-	dialog.confirmed.connect(func():
-		if victory:
-			if mid not in GameState.story_completed_missions:
-				GameState.story_completed_missions.append(mid)
-				for ph in party:
-					RimvaleAPI.engine.add_xp(ph, xp, 20)
-				_check_and_award_story_badges()
-			_update_story_badge_lbl()
-			_rebuild_story_sections()
-		dialog.queue_free()
+	var cancel_btn = RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 36, 12)
+	cancel_btn.custom_minimum_size = Vector2(100, 36)
+	var cap_overlay = overlay
+	cancel_btn.pressed.connect(func(): cap_overlay.queue_free())
+	btn_row.add_child(cancel_btn)
+
+	var deploy_btn = RimvaleUtils.button("Deploy", RimvaleColors.ACCENT, 36, 12)
+	deploy_btn.custom_minimum_size = Vector2(100, 36)
+	var cap_mid = mid; var cap_m_data = m_data.duplicate()
+	deploy_btn.pressed.connect(func():
+		GameState.story_shown_contacts.append(cap_mid)
+		cap_overlay.queue_free()
+		_start_quest_execution(cap_m_data)
 	)
-	add_child(dialog)
-	dialog.popup_centered(Vector2(460, 340))
+	btn_row.add_child(deploy_btn)
+
+# ── Quest Execution Screen ────────────────────────────────────────────────────
+
+func _start_quest_execution(m_data: Array) -> void:
+	var mid: String      = m_data[0]
+	var mtitle: String   = m_data[1]
+	var mregion: String  = m_data[2]
+	var mflavor: String  = m_data[4]
+	var mxp: int         = m_data[5]
+	var is_boss: bool    = m_data[6]
+	var boss_name: String = m_data[7] if m_data.size() > 7 else ""
+	var boss_level: int  = m_data[8] if m_data.size() > 8 else 0
+	var boss_apex: int   = m_data[9] if m_data.size() > 9 else -1
+
+	_story_exec_mission = {
+		"id": mid, "title": mtitle, "region": mregion, "flavor": mflavor,
+		"xp": mxp, "is_boss": is_boss, "boss_name": boss_name,
+		"boss_level": boss_level, "boss_apex": boss_apex,
+	}
+
+	# Boss missions skip straight to combat
+	if is_boss:
+		_story_exec_quest = {
+			"part": 3, "challenge": 3, "progress": 100,
+			"log": [
+				"Mission control online. Team deployed to %s." % mregion,
+				mflavor,
+				"HOSTILE CONTACT: %s detected. Engage." % boss_name,
+			],
+			"agent_handle": 0, "waiting_combat": true, "combat_action": "FINISH",
+			"last_combat_result": -1, "completed": false,
+		}
+	else:
+		_story_exec_quest = {
+			"part": 1, "challenge": 1, "progress": 0,
+			"log": [
+				"Mission control online. Team deployed to %s." % mregion,
+				mflavor,
+			],
+			"agent_handle": 0, "waiting_combat": false, "combat_action": "",
+			"last_combat_result": -1, "completed": false,
+		}
+
+	_build_quest_execution_overlay()
+
+func _build_quest_execution_overlay() -> void:
+	if _story_exec_overlay != null:
+		_story_exec_overlay.queue_free()
+
+	_story_exec_overlay = PanelContainer.new()
+	_story_exec_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg = StyleBoxFlat.new()
+	bg.bg_color = Color(0.06, 0.04, 0.10, 1.0)
+	_story_exec_overlay.add_theme_stylebox_override("panel", bg)
+	add_child(_story_exec_overlay)
+
+	var main_vbox = VBoxContainer.new()
+	main_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	main_vbox.add_theme_constant_override("separation", 8)
+	_story_exec_overlay.add_child(main_vbox)
+
+	var margin = MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	margin.add_theme_constant_override("margin_left", 12)
+	margin.add_theme_constant_override("margin_right", 12)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_story_exec_overlay.add_child(margin)
+
+	var content = VBoxContainer.new()
+	content.add_theme_constant_override("separation", 8)
+	margin.add_child(content)
+
+	# ── Header card ──
+	var hdr_card = PanelContainer.new()
+	hdr_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var hdr_s = StyleBoxFlat.new()
+	hdr_s.bg_color = Color(0.10, 0.10, 0.16, 1.0)
+	hdr_s.corner_radius_top_left = 6; hdr_s.corner_radius_top_right = 6
+	hdr_s.corner_radius_bottom_left = 6; hdr_s.corner_radius_bottom_right = 6
+	hdr_s.content_margin_left = 12; hdr_s.content_margin_right = 12
+	hdr_s.content_margin_top = 8; hdr_s.content_margin_bottom = 8
+	hdr_card.add_theme_stylebox_override("panel", hdr_s)
+	content.add_child(hdr_card)
+
+	var hdr_vbox = VBoxContainer.new()
+	hdr_vbox.add_theme_constant_override("separation", 4)
+	hdr_card.add_child(hdr_vbox)
+
+	_story_exec_header_lbl = RimvaleUtils.label(
+		_story_exec_mission["title"], 14, RimvaleColors.TEXT_WHITE)
+	hdr_vbox.add_child(_story_exec_header_lbl)
+
+	var prog_row = HBoxContainer.new()
+	prog_row.add_theme_constant_override("separation", 8)
+	hdr_vbox.add_child(prog_row)
+
+	_story_exec_progress_lbl = RimvaleUtils.label("Part 1/3 | Challenge 1/3", 10, RimvaleColors.CYAN)
+	prog_row.add_child(_story_exec_progress_lbl)
+	var sp_h = Control.new(); sp_h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	prog_row.add_child(sp_h)
+	var pct_lbl = RimvaleUtils.label("0%", 10, RimvaleColors.TEXT_WHITE)
+	prog_row.add_child(pct_lbl)
+
+	_story_exec_progress_bar = ProgressBar.new()
+	_story_exec_progress_bar.min_value = 0; _story_exec_progress_bar.max_value = 100
+	_story_exec_progress_bar.value = 0
+	_story_exec_progress_bar.custom_minimum_size = Vector2(0, 6)
+	_story_exec_progress_bar.show_percentage = false
+	hdr_vbox.add_child(_story_exec_progress_bar)
+
+	# ── Team status bar ──
+	_story_exec_team_hbox = HBoxContainer.new()
+	_story_exec_team_hbox.add_theme_constant_override("separation", 6)
+	content.add_child(_story_exec_team_hbox)
+	_refresh_team_status()
+
+	# ── Mission log ──
+	var log_card = PanelContainer.new()
+	log_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var log_s = StyleBoxFlat.new()
+	log_s.bg_color = Color(0.08, 0.06, 0.12, 1.0)
+	log_s.corner_radius_top_left = 4; log_s.corner_radius_top_right = 4
+	log_s.corner_radius_bottom_left = 4; log_s.corner_radius_bottom_right = 4
+	log_s.content_margin_left = 8; log_s.content_margin_right = 8
+	log_s.content_margin_top = 6; log_s.content_margin_bottom = 6
+	log_card.add_theme_stylebox_override("panel", log_s)
+	content.add_child(log_card)
+
+	var log_scroll = ScrollContainer.new()
+	log_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	log_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_card.add_child(log_scroll)
+
+	_story_exec_log_rtl = RichTextLabel.new()
+	_story_exec_log_rtl.bbcode_enabled = true
+	_story_exec_log_rtl.fit_content = true
+	_story_exec_log_rtl.scroll_active = false
+	_story_exec_log_rtl.add_theme_font_size_override("normal_font_size", 11)
+	_story_exec_log_rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_scroll.add_child(_story_exec_log_rtl)
+
+	# ── Action area ──
+	_story_exec_action_vbox = VBoxContainer.new()
+	_story_exec_action_vbox.add_theme_constant_override("separation", 6)
+	_story_exec_action_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_child(_story_exec_action_vbox)
+
+	# ── Abort button ──
+	var abort_btn = RimvaleUtils.button("Abort Mission", Color(0.80, 0.20, 0.20), 28, 11)
+	abort_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	abort_btn.pressed.connect(_on_story_abort)
+	content.add_child(abort_btn)
+
+	_refresh_quest_ui()
+
+func _refresh_team_status() -> void:
+	if _story_exec_team_hbox == null: return
+	for c in _story_exec_team_hbox.get_children():
+		c.queue_free()
+	_story_exec_agent_bars.clear()
+
+	var party: Array = GameState.get_active_handles()
+	for ph in party:
+		var name_str: String = RimvaleAPI.engine.get_character_name(ph)
+		var hp: int = RimvaleAPI.engine.get_character_hp(ph)
+		var max_hp: int = RimvaleAPI.engine.get_character_max_hp(ph)
+		var sp: int = RimvaleAPI.engine.get_character_sp(ph)
+		var max_sp: int = RimvaleAPI.engine.get_character_max_sp(ph)
+
+		var agent_card = PanelContainer.new()
+		agent_card.custom_minimum_size = Vector2(70, 50)
+		var ac_s = StyleBoxFlat.new()
+		var is_sel: bool = _story_exec_quest.get("agent_handle", 0) == ph
+		ac_s.bg_color = Color(0.15, 0.18, 0.28, 1.0)
+		if is_sel:
+			ac_s.border_width_top = 2; ac_s.border_width_bottom = 2
+			ac_s.border_width_left = 2; ac_s.border_width_right = 2
+			ac_s.border_color = RimvaleColors.ACCENT
+		ac_s.corner_radius_top_left = 4; ac_s.corner_radius_top_right = 4
+		ac_s.corner_radius_bottom_left = 4; ac_s.corner_radius_bottom_right = 4
+		ac_s.content_margin_left = 4; ac_s.content_margin_right = 4
+		ac_s.content_margin_top = 3; ac_s.content_margin_bottom = 3
+		agent_card.add_theme_stylebox_override("panel", ac_s)
+
+		var avbox = VBoxContainer.new()
+		avbox.add_theme_constant_override("separation", 2)
+		agent_card.add_child(avbox)
+
+		var nlbl = RimvaleUtils.label(name_str, 9, RimvaleColors.TEXT_WHITE)
+		nlbl.clip_text = true
+		avbox.add_child(nlbl)
+
+		# HP bar
+		var hp_bar = ProgressBar.new()
+		hp_bar.min_value = 0; hp_bar.max_value = maxi(max_hp, 1)
+		hp_bar.value = hp; hp_bar.show_percentage = false
+		hp_bar.custom_minimum_size = Vector2(0, 4)
+		var hp_sb = StyleBoxFlat.new(); hp_sb.bg_color = Color(0.80, 0.20, 0.20)
+		hp_sb.corner_radius_top_left = 1; hp_sb.corner_radius_top_right = 1
+		hp_sb.corner_radius_bottom_left = 1; hp_sb.corner_radius_bottom_right = 1
+		hp_bar.add_theme_stylebox_override("fill", hp_sb)
+		avbox.add_child(hp_bar)
+
+		# SP bar
+		var sp_bar = ProgressBar.new()
+		sp_bar.min_value = 0; sp_bar.max_value = maxi(max_sp, 1)
+		sp_bar.value = sp; sp_bar.show_percentage = false
+		sp_bar.custom_minimum_size = Vector2(0, 4)
+		var sp_sb = StyleBoxFlat.new(); sp_sb.bg_color = Color(0.20, 0.40, 0.90)
+		sp_sb.corner_radius_top_left = 1; sp_sb.corner_radius_top_right = 1
+		sp_sb.corner_radius_bottom_left = 1; sp_sb.corner_radius_bottom_right = 1
+		sp_bar.add_theme_stylebox_override("fill", sp_sb)
+		avbox.add_child(sp_bar)
+
+		_story_exec_agent_bars[ph] = {"card": agent_card, "name": nlbl, "hp": hp_bar, "sp": sp_bar}
+		_story_exec_team_hbox.add_child(agent_card)
+
+func _refresh_quest_ui() -> void:
+	if _story_exec_action_vbox == null: return
+	for c in _story_exec_action_vbox.get_children():
+		c.queue_free()
+
+	var q: Dictionary = _story_exec_quest
+	var part: int = q.get("part", 1)
+	var chal: int = q.get("challenge", 1)
+	var prog: int = q.get("progress", 0)
+
+	# Update header
+	if _story_exec_progress_lbl:
+		_story_exec_progress_lbl.text = "Part %d/3 | Challenge %d/3" % [part, chal]
+	if _story_exec_progress_bar:
+		_story_exec_progress_bar.value = prog
+
+	# Update log
+	_refresh_mission_log()
+
+	# Refresh team highlights
+	_refresh_team_status()
+
+	# ── Determine what action to show ──
+	if q.get("completed", false):
+		# Mission complete — show debrief button
+		var done_btn = RimvaleUtils.button(
+			"Mission Debrief & Rewards", Color(0.30, 0.70, 0.30), 40, 13)
+		done_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		done_btn.pressed.connect(_on_story_mission_complete)
+		_story_exec_action_vbox.add_child(done_btn)
+
+	elif q.get("waiting_combat", false):
+		# Waiting for combat — show engage button
+		var combat_card = PanelContainer.new()
+		combat_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cc_s = StyleBoxFlat.new()
+		cc_s.bg_color = Color(0.30, 0.12, 0.12, 1.0)
+		cc_s.corner_radius_top_left = 4; cc_s.corner_radius_top_right = 4
+		cc_s.corner_radius_bottom_left = 4; cc_s.corner_radius_bottom_right = 4
+		cc_s.content_margin_left = 12; cc_s.content_margin_right = 12
+		cc_s.content_margin_top = 8; cc_s.content_margin_bottom = 8
+		combat_card.add_theme_stylebox_override("panel", cc_s)
+
+		var cc_hbox = HBoxContainer.new()
+		cc_hbox.add_theme_constant_override("separation", 8)
+		combat_card.add_child(cc_hbox)
+		cc_hbox.add_child(RimvaleUtils.label("⚔ Hostile presence detected.", 12, Color(0.90, 0.50, 0.50)))
+
+		_story_exec_action_vbox.add_child(combat_card)
+
+		var engage_btn = RimvaleUtils.button("Engage in Combat", RimvaleColors.DANGER, 40, 13)
+		engage_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		engage_btn.pressed.connect(_on_story_trigger_combat)
+		_story_exec_action_vbox.add_child(engage_btn)
+
+	elif q.get("last_combat_result", -1) != -1:
+		# Just returned from combat — show continue/regroup
+		var success: bool = q.get("last_combat_result", 0) == 1
+		var cont_btn: Button
+		if success:
+			cont_btn = RimvaleUtils.button(
+				"Combat Won: Continue Mission", Color(0.30, 0.70, 0.30), 40, 13)
+		else:
+			cont_btn = RimvaleUtils.button(
+				"Combat Failed: Regroup", Color(0.50, 0.50, 0.50), 40, 13)
+		cont_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		cont_btn.pressed.connect(_on_story_continue_after_combat)
+		_story_exec_action_vbox.add_child(cont_btn)
+
+	elif q.get("agent_handle", 0) == 0:
+		# Need to select an agent
+		_story_exec_action_vbox.add_child(RimvaleUtils.label(
+			"Deploy Agent for Challenge:", 13, RimvaleColors.TEXT_WHITE))
+
+		var agent_row = HBoxContainer.new()
+		agent_row.add_theme_constant_override("separation", 4)
+		_story_exec_action_vbox.add_child(agent_row)
+
+		var party: Array = GameState.get_active_handles()
+		for ph in party:
+			var aname: String = RimvaleAPI.engine.get_character_name(ph)
+			var ahp: int = RimvaleAPI.engine.get_character_hp(ph)
+			var btn = RimvaleUtils.button(aname, RimvaleColors.ACCENT, 36, 11)
+			btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			btn.custom_minimum_size = Vector2(0, 36)
+			btn.disabled = (ahp <= 0)
+			var cap_ph = ph; var cap_name = aname
+			btn.pressed.connect(func():
+				_story_exec_quest["agent_handle"] = cap_ph
+				_add_log_entry("Agent %s deployed." % cap_name)
+				_refresh_quest_ui()
+			)
+			agent_row.add_child(btn)
+
+	elif _story_exec_is_rolling:
+		# Rolling animation
+		_story_exec_action_vbox.add_child(RimvaleUtils.label(
+			"Rolling...", 14, RimvaleColors.GOLD))
+
+	else:
+		# Ready to roll — show skill check button
+		var p: int = part - 1; var c: int = chal - 1
+		if p < 0 or p >= CHALLENGE_GRID.size(): p = 0
+		if c < 0 or c >= CHALLENGE_GRID[p].size(): c = 0
+		var grid_entry: Array = CHALLENGE_GRID[p][c]
+		var stat_name: String = grid_entry[1]
+		var skill_name: String = grid_entry[3]
+
+		var roll_btn = RimvaleUtils.button(
+			"Roll %s (%s)" % [skill_name, stat_name], RimvaleColors.ACCENT, 40, 13)
+		roll_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		roll_btn.pressed.connect(_on_story_roll_check)
+		_story_exec_action_vbox.add_child(roll_btn)
+
+func _refresh_mission_log() -> void:
+	if _story_exec_log_rtl == null: return
+	var log_arr: Array = _story_exec_quest.get("log", [])
+	var text: String = ""
+	for i in range(log_arr.size() - 1, -1, -1):
+		text += str(log_arr[i]) + "\n"
+	_story_exec_log_rtl.text = text
+
+func _add_log_entry(msg: String) -> void:
+	var log_arr: Array = _story_exec_quest.get("log", [])
+	log_arr.append(msg)
+	_story_exec_quest["log"] = log_arr
+	_refresh_mission_log()
+
+# ── Skill Check Roll ──────────────────────────────────────────────────────────
+
+func _on_story_roll_check() -> void:
+	if _story_exec_is_rolling: return
+	_story_exec_is_rolling = true
+	_refresh_quest_ui()
+
+	# Defer the actual roll so the UI can show "Rolling..."
+	var timer = get_tree().create_timer(0.6)
+	timer.timeout.connect(_execute_skill_check)
+
+func _execute_skill_check() -> void:
+	_story_exec_is_rolling = false
+	var q: Dictionary = _story_exec_quest
+	var part: int = q.get("part", 1)
+	var chal: int = q.get("challenge", 1)
+	var handle: int = q.get("agent_handle", 0)
+
+	var p: int = part - 1; var c: int = chal - 1
+	if p < 0 or p >= CHALLENGE_GRID.size(): p = 0
+	if c < 0 or c >= CHALLENGE_GRID[p].size(): c = 0
+	var grid_entry: Array = CHALLENGE_GRID[p][c]
+	var stat_id: int = grid_entry[0]
+	var stat_name: String = grid_entry[1]
+	var skill_id: int = grid_entry[2]
+	var skill_name: String = grid_entry[3]
+
+	var agent_name: String = RimvaleAPI.engine.get_character_name(handle)
+
+	# Roll: d20 + base_stat + intellect + skill_rank
+	var base_stat: int = RimvaleAPI.engine.get_character_stat(handle, stat_id)
+	var intel_stat: int = RimvaleAPI.engine.get_character_stat(handle, 2)
+	var skill_rank: int = RimvaleAPI.engine.get_character_skill(handle, skill_id)
+	var die_roll: int = randi_range(1, 20)
+	var total_mod: int = base_stat + intel_stat + skill_rank
+	var roll_total: int = die_roll + total_mod
+	var check_index: int = (part - 1) * 3 + (chal - 1)   # 0–8
+	var dc: int = mini(10 + check_index * 2, 20)
+
+	var roll_detail: String = "(%d + %d = %d vs DC %d)" % [die_roll, total_mod, roll_total, dc]
+
+	if roll_total >= dc:
+		# Success — advance
+		var msg: String = "[color=#88dd88]SUCCESS: %s passed %s %s[/color]" % [agent_name, skill_name, roll_detail]
+		_add_log_entry(msg)
+
+		var next_part: int = part
+		var next_chal: int = chal
+		if next_chal < 3:
+			next_chal += 1
+		elif next_part < 3:
+			next_part += 1; next_chal = 1
+
+		var new_prog: int = int(((next_part - 1) * 3 + (next_chal - 1)) / 9.0 * 100.0)
+		q["part"] = next_part; q["challenge"] = next_chal; q["progress"] = new_prog
+		if next_chal == 1:
+			q["agent_handle"] = 0  # reset agent selection for new part
+
+		# Check if we just completed part 3 challenge 3 successfully
+		if next_part == 3 and next_chal == 3 and part == 3 and chal == 3:
+			_add_log_entry("[color=gold]FINAL CONFRONTATION INITIATED.[/color]")
+			q["progress"] = 100
+			q["waiting_combat"] = true
+			q["combat_action"] = "FINISH"
+	else:
+		# Failure — trigger combat
+		var msg: String = "[color=#dd8888]FAILURE: %s failed %s %s — COMBAT![/color]" % [agent_name, skill_name, roll_detail]
+		_add_log_entry(msg)
+		q["waiting_combat"] = true
+		q["combat_action"] = "PROCEED"
+
+	_refresh_quest_ui()
+
+# ── Combat Integration ────────────────────────────────────────────────────────
+
+func _on_story_trigger_combat() -> void:
+	var q: Dictionary = _story_exec_quest
+	var m: Dictionary = _story_exec_mission
+	var party: Array = GameState.get_active_handles()
+	if party.is_empty(): return
+
+	var boss_apex: int = m.get("boss_apex", -1)
+	var boss_level: int = m.get("boss_level", 0)
+	var is_boss: bool = m.get("is_boss", false)
+	var difficulty: int = q.get("part", 1) * 2
+
+	# Hide the execution overlay while in combat
+	if _story_exec_overlay:
+		_story_exec_overlay.visible = false
+
+	if is_boss and boss_apex >= 0:
+		# Boss fight — use apex encounter
+		RimvaleAPI.engine.start_apex_dungeon(party, boss_apex, 0)
+	else:
+		# Standard combat from failed skill check
+		RimvaleAPI.engine.start_dungeon(party, difficulty, 0, 0)
+
+	# Persist full quest + mission state so the fresh world scene can restore
+	GameState.quest_state["story_combat_active"] = true
+	GameState.quest_state["exec_quest"] = _story_exec_quest.duplicate()
+	GameState.quest_state["exec_mission"] = _story_exec_mission.duplicate()
+
+	# Push dungeon as a full-screen overlay through the main shell
+	var main = get_parent().get_parent() if get_parent() else null
+	if main and main.has_method("push_screen"):
+		main.push_screen("res://scenes/dungeon/dungeon.tscn")
+	else:
+		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
+
+## Called by dungeon scene when combat concludes during a story mission
+func _on_story_combat_resolved(victory: bool) -> void:
+	GameState.quest_state["story_combat_active"] = false
+
+	# After pop_screen, this is a FRESH world scene instance — restore state
+	if _story_exec_overlay == null:
+		var saved_q: Dictionary = GameState.quest_state.get("exec_quest", {})
+		var saved_m: Dictionary = GameState.quest_state.get("exec_mission", {})
+		if saved_q.is_empty() or saved_m.is_empty():
+			push_warning("Story combat resolved but no saved quest state found.")
+			return
+		_story_exec_mission = saved_m
+		_story_exec_quest = saved_q
+		_build_quest_execution_overlay()
+
+	if _story_exec_overlay:
+		_story_exec_overlay.visible = true
+
+	var q: Dictionary = _story_exec_quest
+	if victory:
+		_add_log_entry("[color=#88dd88]Engagement successful. Area secured.[/color]")
+		q["last_combat_result"] = 1
+	else:
+		_add_log_entry("[color=#dd8888]Agents forced to retreat.[/color]")
+		q["last_combat_result"] = 0
+	q["waiting_combat"] = false
+
+	_refresh_quest_ui()
+
+func _on_story_continue_after_combat() -> void:
+	var q: Dictionary = _story_exec_quest
+	var result: int = q.get("last_combat_result", 0)
+	q["last_combat_result"] = -1
+
+	if result == 1:
+		# Won combat
+		if q.get("combat_action", "") == "FINISH":
+			q["completed"] = true
+		else:
+			# Advance past the failed challenge
+			var next_part: int = q.get("part", 1)
+			var next_chal: int = q.get("challenge", 1)
+			if next_chal < 3:
+				next_chal += 1
+			elif next_part < 3:
+				next_part += 1; next_chal = 1
+			q["part"] = next_part; q["challenge"] = next_chal
+			q["progress"] = int(((next_part - 1) * 3 + (next_chal - 1)) / 9.0 * 100.0)
+			if next_chal == 1:
+				q["agent_handle"] = 0
+	else:
+		# Lost combat — can retry the challenge
+		q["waiting_combat"] = false
+
+	_refresh_quest_ui()
+
+# ── Mission Completion ────────────────────────────────────────────────────────
+
+func _on_story_mission_complete() -> void:
+	var m: Dictionary = _story_exec_mission
+	var mid: String = m.get("id", "")
+	var mxp: int = m.get("xp", 0)
+	var already_done: bool = mid in GameState.story_completed_missions
+	var xp_award: int = maxi(1, mxp / 10) if already_done else mxp
+
+	var party: Array = GameState.get_active_handles()
+	for ph in party:
+		RimvaleAPI.engine.add_xp(ph, xp_award, 20)
+
+	if not already_done:
+		GameState.story_completed_missions.append(mid)
+
+	_check_and_award_story_badges()
+
+	# Persist completion state to disk
+	GameState.save_game()
+
+	# Close overlay and refresh story UI
+	if _story_exec_overlay:
+		_story_exec_overlay.queue_free()
+		_story_exec_overlay = null
+	_story_exec_mission.clear()
+	_story_exec_quest.clear()
+	GameState.quest_state.erase("exec_quest")
+	GameState.quest_state.erase("exec_mission")
+	GameState.quest_state.erase("story_combat_active")
+
+	_update_story_badge_lbl()
+	_rebuild_story_sections()
+
+	# Show reward popup
+	var reward_dialog = AcceptDialog.new()
+	reward_dialog.title = "Mission Complete"
+	reward_dialog.get_ok_button().text = "Continue"
+	reward_dialog.min_size = Vector2i(360, 200)
+	var rvbox = VBoxContainer.new()
+	rvbox.add_theme_constant_override("separation", 8)
+	reward_dialog.add_child(rvbox)
+	rvbox.add_child(RimvaleUtils.label("✓ MISSION COMPLETE", 16, Color(0.50, 0.90, 0.50)))
+	rvbox.add_child(RimvaleUtils.label(
+		"+%d XP awarded to team%s" % [xp_award, " (replay)" if already_done else ""],
+		12, RimvaleColors.TEXT_WHITE))
+	var new_badges: String = ""
+	for sec in STORY_SECTIONS:
+		if sec[2] != "" and sec[2] in GameState.story_earned_badges:
+			# Check if this badge was just earned
+			var sec_missions: Array = sec[4]
+			var all_done: bool = true
+			for sm in sec_missions:
+				if sm[0] not in GameState.story_completed_missions:
+					all_done = false; break
+			var sec_has_mid: bool = false
+			for sm in sec_missions:
+				if sm[0] == mid: sec_has_mid = true; break
+			if all_done and sec_has_mid:
+				new_badges += "🏅 %s earned!\n" % sec[2]
+	if not new_badges.is_empty():
+		var badge_lbl = RimvaleUtils.label(new_badges.strip_edges(), 13, Color(1.0, 0.84, 0.0))
+		badge_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		rvbox.add_child(badge_lbl)
+	reward_dialog.confirmed.connect(func(): reward_dialog.queue_free())
+	add_child(reward_dialog)
+	reward_dialog.popup_centered(Vector2(360, 200))
+
+func _on_story_abort() -> void:
+	if _story_exec_overlay:
+		_story_exec_overlay.queue_free()
+		_story_exec_overlay = null
+	_story_exec_mission.clear()
+	_story_exec_quest.clear()
+	GameState.quest_state.erase("exec_quest")
+	GameState.quest_state.erase("exec_mission")
+	GameState.quest_state.erase("story_combat_active")
 
 func _check_and_award_story_badges() -> void:
 	for sec in STORY_SECTIONS:
@@ -1392,7 +2220,7 @@ func _build_rituals_tab(parent: Control) -> void:
 	hdr.add_child(hdr_vbox)
 	hdr_vbox.add_child(RimvaleUtils.label("Arcane Rituals", 16, RimvaleColors.ACCENT))
 	hdr_vbox.add_child(RimvaleUtils.label(
-		"Extended casting for powerful effects.", 11, RimvaleColors.TEXT_GRAY))
+		"Design spells via extended casting. Passes an Arcane check to learn.", 11, RimvaleColors.TEXT_GRAY))
 
 	var new_ritual_btn = RimvaleUtils.button("+ New Ritual", RimvaleColors.SP_PURPLE, 36, 12)
 	new_ritual_btn.custom_minimum_size = Vector2(110, 36)
@@ -1416,7 +2244,7 @@ func _build_rituals_tab(parent: Control) -> void:
 
 	# ── Active Rituals ────────────────────────────────────────────────────────
 	vbox.add_child(RimvaleUtils.label(
-		"Active Spells (Ready for Dungeon)", 13, RimvaleColors.TEXT_LIGHT))
+		"Learned Ritual Spells (Castable in Dungeons)", 13, RimvaleColors.TEXT_LIGHT))
 	_ritual_active_vbox = VBoxContainer.new()
 	_ritual_active_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_ritual_active_vbox.add_theme_constant_override("separation", 6)
@@ -1424,18 +2252,523 @@ func _build_rituals_tab(parent: Control) -> void:
 
 	# ── Empty state ───────────────────────────────────────────────────────────
 	_ritual_empty_lbl = RimvaleUtils.label(
-		"No active rituals.\nTap 'New Ritual' to design and begin extended casting.",
+		"No active rituals.\nTap '+ New Ritual' to design a spell with the full PHB spell builder.",
 		12, RimvaleColors.TEXT_GRAY)
 	_ritual_empty_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(_ritual_empty_lbl)
 
+	# Build the spell builder overlay (hidden by default)
+	_build_ritual_spell_overlay(rituals_panel)
+
 	_refresh_ritual_ui()
+
+# ── Ritual Spell Builder Overlay ─────────────────────────────────────────────
+
+func _build_ritual_spell_overlay(parent: Control) -> void:
+	_ritual_overlay = ColorRect.new()
+	(_ritual_overlay as ColorRect).color = Color(0.0, 0.0, 0.0, 0.72)
+	_ritual_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ritual_overlay.visible = false
+	parent.add_child(_ritual_overlay)
+
+	var panel := PanelContainer.new()
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.08, 0.07, 0.12)
+	panel_style.corner_radius_top_left = 8; panel_style.corner_radius_top_right = 8
+	panel_style.corner_radius_bottom_left = 8; panel_style.corner_radius_bottom_right = 8
+	panel.add_theme_stylebox_override("panel", panel_style)
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.offset_left   = -260.0
+	panel.offset_right  =  260.0
+	panel.offset_top    = -340.0
+	panel.offset_bottom =  340.0
+	_ritual_overlay.add_child(panel)
+
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+
+	var margin := MarginContainer.new()
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for side in ["left","right","top","bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 16)
+	scroll.add_child(margin)
+
+	_ritual_inner = VBoxContainer.new()
+	_ritual_inner.add_theme_constant_override("separation", 6)
+	_ritual_inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.add_child(_ritual_inner)
+
+func _rb_populate_inner() -> void:
+	for c in _ritual_inner.get_children():
+		_ritual_inner.remove_child(c)
+		c.queue_free()
+	var inner: VBoxContainer = _ritual_inner
+	_ritual_preview_lbl = null
+	_ritual_breakdown_lbl = null
+	_ritual_desc_lbl = null
+
+	# ── Title ──
+	var title_lbl := Label.new()
+	title_lbl.text = "✨ Ritual Spell Builder"
+	title_lbl.add_theme_font_size_override("font_size", 17)
+	title_lbl.add_theme_color_override("font_color", Color(0.85, 0.70, 1.0))
+	inner.add_child(title_lbl)
+	inner.add_child(HSeparator.new())
+
+	# ── Caster ──
+	var caster_opt := OptionButton.new()
+	for h in _rb_handles:
+		var cname: String = str(RimvaleAPI.engine.get_character_name(h))
+		var sp_cur: int = RimvaleAPI.engine.get_character_sp(h)
+		caster_opt.add_item("%s (%d SP)" % [cname, sp_cur])
+	caster_opt.selected = mini(_rb_caster_idx, maxi(0, _rb_handles.size() - 1))
+	caster_opt.item_selected.connect(func(i: int): _rb_caster_idx = i)
+	inner.add_child(_rb_spell_row("Caster:", caster_opt))
+
+	# ── Spell Name ──
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Ritual spell name..."
+	name_edit.text = _rb_name
+	name_edit.custom_minimum_size = Vector2(200, 36)
+	name_edit.add_theme_font_size_override("font_size", 14)
+	name_edit.text_changed.connect(func(t: String): _rb_name = t)
+	inner.add_child(_rb_spell_row("Name:", name_edit))
+
+	# ── Domain ──
+	var domain_opt := OptionButton.new()
+	for dn in RB_DOMAIN_NAMES:
+		domain_opt.add_item(dn)
+	domain_opt.selected = _rb_domain
+	domain_opt.item_selected.connect(func(i: int):
+		_rb_domain = i
+		_rb_effect_idx = 0
+		_rb_populate_inner()
+	)
+	inner.add_child(_rb_spell_row("Domain:", domain_opt))
+
+	# ── Effect (per domain) ──
+	var effect_opt := OptionButton.new()
+	var effects_for_domain: Array = RB_DOMAIN_EFFECTS[_rb_domain] if _rb_domain < RB_DOMAIN_EFFECTS.size() else []
+	for ef in effects_for_domain:
+		effect_opt.add_item(ef[0])
+	effect_opt.selected = mini(_rb_effect_idx, max(0, effects_for_domain.size() - 1))
+	effect_opt.item_selected.connect(func(i: int):
+		_rb_effect_idx = i
+		_rb_update_preview()
+	)
+	inner.add_child(_rb_spell_row("Effect:", effect_opt))
+
+	# ── Duration ──
+	var dur_opt := OptionButton.new()
+	for dl in RB_DURATION_LABELS:
+		dur_opt.add_item(dl)
+	dur_opt.selected = _rb_duration_idx
+	dur_opt.item_selected.connect(func(i: int):
+		_rb_duration_idx = i
+		_rb_update_preview()
+	)
+	inner.add_child(_rb_spell_row("Duration:", dur_opt))
+
+	# ── Range ──
+	var range_opt := OptionButton.new()
+	for rl in RB_RANGE_LABELS:
+		range_opt.add_item(rl)
+	range_opt.selected = _rb_range_idx
+	range_opt.item_selected.connect(func(i: int):
+		_rb_range_idx = i
+		_rb_update_preview()
+	)
+	inner.add_child(_rb_spell_row("Range:", range_opt))
+
+	# ── Targets (slider 1-10) ──
+	var tgt_lbl := Label.new()
+	tgt_lbl.text = "Targets: %d" % _rb_targets
+	tgt_lbl.add_theme_font_size_override("font_size", 13)
+	tgt_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.75))
+	inner.add_child(tgt_lbl)
+	var tgt_slider := HSlider.new()
+	tgt_slider.min_value = 1; tgt_slider.max_value = 10; tgt_slider.step = 1
+	tgt_slider.value = _rb_targets
+	tgt_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tgt_slider.value_changed.connect(func(v: float):
+		_rb_targets = int(v)
+		tgt_lbl.text = "Targets: %d" % _rb_targets
+		_rb_update_preview()
+	)
+	inner.add_child(tgt_slider)
+
+	# ── Area ──
+	var area_opt := OptionButton.new()
+	for al in RB_AREA_LABELS:
+		area_opt.add_item(al)
+	area_opt.selected = _rb_area_idx
+	area_opt.item_selected.connect(func(i: int):
+		_rb_area_idx = i
+		_rb_update_preview()
+	)
+	inner.add_child(_rb_spell_row("Area:", area_opt))
+
+	inner.add_child(HSeparator.new())
+
+	# ── Dice Count (slider 0-10) ──
+	var dice_lbl := Label.new()
+	dice_lbl.text = "Dice Count: %d" % _rb_die_count
+	dice_lbl.add_theme_font_size_override("font_size", 13)
+	dice_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.75))
+	inner.add_child(dice_lbl)
+	var dice_slider := HSlider.new()
+	dice_slider.min_value = 0; dice_slider.max_value = 10; dice_slider.step = 1
+	dice_slider.value = _rb_die_count
+	dice_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dice_slider.value_changed.connect(func(v: float):
+		_rb_die_count = int(v)
+		dice_lbl.text = "Dice Count: %d" % _rb_die_count
+		_rb_update_preview()
+	)
+	inner.add_child(dice_slider)
+
+	# ── Die Type (d4 d6 d8 d10 d12 buttons) ──
+	var die_lbl := Label.new()
+	die_lbl.text = "Die Type"
+	die_lbl.add_theme_font_size_override("font_size", 13)
+	die_lbl.add_theme_color_override("font_color", Color(0.70, 0.70, 0.75))
+	inner.add_child(die_lbl)
+	var die_row := HBoxContainer.new()
+	die_row.add_theme_constant_override("separation", 4)
+	var die_btns: Array = []
+	for di in range(RB_DIE_LABELS.size()):
+		var di_cap: int = di
+		var col: Color = Color(0.55, 0.35, 0.85) if di == _rb_die_idx else Color(0.45, 0.45, 0.50)
+		var dbtn := _rb_colored_btn(RB_DIE_LABELS[di], col)
+		dbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		dbtn.custom_minimum_size = Vector2(0, 30)
+		var btns_ref: Array = die_btns
+		dbtn.pressed.connect(func():
+			_rb_die_idx = di_cap
+			for k in range(btns_ref.size()):
+				var c2: Color = Color(0.55, 0.35, 0.85) if k == _rb_die_idx else Color(0.45, 0.45, 0.50)
+				var sb2 := StyleBoxFlat.new()
+				sb2.bg_color = c2
+				sb2.corner_radius_top_left = 4; sb2.corner_radius_top_right = 4
+				sb2.corner_radius_bottom_left = 4; sb2.corner_radius_bottom_right = 4
+				btns_ref[k].add_theme_stylebox_override("normal", sb2)
+			_rb_update_preview()
+		)
+		die_btns.append(dbtn)
+		die_row.add_child(dbtn)
+	inner.add_child(die_row)
+
+	# ── Damage Type ──
+	var dmg_opt := OptionButton.new()
+	for dt in RB_DAMAGE_TYPES:
+		dmg_opt.add_item(dt)
+	dmg_opt.selected = _rb_damage_type
+	dmg_opt.item_selected.connect(func(i: int):
+		_rb_damage_type = i
+		_rb_update_preview()
+	)
+	inner.add_child(_rb_spell_row("Damage Type:", dmg_opt))
+
+	inner.add_child(HSeparator.new())
+
+	# ── Flags: Healing, Saving Throw, Teleport, Combustion ──
+	var flag_row1 := HBoxContainer.new()
+	flag_row1.add_theme_constant_override("separation", 14)
+	var heal_chk := CheckBox.new(); heal_chk.text = "Healing"
+	heal_chk.button_pressed = _rb_is_healing
+	heal_chk.add_theme_font_size_override("font_size", 12)
+	heal_chk.toggled.connect(func(b: bool): _rb_is_healing = b; _rb_update_preview())
+	flag_row1.add_child(heal_chk)
+	var save_chk := CheckBox.new(); save_chk.text = "Save (no atk)"
+	save_chk.button_pressed = _rb_is_saving_throw
+	save_chk.add_theme_font_size_override("font_size", 12)
+	save_chk.toggled.connect(func(b: bool): _rb_is_saving_throw = b; _rb_update_preview())
+	flag_row1.add_child(save_chk)
+	inner.add_child(flag_row1)
+
+	var flag_row2 := HBoxContainer.new()
+	flag_row2.add_theme_constant_override("separation", 14)
+	var tp_chk := CheckBox.new(); tp_chk.text = "Teleport"
+	tp_chk.button_pressed = _rb_is_teleport
+	tp_chk.add_theme_font_size_override("font_size", 12)
+	tp_chk.toggled.connect(func(b: bool): _rb_is_teleport = b; _rb_update_preview())
+	flag_row2.add_child(tp_chk)
+	var comb_chk := CheckBox.new(); comb_chk.text = "Combustion (dynamic dmg)"
+	comb_chk.button_pressed = _rb_is_combustion
+	comb_chk.add_theme_font_size_override("font_size", 12)
+	comb_chk.toggled.connect(func(b: bool): _rb_is_combustion = b; _rb_update_preview())
+	flag_row2.add_child(comb_chk)
+	inner.add_child(flag_row2)
+
+	inner.add_child(HSeparator.new())
+
+	# ── Conditions (Beneficial | Harmful) ──
+	var cond_title := Label.new()
+	cond_title.text = "Conditions"
+	cond_title.add_theme_font_size_override("font_size", 14)
+	cond_title.add_theme_color_override("font_color", Color.WHITE)
+	inner.add_child(cond_title)
+
+	var cond_outer := HBoxContainer.new()
+	cond_outer.add_theme_constant_override("separation", 12)
+	inner.add_child(cond_outer)
+
+	var ben_col := VBoxContainer.new()
+	ben_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ben_col.add_theme_constant_override("separation", 0)
+	cond_outer.add_child(ben_col)
+	var ben_hdr := Label.new()
+	ben_hdr.text = "Beneficial (-2 SP each)"
+	ben_hdr.add_theme_font_size_override("font_size", 11)
+	ben_hdr.add_theme_color_override("font_color", Color(0.30, 0.69, 0.31))
+	ben_col.add_child(ben_hdr)
+	for cname in RB_CONDITIONS_BENEFICIAL:
+		var cn_cap: String = cname
+		var chk := CheckBox.new()
+		chk.text = cname
+		chk.button_pressed = cname in _rb_conditions
+		chk.add_theme_font_size_override("font_size", 11)
+		chk.toggled.connect(func(b: bool):
+			if b:
+				if cn_cap not in _rb_conditions: _rb_conditions.append(cn_cap)
+			else:
+				_rb_conditions.erase(cn_cap)
+			_rb_update_preview()
+		)
+		ben_col.add_child(chk)
+
+	var harm_col := VBoxContainer.new()
+	harm_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	harm_col.add_theme_constant_override("separation", 0)
+	cond_outer.add_child(harm_col)
+	var harm_hdr := Label.new()
+	harm_hdr.text = "Harmful (+3 SP each)"
+	harm_hdr.add_theme_font_size_override("font_size", 11)
+	harm_hdr.add_theme_color_override("font_color", Color(0.90, 0.40, 0.40))
+	harm_col.add_child(harm_hdr)
+	for cname in RB_CONDITIONS_HARMFUL:
+		var cn_cap: String = cname
+		var chk := CheckBox.new()
+		chk.text = cname
+		chk.button_pressed = cname in _rb_conditions
+		chk.add_theme_font_size_override("font_size", 11)
+		chk.toggled.connect(func(b: bool):
+			if b:
+				if cn_cap not in _rb_conditions: _rb_conditions.append(cn_cap)
+			else:
+				_rb_conditions.erase(cn_cap)
+			_rb_update_preview()
+		)
+		harm_col.add_child(chk)
+
+	inner.add_child(HSeparator.new())
+
+	# ── SP Cost Preview Card ──
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var card_style := StyleBoxFlat.new()
+	card_style.bg_color = Color(0.14, 0.12, 0.22, 1.0)
+	card_style.corner_radius_top_left = 8; card_style.corner_radius_top_right = 8
+	card_style.corner_radius_bottom_left = 8; card_style.corner_radius_bottom_right = 8
+	card_style.content_margin_left = 14.0; card_style.content_margin_right = 14.0
+	card_style.content_margin_top = 12.0; card_style.content_margin_bottom = 12.0
+	card.add_theme_stylebox_override("panel", card_style)
+	inner.add_child(card)
+
+	var card_vbox := VBoxContainer.new()
+	card_vbox.add_theme_constant_override("separation", 4)
+	card.add_child(card_vbox)
+
+	_ritual_preview_lbl = Label.new()
+	_ritual_preview_lbl.text = "SP Cost: -- · DC: --"
+	_ritual_preview_lbl.add_theme_font_size_override("font_size", 18)
+	_ritual_preview_lbl.add_theme_color_override("font_color", Color(0.74, 0.40, 1.0))
+	card_vbox.add_child(_ritual_preview_lbl)
+
+	_ritual_breakdown_lbl = Label.new()
+	_ritual_breakdown_lbl.text = ""
+	_ritual_breakdown_lbl.add_theme_font_size_override("font_size", 11)
+	_ritual_breakdown_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.60))
+	_ritual_breakdown_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	card_vbox.add_child(_ritual_breakdown_lbl)
+
+	var desc_hdr := Label.new()
+	desc_hdr.text = "Description:"
+	desc_hdr.add_theme_font_size_override("font_size", 12)
+	desc_hdr.add_theme_color_override("font_color", Color.WHITE)
+	card_vbox.add_child(desc_hdr)
+
+	_ritual_desc_lbl = Label.new()
+	_ritual_desc_lbl.text = ""
+	_ritual_desc_lbl.add_theme_font_size_override("font_size", 11)
+	_ritual_desc_lbl.add_theme_color_override("font_color", Color(0.70, 0.75, 0.85))
+	_ritual_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	card_vbox.add_child(_ritual_desc_lbl)
+
+	_rb_update_preview()
+
+	# ── Buttons ──
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 10)
+	inner.add_child(btn_row)
+
+	var btn_begin := _rb_colored_btn("Begin Ritual", Color(0.22, 0.10, 0.35))
+	btn_begin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_begin.pressed.connect(_on_begin_ritual)
+	btn_row.add_child(btn_begin)
+
+	var btn_cancel := Button.new()
+	btn_cancel.text = "Cancel"
+	btn_cancel.custom_minimum_size = Vector2(80, 34)
+	btn_cancel.pressed.connect(func(): _ritual_overlay.visible = false)
+	btn_row.add_child(btn_cancel)
+
+# ── Ritual builder helpers (mirror dungeon.gd) ──────────────────────────────
+
+func _rb_spell_row(label_text: String, widget: Control) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	var lbl := Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size = Vector2(120, 0)
+	lbl.add_theme_font_size_override("font_size", 13)
+	row.add_child(lbl)
+	row.add_child(widget)
+	return row
+
+func _rb_colored_btn(txt: String, col: Color) -> Button:
+	var b := Button.new()
+	b.text = txt
+	b.custom_minimum_size = Vector2(0, 34)
+	b.add_theme_font_size_override("font_size", 13)
+	b.add_theme_color_override("font_color", Color.WHITE)
+	var style := StyleBoxFlat.new()
+	style.bg_color = col
+	style.corner_radius_top_left     = 4
+	style.corner_radius_top_right    = 4
+	style.corner_radius_bottom_left  = 4
+	style.corner_radius_bottom_right = 4
+	b.add_theme_stylebox_override("normal", style)
+	var hover_style: StyleBoxFlat = style.duplicate()
+	hover_style.bg_color = col.lightened(0.15)
+	b.add_theme_stylebox_override("hover", hover_style)
+	return b
+
+func _rb_calc_cost() -> int:
+	var type_cost: int   = 1 if _rb_is_saving_throw else 0
+	var sides_mod: int   = RB_DIE_SIDES_MOD[_rb_die_idx] if _rb_die_idx < RB_DIE_SIDES_MOD.size() else 0
+	var dice_cost: int   = _rb_die_count * (1 + sides_mod)
+	var dur_mult: int    = RB_DURATION_MULT[_rb_duration_idx] if _rb_duration_idx < RB_DURATION_MULT.size() else 1
+	var effects: Array   = RB_DOMAIN_EFFECTS[_rb_domain] if _rb_domain < RB_DOMAIN_EFFECTS.size() else []
+	var effect_base: int = int(effects[_rb_effect_idx][1]) if _rb_effect_idx < effects.size() else 1
+	var base_effect: int = effect_base + dice_cost
+	var base_with_dur: int = base_effect if _rb_duration_idx == 0 else base_effect * dur_mult
+	var range_cost: int  = RB_RANGE_SP_COST[_rb_range_idx] if _rb_range_idx < RB_RANGE_SP_COST.size() else 0
+	var target_cost: int = 0
+	if _rb_targets > 1:
+		for i in range(_rb_targets - 1):
+			target_cost += int(pow(2.0, float(i + 1)))
+	var harmful: int    = 0
+	var beneficial: int = 0
+	for cname in _rb_conditions:
+		if cname in RB_CONDITIONS_HARMFUL: harmful += 1
+		else: beneficial += 1
+	var cond_cost: int   = (harmful * 3) - (beneficial * 2)
+	var area_mult: int   = RB_AREA_MULT[_rb_area_idx] if _rb_area_idx < RB_AREA_MULT.size() else 1
+	var base_sum: int    = type_cost + base_with_dur + range_cost + target_cost + cond_cost
+	var total: int       = base_sum * area_mult
+	if total <= 0 and (dur_mult > 1 or area_mult > 1):
+		total = 1
+	elif total < 0:
+		total = 0
+	return total
+
+func _rb_update_preview() -> void:
+	var cost: int = _rb_calc_cost()
+	var dc: int = 10 + cost
+	if is_instance_valid(_ritual_preview_lbl):
+		_ritual_preview_lbl.text = "SP Cost: %d · Arcane DC: %d" % [cost, dc]
+
+	if is_instance_valid(_ritual_breakdown_lbl):
+		var effects: Array = RB_DOMAIN_EFFECTS[_rb_domain] if _rb_domain < RB_DOMAIN_EFFECTS.size() else []
+		var effect_name: String = effects[_rb_effect_idx][0] if _rb_effect_idx < effects.size() else "Unknown"
+		var effect_base: int = int(effects[_rb_effect_idx][1]) if _rb_effect_idx < effects.size() else 1
+		var sides_mod: int = RB_DIE_SIDES_MOD[_rb_die_idx] if _rb_die_idx < RB_DIE_SIDES_MOD.size() else 0
+		var dice_cost: int = _rb_die_count * (1 + sides_mod)
+		var dur_mult: int  = RB_DURATION_MULT[_rb_duration_idx] if _rb_duration_idx < RB_DURATION_MULT.size() else 1
+		var range_cost: int = RB_RANGE_SP_COST[_rb_range_idx] if _rb_range_idx < RB_RANGE_SP_COST.size() else 0
+		var target_cost: int = 0
+		if _rb_targets > 1:
+			for i in range(_rb_targets - 1):
+				target_cost += int(pow(2.0, float(i + 1)))
+		var harmful: int = 0; var beneficial: int = 0
+		for cname in _rb_conditions:
+			if cname in RB_CONDITIONS_HARMFUL: harmful += 1
+			else: beneficial += 1
+		var cond_cost: int = (harmful * 3) - (beneficial * 2)
+		var area_mult: int = RB_AREA_MULT[_rb_area_idx] if _rb_area_idx < RB_AREA_MULT.size() else 1
+
+		var lines: PackedStringArray = []
+		lines.append("Base Effect (%s): %d" % [effect_name, effect_base])
+		if dice_cost > 0:
+			lines.append("Dice (%dd%d): +%d" % [_rb_die_count, [4,6,8,10,12][_rb_die_idx], dice_cost])
+		if dur_mult > 1:
+			lines.append("Duration (x%d): applied" % dur_mult)
+		if range_cost > 0:
+			lines.append("Range (%s): +%d" % [RB_RANGE_LABELS[_rb_range_idx], range_cost])
+		if target_cost > 0:
+			lines.append("Multi-target (%d): +%d" % [_rb_targets, target_cost])
+		if cond_cost != 0:
+			lines.append("Conditions: %s%d" % ["+" if cond_cost > 0 else "", cond_cost])
+		if _rb_is_saving_throw:
+			lines.append("Saving throw: +1")
+		if area_mult > 1:
+			lines.append("Area (x%d): applied" % area_mult)
+		if _rb_is_combustion:
+			lines.append("Combustion: damage scales with SP spent")
+		lines.append("Ritual DC = 10 + SP Cost = %d (Arcane check)" % dc)
+		_ritual_breakdown_lbl.text = "\n".join(lines)
+
+	if is_instance_valid(_ritual_desc_lbl):
+		_ritual_desc_lbl.text = _rb_gen_description()
+
+func _rb_gen_description() -> String:
+	var effects_arr: Array = RB_DOMAIN_EFFECTS[_rb_domain] if _rb_domain < RB_DOMAIN_EFFECTS.size() else []
+	var effect_name: String = effects_arr[_rb_effect_idx][0] if _rb_effect_idx < effects_arr.size() else "Unknown"
+	var domain_name: String = RB_DOMAIN_NAMES[_rb_domain] if _rb_domain < RB_DOMAIN_NAMES.size() else "Unknown"
+	var target_desc: String = "a single target" if _rb_targets <= 1 else "up to %d targets" % _rb_targets
+	var range_desc: String = "on yourself" if _rb_range_idx == 0 else "within %s" % RB_RANGE_LABELS[_rb_range_idx]
+	var area_desc: String = "" if _rb_area_idx == 0 else " affecting a %s" % RB_AREA_LABELS[_rb_area_idx]
+	var dur_desc: String = RB_DURATION_LABELS[_rb_duration_idx]
+	var save_desc: String = ". Targets may roll a saving throw to resist." if _rb_is_saving_throw else "."
+
+	if _rb_is_teleport:
+		return "Ritual teleportation. SP cost scales with distance: 10ft=1SP, 20ft=2SP, 30ft=4SP."
+	if _rb_is_combustion:
+		return "Using the %s domain, you ritually cause a violent combustion targeting %s %s%s. Damage dice scale dynamically with SP spent. Lasts %s%s" % [
+			domain_name, target_desc, range_desc, area_desc, dur_desc, save_desc]
+
+	var action_word: String = "heals for" if _rb_is_healing else "deals"
+	var dice_desc: String = ""
+	if _rb_die_count > 0:
+		dice_desc = " %dd%d" % [_rb_die_count, [4,6,8,10,12][_rb_die_idx]]
+	var type_desc: String = ""
+	if not _rb_is_healing and _rb_die_count > 0:
+		type_desc = " %s damage" % RB_DAMAGE_TYPES[_rb_damage_type]
+	elif _rb_is_healing and _rb_die_count > 0:
+		type_desc = " hit points"
+
+	return "Ritual: Using the %s domain, weave a spell of %s that %s%s%s targeting %s %s%s. Lasts %s%s" % [
+		domain_name, effect_name, action_word, dice_desc, type_desc,
+		target_desc, range_desc, area_desc, dur_desc, save_desc]
+
+# ── Ritual list display ──────────────────────────────────────────────────────
 
 func _refresh_ritual_ui() -> void:
 	if _ritual_tasks_vbox == null:
 		return
 
-	# Clear both lists
 	for c in _ritual_tasks_vbox.get_children(): c.queue_free()
 	for c in _ritual_active_vbox.get_children(): c.queue_free()
 
@@ -1444,7 +2777,8 @@ func _refresh_ritual_ui() -> void:
 	# ── In-progress tasks ────────────────────────────────────────────────────
 	for task in GameState.ritual_tasks:
 		any_content = true
-		var dc: int = 10 + int(task["sp_committed"])
+		var sp_cost: int = int(task.get("sp_cost", task.get("sp_committed", 1)))
+		var dc: int = 10 + sp_cost
 		var card = PanelContainer.new()
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var card_style = StyleBoxFlat.new()
@@ -1459,19 +2793,32 @@ func _refresh_ritual_ui() -> void:
 		# Title row
 		var title_hbox = HBoxContainer.new()
 		title_hbox.add_theme_constant_override("separation", 8)
-		title_hbox.add_child(RimvaleUtils.label(
-			str(task["spell_name"]), 13, RimvaleColors.TEXT_WHITE))
 		title_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var dc_lbl = RimvaleUtils.label("DC %d" % dc, 12, RimvaleColors.ORANGE)
-		title_hbox.add_child(dc_lbl)
+		var domain_str: String = str(task.get("domain_name", ""))
+		var name_txt: String = str(task["spell_name"])
+		if not domain_str.is_empty():
+			name_txt += " [%s]" % domain_str
+		title_hbox.add_child(RimvaleUtils.label(name_txt, 13, RimvaleColors.TEXT_WHITE))
+		var sp3 = Control.new()
+		sp3.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		title_hbox.add_child(sp3)
+		title_hbox.add_child(RimvaleUtils.label("DC %d" % dc, 12, RimvaleColors.ORANGE))
 		card_vbox.add_child(title_hbox)
 
 		var desc_lbl = RimvaleUtils.label(str(task["spell_desc"]), 11, RimvaleColors.TEXT_GRAY)
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		card_vbox.add_child(desc_lbl)
+
+		# Spell details row
+		var detail_parts: PackedStringArray = []
+		detail_parts.append("Caster: %s" % str(task["caster_name"]))
+		detail_parts.append("SP Cost: %d" % sp_cost)
+		if task.has("die_count") and int(task["die_count"]) > 0:
+			detail_parts.append("%dd%d" % [int(task["die_count"]), int(task.get("die_sides", 6))])
+		if task.has("duration_rounds") and int(task["duration_rounds"]) > 0:
+			detail_parts.append("Dur: %d rds" % int(task["duration_rounds"]))
 		card_vbox.add_child(RimvaleUtils.label(
-			"Caster: %s · SP committed: %d" % [str(task["caster_name"]), int(task["sp_committed"])],
-			10, RimvaleColors.TEXT_GRAY))
+			" · ".join(detail_parts), 10, RimvaleColors.TEXT_GRAY))
 
 		# Action buttons row
 		var btn_row = HBoxContainer.new()
@@ -1479,13 +2826,9 @@ func _refresh_ritual_ui() -> void:
 		card_vbox.add_child(btn_row)
 
 		var task_id: String = str(task["id"])
-		var make_check_btn = RimvaleUtils.button("Make Check", RimvaleColors.AP_BLUE, 30, 10)
+		var make_check_btn = RimvaleUtils.button("Make Arcane Check", RimvaleColors.AP_BLUE, 30, 10)
 		make_check_btn.pressed.connect(func(): _ritual_make_check(task_id))
 		btn_row.add_child(make_check_btn)
-
-		var add_sp_btn = RimvaleUtils.button("Add SP (DC→%d)" % (dc + 1), RimvaleColors.SP_PURPLE, 30, 10)
-		add_sp_btn.pressed.connect(func(): _ritual_add_sp(task_id))
-		btn_row.add_child(add_sp_btn)
 
 		var abandon_btn = RimvaleUtils.button("Abandon", RimvaleColors.DANGER, 30, 10)
 		abandon_btn.pressed.connect(func(): _ritual_abandon(task_id))
@@ -1497,7 +2840,7 @@ func _refresh_ritual_ui() -> void:
 		_ritual_tasks_vbox.add_child(
 			RimvaleUtils.label("No rituals in progress.", 12, RimvaleColors.TEXT_GRAY))
 
-	# ── Active rituals ────────────────────────────────────────────────────────
+	# ── Active (learned) ritual spells ───────────────────────────────────────
 	for ritual in GameState.active_rituals:
 		any_content = true
 		var acard = PanelContainer.new()
@@ -1508,143 +2851,132 @@ func _refresh_ritual_ui() -> void:
 		acard_style.content_margin_top  = 8;  acard_style.content_margin_bottom = 8
 		acard.add_theme_stylebox_override("panel", acard_style)
 
-		var acbox = HBoxContainer.new()
-		acbox.add_theme_constant_override("separation", 8)
+		var acbox = VBoxContainer.new()
+		acbox.add_theme_constant_override("separation", 4)
 		acard.add_child(acbox)
 
-		var a_info = VBoxContainer.new()
-		a_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		a_info.add_theme_constant_override("separation", 2)
-		acbox.add_child(a_info)
+		# Title row with dispel button
+		var atitle = HBoxContainer.new()
+		atitle.add_theme_constant_override("separation", 8)
+		acbox.add_child(atitle)
 
-		a_info.add_child(RimvaleUtils.label(
+		var sp_cost_a: int = int(ritual.get("sp_cost", ritual.get("sp_committed", 1)))
+		atitle.add_child(RimvaleUtils.label(
 			"✦ " + str(ritual["spell_name"]), 13, Color(1.0, 0.84, 0.3)))
-		var adesc_lbl = RimvaleUtils.label(str(ritual["spell_desc"]), 10, RimvaleColors.TEXT_GRAY)
-		adesc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		a_info.add_child(adesc_lbl)
-		a_info.add_child(RimvaleUtils.label(
-			"Caster: %s · SP: %d" % [str(ritual["caster_name"]), int(ritual["sp_committed"])],
-			10, RimvaleColors.TEXT_GRAY))
+		var sp4 = Control.new()
+		sp4.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		atitle.add_child(sp4)
+		atitle.add_child(RimvaleUtils.label("%d SP" % sp_cost_a, 12, RimvaleColors.SP_PURPLE))
 
 		var ritual_id: String = str(ritual["id"])
 		var dispel_btn = RimvaleUtils.button("Dispel", RimvaleColors.DANGER, 28, 10)
 		dispel_btn.pressed.connect(func(): _ritual_dispel(ritual_id))
-		acbox.add_child(dispel_btn)
+		atitle.add_child(dispel_btn)
+
+		var adesc_lbl = RimvaleUtils.label(str(ritual["spell_desc"]), 10, RimvaleColors.TEXT_GRAY)
+		adesc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		acbox.add_child(adesc_lbl)
+
+		# Details
+		var adetail_parts: PackedStringArray = []
+		adetail_parts.append("Caster: %s" % str(ritual["caster_name"]))
+		if ritual.has("die_count") and int(ritual["die_count"]) > 0:
+			adetail_parts.append("%dd%d %s" % [int(ritual["die_count"]), int(ritual.get("die_sides", 6)),
+				str(ritual.get("damage_type_name", ""))])
+		if ritual.has("conditions_csv") and str(ritual["conditions_csv"]) != "":
+			adetail_parts.append("Conds: %s" % str(ritual["conditions_csv"]))
+		acbox.add_child(RimvaleUtils.label(
+			" · ".join(adetail_parts), 10, RimvaleColors.TEXT_GRAY))
+
 		_ritual_active_vbox.add_child(acard)
 
 	if GameState.active_rituals.is_empty():
 		_ritual_active_vbox.add_child(
-			RimvaleUtils.label("No active spells.", 12, RimvaleColors.TEXT_GRAY))
+			RimvaleUtils.label("No learned ritual spells yet.", 12, RimvaleColors.TEXT_GRAY))
 
 	if _ritual_empty_lbl:
 		_ritual_empty_lbl.visible = not any_content
 
+# ── Ritual actions ───────────────────────────────────────────────────────────
+
 func _on_new_ritual() -> void:
-	var handles: Array = GameState.get_active_handles()
-	if handles.is_empty():
+	_rb_handles = GameState.get_active_handles()
+	if _rb_handles.is_empty():
 		push_warning("[Rituals] No active party members")
 		return
+	# Reset builder state
+	_rb_name = ""
+	_rb_caster_idx = 0
+	_rb_domain = 0
+	_rb_effect_idx = 0
+	_rb_duration_idx = 0
+	_rb_range_idx = 1
+	_rb_targets = 1
+	_rb_area_idx = 0
+	_rb_die_count = 1
+	_rb_die_idx = 0
+	_rb_damage_type = 3
+	_rb_is_healing = false
+	_rb_is_saving_throw = false
+	_rb_is_teleport = false
+	_rb_is_combustion = false
+	_rb_conditions.clear()
+	_rb_populate_inner()
+	_ritual_overlay.visible = true
 
-	var dialog = AcceptDialog.new()
-	dialog.title = "Design Ritual Spell"
-	dialog.get_ok_button().text = "Begin Ritual"
-	dialog.min_size = Vector2i(460, 480)
+func _on_begin_ritual() -> void:
+	var spell_name: String = _rb_name.strip_edges()
+	if spell_name.is_empty():
+		_show_ritual_result("Spell name cannot be empty.", false)
+		_ritual_overlay.visible = false
+		return
+	if _rb_caster_idx < 0 or _rb_caster_idx >= _rb_handles.size():
+		_ritual_overlay.visible = false
+		return
 
-	var dvbox = VBoxContainer.new()
-	dvbox.add_theme_constant_override("separation", 8)
-	dialog.add_child(dvbox)
+	var handle: int = _rb_handles[_rb_caster_idx]
+	var caster_name: String = str(RimvaleAPI.engine.get_character_name(handle))
+	var sp_cost: int = _rb_calc_cost()
+	var die_sides: int = [4, 6, 8, 10, 12][_rb_die_idx]
+	var dur_rounds: int = RB_DURATION_ROUNDS[_rb_duration_idx] if _rb_duration_idx < RB_DURATION_ROUNDS.size() else 0
+	var cond_csv: String = ",".join(_rb_conditions)
+	var desc: String = _rb_gen_description()
+	var domain_name: String = RB_DOMAIN_NAMES[_rb_domain] if _rb_domain < RB_DOMAIN_NAMES.size() else "Unknown"
 
-	dvbox.add_child(RimvaleUtils.label("Caster", 12, RimvaleColors.TEXT_WHITE))
-	var caster_opt = OptionButton.new()
-	caster_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sp_by_idx: Array = []
-	for h in handles:
-		var cname: String = str(RimvaleAPI.engine.get_character_name(h))
-		var sp_cur: int = RimvaleAPI.engine.get_character_sp(h)
-		caster_opt.add_item("%s  (%d SP)" % [cname, sp_cur])
-		sp_by_idx.append(sp_cur)
-	dvbox.add_child(caster_opt)
+	var task_id: String = "ritual_%d_%s" % [
+		Time.get_unix_time_from_system(), spell_name.replace(" ", "_")]
 
-	dvbox.add_child(RimvaleUtils.separator())
+	GameState.ritual_tasks.append({
+		"id":              task_id,
+		"spell_name":      spell_name,
+		"spell_desc":      desc,
+		"caster_handle":   handle,
+		"caster_name":     caster_name,
+		"sp_cost":         sp_cost,
+		"sp_committed":    sp_cost,
+		# Full spell builder params for add_custom_spell
+		"domain":          _rb_domain,
+		"domain_name":     domain_name,
+		"range_idx":       _rb_range_idx,
+		"is_attack":       not _rb_is_saving_throw,
+		"die_count":       _rb_die_count,
+		"die_sides":       die_sides,
+		"damage_type":     _rb_damage_type,
+		"damage_type_name": RB_DAMAGE_TYPES[_rb_damage_type] if _rb_damage_type < RB_DAMAGE_TYPES.size() else "Force",
+		"is_healing":      _rb_is_healing,
+		"duration_rounds": dur_rounds,
+		"max_targets":     _rb_targets,
+		"area_type":       _rb_area_idx,
+		"conditions_csv":  cond_csv,
+		"is_teleport":     _rb_is_teleport,
+		"is_combustion":   _rb_is_combustion,
+	})
 
-	# Spell name
-	dvbox.add_child(RimvaleUtils.label("Spell Name", 12, RimvaleColors.TEXT_WHITE))
-	var name_edit = LineEdit.new()
-	name_edit.placeholder_text = "Enter ritual name..."
-	name_edit.custom_minimum_size = Vector2(0, 36)
-	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	dvbox.add_child(name_edit)
-
-	# Domain
-	dvbox.add_child(RimvaleUtils.label("Domain", 12, RimvaleColors.TEXT_WHITE))
-	var domain_opt = OptionButton.new()
-	domain_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	for d in ["Biological", "Chemical", "Physical", "Spiritual"]:
-		domain_opt.add_item(d)
-	dvbox.add_child(domain_opt)
-
-	# Effect
-	dvbox.add_child(RimvaleUtils.label("Effect", 12, RimvaleColors.TEXT_WHITE))
-	var effect_opt = OptionButton.new()
-	effect_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	for e in ["Damage", "Heal", "Buff", "Debuff", "Conjure", "Control", "Reveal", "Shield"]:
-		effect_opt.add_item(e)
-	dvbox.add_child(effect_opt)
-
-	# SP committed
-	dvbox.add_child(RimvaleUtils.label("SP to Commit", 12, RimvaleColors.TEXT_WHITE))
-	var sp_row = HBoxContainer.new()
-	sp_row.add_theme_constant_override("separation", 8)
-	var sp_lbl = RimvaleUtils.label("SP: 1", 13, RimvaleColors.SP_PURPLE)
-	sp_lbl.custom_minimum_size = Vector2(80, 0)
-	sp_row.add_child(sp_lbl)
-	var sp_slider = HSlider.new()
-	sp_slider.min_value = 1; sp_slider.max_value = 20; sp_slider.step = 1; sp_slider.value = 1
-	sp_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sp_row.add_child(sp_slider)
-	dvbox.add_child(sp_row)
-
-	var cost_info = RimvaleUtils.label(
-		"DC: 11 · Duration: 1 hour · Cost: 1 SP", 11, RimvaleColors.TEXT_GRAY)
-	dvbox.add_child(cost_info)
-
-	sp_slider.value_changed.connect(func(v: float):
-		var sp: int = int(v)
-		sp_lbl.text = "SP: %d" % sp
-		cost_info.text = "DC: %d · Duration: %d hour%s · Cost: %d SP" % [
-			10 + sp, sp, "s" if sp > 1 else "", sp])
-
-	var domains: Array = ["Biological", "Chemical", "Physical", "Spiritual"]
-	var effects: Array = ["Damage", "Heal", "Buff", "Debuff", "Conjure", "Control", "Reveal", "Shield"]
-
-	dialog.confirmed.connect(func():
-		var spell_name: String = name_edit.text.strip_edges()
-		if spell_name.is_empty():
-			dialog.queue_free(); return
-		var caster_idx: int = caster_opt.selected
-		if caster_idx < 0 or caster_idx >= handles.size():
-			dialog.queue_free(); return
-		var handle: int = handles[caster_idx]
-		var caster_name: String = str(RimvaleAPI.engine.get_character_name(handle))
-		var sp: int = int(sp_slider.value)
-		var domain: String = domains[domain_opt.selected]
-		var effect: String = effects[effect_opt.selected]
-		var desc: String = "%s %s ritual — SP: %d, DC: %d" % [domain, effect, sp, 10 + sp]
-		var task_id: String = "ritual_%d_%s" % [
-			Time.get_unix_time_from_system(), spell_name.replace(" ", "_")]
-		GameState.ritual_tasks.append({
-			"id":           task_id,
-			"spell_name":   spell_name,
-			"spell_desc":   desc,
-			"caster_handle": handle,
-			"caster_name":  caster_name,
-			"sp_committed": sp,
-		})
-		_refresh_ritual_ui()
-		dialog.queue_free()
-	)
-	add_child(dialog)
-	dialog.popup_centered(Vector2(460, 480))
+	_ritual_overlay.visible = false
+	_show_ritual_result(
+		"Ritual '%s' started (DC %d Arcane check). Use 'Make Arcane Check' when ready." % [spell_name, 10 + sp_cost],
+		true)
+	_refresh_ritual_ui()
 
 func _ritual_make_check(task_id: String) -> void:
 	var task: Dictionary = {}
@@ -1653,8 +2985,8 @@ func _ritual_make_check(task_id: String) -> void:
 			task = t; break
 	if task.is_empty():
 		return
-	var sp: int = int(task["sp_committed"])
-	var dc: int = 10 + sp
+	var sp_cost: int = int(task.get("sp_cost", task.get("sp_committed", 1)))
+	var dc: int = 10 + sp_cost
 	var handle: int = int(task["caster_handle"])
 	var result: PackedStringArray = RimvaleAPI.engine.execute_skill_challenge(handle, "Arcane", dc)
 	var passed: bool = (not result.is_empty()) and result[0] == "1"
@@ -1662,27 +2994,40 @@ func _ritual_make_check(task_id: String) -> void:
 	var total: int = int(str(result[1])) if result.size() > 1 else 0
 
 	if passed:
+		# Register as a real spell via add_custom_spell
+		RimvaleAPI.engine.add_custom_spell(
+			str(task["spell_name"]),
+			int(task.get("domain", 0)),
+			sp_cost,
+			str(task["spell_desc"]),
+			int(task.get("range_idx", 1)),
+			bool(task.get("is_attack", true)),
+			int(task.get("die_count", 1)),
+			int(task.get("die_sides", 6)),
+			int(task.get("damage_type", 3)),
+			bool(task.get("is_healing", false)),
+			int(task.get("duration_rounds", 0)),
+			int(task.get("max_targets", 1)),
+			int(task.get("area_type", 0)),
+			str(task.get("conditions_csv", "")),
+			bool(task.get("is_teleport", false)),
+			bool(task.get("is_combustion", false)),
+		)
+		# Also teach the caster's character
+		RimvaleAPI.engine.learn_spell(handle, str(task["spell_name"]))
+
 		# Promote to active
 		GameState.ritual_tasks.erase(task)
 		GameState.active_rituals.append(task)
 		_show_ritual_result(
-			"✓ Success! Roll %d vs DC %d — %s is now active." % [total, dc, str(task["spell_name"])],
+			"✓ Success! Rolled %d vs DC %d — '%s' learned! All party members can now cast it in dungeons." % [
+				total, dc, str(task["spell_name"])],
 			true)
 	else:
 		_show_ritual_result(
-			"✗ Failed. Roll %d vs DC %d — %s" % [total, dc, detail],
+			"✗ Failed. Rolled %d vs DC %d — %s. The ritual remains in progress; try again." % [total, dc, detail],
 			false)
 	_refresh_ritual_ui()
-
-func _ritual_add_sp(task_id: String) -> void:
-	for t in GameState.ritual_tasks:
-		if str(t["id"]) == task_id:
-			var sp: int = int(t["sp_committed"]) + 1
-			t["sp_committed"] = sp
-			_show_ritual_result(
-				"Spent 1 SP — DC is now %d. Roll again." % (10 + sp), false)
-			_refresh_ritual_ui()
-			return
 
 func _ritual_abandon(task_id: String) -> void:
 	for i in range(GameState.ritual_tasks.size()):
@@ -3292,13 +4637,13 @@ func _overworld_location_card(region_id: String, loc: Array) -> Control:
 
 
 func _overworld_story_row(m_data: Array) -> Control:
-	# m_data: [id, title, region, teaser, xp, is_boss]
+	# m_data: [id, title, region, teaser, flavor, xp, is_boss, boss_name, boss_level, boss_apex_idx]
 	var mid: String     = m_data[0]
 	var mtitle: String  = m_data[1]
 	var mregion: String = m_data[2]
 	var mteaser: String = m_data[3]
-	var mxp: int        = m_data[4]
-	var is_boss: bool   = m_data[5]
+	var mxp: int        = m_data[5]
+	var is_boss: bool   = m_data[6]
 	var completed: bool = mid in GameState.story_completed_missions
 
 	var row = PanelContainer.new()
@@ -3343,10 +4688,9 @@ func _overworld_story_row(m_data: Array) -> Control:
 	var btn_text: String = "Replay" if completed else "Begin"
 	var play_btn = RimvaleUtils.button(btn_text, btn_color, 28, 11)
 	play_btn.custom_minimum_size = Vector2(72, 28)
-	var cap_mid = mid; var cap_title = mtitle
-	var cap_teaser = mteaser; var cap_xp = mxp
+	var cap_m_data: Array = m_data.duplicate()
 	play_btn.pressed.connect(func():
-		_start_story_mission(cap_mid, cap_title, cap_teaser, cap_xp))
+		_on_story_mission_play(cap_m_data))
 	actions.add_child(play_btn)
 	v.add_child(actions)
 

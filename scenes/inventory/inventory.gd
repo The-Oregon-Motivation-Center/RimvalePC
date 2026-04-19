@@ -63,8 +63,16 @@ func _build_ui() -> void:
 	hrow.add_child(RimvaleUtils.label("🎒 Gear — " + char_name, 20, RimvaleColors.ACCENT))
 
 	var gold_lbl = RimvaleUtils.label("💰 %d GP" % GameState.gold, 15, RimvaleColors.GOLD)
-	gold_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hrow.add_child(gold_lbl)
+
+	# Attunement SP summary
+	var att_committed: int = _e.get_attunement_sp_committed(_handle) if _handle != -1 else 0
+	if att_committed > 0:
+		hrow.add_child(RimvaleUtils.label("🔮 %d SP attuned" % att_committed, 13, RimvaleColors.SP_PURPLE))
+
+	var _hdr_spacer = Control.new()
+	_hdr_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hrow.add_child(_hdr_spacer)
 
 	var back_btn = RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 40, 13)
 	back_btn.pressed.connect(func():
@@ -384,7 +392,30 @@ func _build_item_row(d: Dictionary) -> Control:
 		info_row.add_child(RimvaleUtils.label(rarity, 10, rarity_col))
 		var attune_cost: int = _attunement_cost(rarity)
 		if attune_cost > 0:
-			info_row.add_child(RimvaleUtils.label("Attune: %d SP" % attune_cost, 10, RimvaleColors.SP_PURPLE))
+			var in_cap2: String = item_name
+			if _e.is_attuned(_handle, item_name):
+				# Show attuned badge + unattune button
+				info_row.add_child(RimvaleUtils.label("Attuned (-%d SP)" % attune_cost, 10, RimvaleColors.SP_PURPLE))
+				var unattune_btn = RimvaleUtils.button("Unattune", Color(0.7, 0.3, 0.3), 28, 10)
+				unattune_btn.pressed.connect(func():
+					_e.unattune_item(_handle, in_cap2)
+					_refresh_equipped()
+					_rebuild_items()
+				)
+				info_row.add_child(unattune_btn)
+			else:
+				# Show attune button with cost
+				var attune_btn = RimvaleUtils.button("Attune (%d SP)" % attune_cost, RimvaleColors.SP_PURPLE, 28, 10)
+				attune_btn.pressed.connect(func():
+					var result: String = _e.attune_item(_handle, in_cap2)
+					if result != "":
+						_show_notice(result)
+					else:
+						_show_notice("Attuned to %s (-%d max SP)" % [in_cap2, attune_cost])
+					_refresh_equipped()
+					_rebuild_items()
+				)
+				info_row.add_child(attune_btn)
 
 	# Description (collapsible-like: show if short)
 	if not desc.is_empty() and desc.length() < 200:
@@ -428,7 +459,15 @@ func _build_stash_items() -> void:
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
-		info.add_child(RimvaleUtils.label(item_name, 14, RimvaleColors.TEXT_WHITE))
+		var stash_name_col: Color = _rarity_color(rarity) if is_magical else RimvaleColors.TEXT_WHITE
+		var stash_prefix: String = "✦ " if is_magical else ""
+		info.add_child(RimvaleUtils.label(stash_prefix + item_name, 14, stash_name_col))
+		# Show description from registry
+		var stash_desc: String = str(details_raw[details_raw.size() - 1]) if details_raw.size() > 0 else ""
+		if stash_desc.length() > 0 and stash_desc.length() < 200:
+			var sdlbl: Label = RimvaleUtils.label(stash_desc, 10, RimvaleColors.TEXT_GRAY)
+			sdlbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			info.add_child(sdlbl)
 		info.add_child(RimvaleUtils.label(item_type, 10, RimvaleColors.TEXT_DIM))
 
 		var take_btn = RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 36, 12)
@@ -690,3 +729,17 @@ func _attunement_cost(rarity: String) -> int:
 		"Legendary": return 5
 		"Apex":      return 5
 	return 0
+
+func _show_notice(msg: String) -> void:
+	var toast: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.ACCENT, 12, 14)
+	var lbl: Label = RimvaleUtils.label(msg, 14, RimvaleColors.TEXT_WHITE)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast.add_child(lbl)
+	toast.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	toast.offset_bottom = -60
+	toast.offset_top = -110
+	toast.offset_left = 40
+	toast.offset_right = -40
+	add_child(toast)
+	await get_tree().create_timer(2.0).timeout
+	toast.queue_free()

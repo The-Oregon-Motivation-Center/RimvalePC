@@ -380,7 +380,7 @@ func _build_team_slot(slot: int) -> Control:
 
 	# Bottom border coloured by role
 	var border = ColorRect.new()
-	border.color = RimvaleColors.GOLD if is_leader else RimvaleColors.CYAN
+	border.color = RimvaleColors.CYAN
 	border.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	border.offset_top = -3
 	btn.add_child(border)
@@ -416,8 +416,7 @@ func _build_team_slot(slot: int) -> Control:
 		plus.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		col.add_child(plus)
 		var sl = RimvaleUtils.label(
-			("★ Leader" if is_leader else "Slot %d" % (slot + 1)), 10,
-			RimvaleColors.GOLD if is_leader else RimvaleColors.TEXT_GRAY)
+			"Slot %d" % (slot + 1), 10, RimvaleColors.TEXT_GRAY)
 		sl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		col.add_child(sl)
 
@@ -627,6 +626,8 @@ func _build_hero_card(handle: int) -> Control:
 	var ac:       int    = _e.get_character_ac(handle)
 	var speed:    int    = _e.get_character_movement_speed(handle)
 	var weapon:   String = _e.get_equipped_weapon(handle)
+	var char_age: int    = _e.get_character_age(handle)
+	var insanity: int    = _e.get_character_insanity(handle)
 	var stat_pts: int    = _e.get_character_stat_points(handle)
 	var feat_pts: int    = _e.get_character_feat_points(handle)
 	var skill_pts: int   = _e.get_character_skill_points(handle)
@@ -701,11 +702,17 @@ func _build_hero_card(handle: int) -> Control:
 	if feat_pts > 0:  name_row.add_child(_badge("F+%d" % feat_pts, RimvaleColors.CYAN))
 	if skill_pts > 0: name_row.add_child(_badge("K+%d" % skill_pts, RimvaleColors.SP_PURPLE))
 
-	# Lineage + AC/Speed
+	# Lineage + Age + AC/Speed + Insanity
 	var sub_row = HBoxContainer.new()
 	sub_row.add_theme_constant_override("separation", 6)
 	icol.add_child(sub_row)
 	sub_row.add_child(RimvaleUtils.label(lineage, 11, RimvaleColors.TEXT_GRAY))
+	var age_col: Color = RimvaleColors.TEXT_GRAY
+	if char_age >= 90: age_col = RimvaleColors.DANGER
+	elif char_age >= 80: age_col = RimvaleColors.ORANGE
+	sub_row.add_child(RimvaleUtils.label("Age %d" % char_age, 11, age_col))
+	if insanity > 0:
+		sub_row.add_child(RimvaleUtils.label("Insanity %d" % insanity, 11, RimvaleColors.DANGER))
 	var sp_filler = Control.new()
 	sp_filler.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sub_row.add_child(sp_filler)

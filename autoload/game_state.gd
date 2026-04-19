@@ -31,6 +31,23 @@ var collection: Array = []
 ## Handles currently busy with crafting / foraging tasks
 var busy_handles: Array = []
 
+# ── Game Clock ────────────────────────────────────────────────────────────────
+## In-game day counter. Advances on long rests, travel, and mission completion.
+## Characters age by game_day / 365 years from their starting age.
+var game_day: int = 1
+
+## Advance the game clock by a number of days. Checks for aging effects.
+func advance_days(days: int) -> Array:
+	game_day += days
+	var deaths: Array = []  # names of characters who died of old age
+	var e = Engine.get_singleton("RimvaleFallbackEngine") if Engine.has_singleton("RimvaleFallbackEngine") else get_node_or_null("/root/RimvaleFallbackEngine")
+	if e == null: return deaths
+	for h in collection:
+		e.update_age_insanity(h)
+		if e.check_natural_death(h):
+			deaths.append(e.get_character_name(h))
+	return deaths
+
 # ── Director ──────────────────────────────────────────────────────────────────
 var director_message: String = "Welcome back, Agent. Your units await orders."
 
@@ -65,6 +82,8 @@ var active_rituals: Array = []
 var story_completed_missions: Array = []
 ## Badge names earned (matches STORY_SECTIONS badge_name field)
 var story_earned_badges: Array = []
+## Mission IDs where contact dialogue has already been shown (first-play only)
+var story_shown_contacts: Array = []
 
 # ── Overworld ────────────────────────────────────────────────────────────────
 ## Currently-selected major region on the Rimvale map (id from OVERWORLD_REGIONS).
@@ -600,6 +619,8 @@ func do_long_rest() -> void:
 	var e = RimvaleAPI.engine
 	for h in collection:
 		e.long_rest(h)
+	# Advance game clock by 1 day (long rest = overnight)
+	advance_days(1)
 
 # ── Wipe ─────────────────────────────────────────────────────────────────────
 
@@ -616,6 +637,7 @@ func wipe_all() -> void:
 	active_rituals.clear()
 	story_completed_missions.clear()
 	story_earned_badges.clear()
+	story_shown_contacts.clear()
 	current_region = "plains"
 	current_subregion = ""
 	visited_regions.clear()
@@ -661,6 +683,11 @@ func save_game() -> bool:
 			"name":          e.get_character_name(h),
 			"lineage":       e.get_character_lineage_name(h),
 			"age":           int(cd.get("age",       25)),
+			"max_age":       int(cd.get("max_age",   100)),
+			"months_sacrificed": int(cd.get("months_sacrificed", 0)),
+			"life_bound_sp": int(cd.get("life_bound_sp", 0)),
+			"insanity":      int(cd.get("insanity",   0)),
+			"sacrifice_dc":  int(cd.get("sacrifice_dc", 10)),
 			"level":         int(cd.get("level",      1)),
 			"xp":            int(cd.get("xp",         0)),
 			"xp_req":        int(cd.get("xp_req",   100)),
@@ -688,6 +715,8 @@ func save_game() -> bool:
 			"spells":        Array(cd.get("spells",   [])),
 			"injuries":      Array(cd.get("injuries", [])),
 			"items":         Array(cd.get("items",    [])),
+			"attuned":       Array(cd.get("attuned",  [])),
+			"safeguard_stats":Array(cd.get("safeguard_stats", [])),
 			"favored_skills":Array(cd.get("favored_skills", [])),
 		}
 		chars_data.append(entry)
@@ -718,27 +747,13 @@ func save_game() -> bool:
 			"gold_reward":      int(t.get("gold_reward", 0)),
 		})
 
-	# Serialise ritual tasks + active rituals
+	# Serialise ritual tasks + active rituals (full PHB spell builder params)
 	var ritual_task_data: Array = []
 	for t in ritual_tasks:
-		ritual_task_data.append({
-			"id":             str(t.get("id", "")),
-			"spell_name":     str(t.get("spell_name", "")),
-			"spell_desc":     str(t.get("spell_desc", "")),
-			"caster_handle":  int(t.get("caster_handle", -1)),
-			"caster_name":    str(t.get("caster_name", "")),
-			"sp_committed":   int(t.get("sp_committed", 1)),
-		})
+		ritual_task_data.append(_serialize_ritual(t))
 	var active_ritual_data: Array = []
 	for r in active_rituals:
-		active_ritual_data.append({
-			"id":            str(r.get("id", "")),
-			"spell_name":    str(r.get("spell_name", "")),
-			"spell_desc":    str(r.get("spell_desc", "")),
-			"caster_handle": int(r.get("caster_handle", -1)),
-			"caster_name":   str(r.get("caster_name", "")),
-			"sp_committed":  int(r.get("sp_committed", 1)),
-		})
+		active_ritual_data.append(_serialize_ritual(r))
 
 	var data: Dictionary = {
 		"version":                   4,
@@ -747,6 +762,7 @@ func save_game() -> bool:
 		"player_xp":                 player_xp,
 		"player_xp_required":        player_xp_required,
 		"player_rank":               player_rank,
+		"game_day":                  game_day,
 		"gold":                      gold,
 		"tokens":                    tokens,
 		"remnant_fragments":         remnant_fragments,
@@ -754,6 +770,7 @@ func save_game() -> bool:
 		"director_message":          director_message,
 		"story_completed_missions":  story_completed_missions,
 		"story_earned_badges":       story_earned_badges,
+		"story_shown_contacts":      story_shown_contacts,
 		"current_region":            current_region,
 		"current_subregion":         current_subregion,
 		"visited_regions":           visited_regions,
@@ -824,6 +841,7 @@ func load_game() -> bool:
 	player_xp           = int(data.get("player_xp",      0))
 	player_xp_required  = int(data.get("player_xp_required", 1000))
 	player_rank         = str(data.get("player_rank",    "Recruit"))
+	game_day            = int(data.get("game_day",         1))
 	gold                = int(data.get("gold",            500))
 	tokens              = int(data.get("tokens",          5))
 	remnant_fragments   = int(data.get("remnant_fragments", 0))
@@ -831,6 +849,7 @@ func load_game() -> bool:
 	director_message    = str(data.get("director_message",  "Welcome back, Agent."))
 	story_completed_missions = Array(data.get("story_completed_missions", []))
 	story_earned_badges      = Array(data.get("story_earned_badges",      []))
+	story_shown_contacts     = Array(data.get("story_shown_contacts",     []))
 	current_region           = str(data.get("current_region", "plains"))
 	current_subregion        = str(data.get("current_subregion", ""))
 	visited_regions          = Array(data.get("visited_regions", []))
@@ -875,27 +894,33 @@ func load_game() -> bool:
 		})
 		set_busy(int(t.get("character_handle", -1)), true)
 
-	# Restore ritual tasks + active rituals
+	# Restore ritual tasks + active rituals (full PHB spell builder params)
 	ritual_tasks.clear()
 	for t in Array(data.get("ritual_tasks", [])):
-		ritual_tasks.append({
-			"id":            str(t.get("id", "")),
-			"spell_name":    str(t.get("spell_name", "")),
-			"spell_desc":    str(t.get("spell_desc", "")),
-			"caster_handle": int(t.get("caster_handle", -1)),
-			"caster_name":   str(t.get("caster_name", "")),
-			"sp_committed":  int(t.get("sp_committed", 1)),
-		})
+		ritual_tasks.append(_deserialize_ritual(t))
 	active_rituals.clear()
 	for r in Array(data.get("active_rituals", [])):
-		active_rituals.append({
-			"id":            str(r.get("id", "")),
-			"spell_name":    str(r.get("spell_name", "")),
-			"spell_desc":    str(r.get("spell_desc", "")),
-			"caster_handle": int(r.get("caster_handle", -1)),
-			"caster_name":   str(r.get("caster_name", "")),
-			"sp_committed":  int(r.get("sp_committed", 1)),
-		})
+		active_rituals.append(_deserialize_ritual(r))
+		# Re-register completed ritual spells in the engine so they're castable
+		var sp_cost: int = int(r.get("sp_cost", r.get("sp_committed", 1)))
+		RimvaleAPI.engine.add_custom_spell(
+			str(r.get("spell_name", "")),
+			int(r.get("domain", 0)),
+			sp_cost,
+			str(r.get("spell_desc", "")),
+			int(r.get("range_idx", 1)),
+			bool(r.get("is_attack", true)),
+			int(r.get("die_count", 1)),
+			int(r.get("die_sides", 6)),
+			int(r.get("damage_type", 3)),
+			bool(r.get("is_healing", false)),
+			int(r.get("duration_rounds", 0)),
+			int(r.get("max_targets", 1)),
+			int(r.get("area_type", 0)),
+			str(r.get("conditions_csv", "")),
+			bool(r.get("is_teleport", false)),
+			bool(r.get("is_combustion", false)),
+		)
 
 	# Recreate characters in the engine
 	var chars_data: Array = Array(data.get("characters", []))
@@ -907,6 +932,12 @@ func load_game() -> bool:
 		var h: int = e.create_character(cname, lineage, age)
 		var char_dict = e.get_char_dict(h)
 		if char_dict != null:
+			# Restore lifespan fields (override the random max_age from create_character)
+			char_dict["max_age"]           = int(cd.get("max_age", char_dict.get("max_age", 100)))
+			char_dict["months_sacrificed"] = int(cd.get("months_sacrificed", 0))
+			char_dict["life_bound_sp"]     = int(cd.get("life_bound_sp", 0))
+			char_dict["insanity"]          = int(cd.get("insanity", 0))
+			char_dict["sacrifice_dc"]      = int(cd.get("sacrifice_dc", 10))
 			char_dict["level"]         = int(cd.get("level",      1))
 			char_dict["xp"]            = int(cd.get("xp",         0))
 			char_dict["xp_req"]        = int(cd.get("xp_req",   100))
@@ -939,6 +970,10 @@ func load_game() -> bool:
 			char_dict["injuries"] = saved_injuries
 			var saved_items: Array = Array(cd.get("items", []))
 			char_dict["items"] = saved_items
+			var saved_attuned: Array = Array(cd.get("attuned", []))
+			char_dict["attuned"] = saved_attuned
+			var saved_sg_stats: Array = Array(cd.get("safeguard_stats", []))
+			char_dict["safeguard_stats"] = saved_sg_stats
 			var saved_fav: Array = Array(cd.get("favored_skills", []))
 			char_dict["favored_skills"] = saved_fav
 		# Restore equipped items via equip_item so weapon/armor AC calculations apply
@@ -961,3 +996,57 @@ func load_game() -> bool:
 			active_team[i] = handle_list[ci]
 
 	return true
+
+# ── Ritual serialization helpers ─────────────────────────────────────────────
+
+func _serialize_ritual(r: Dictionary) -> Dictionary:
+	return {
+		"id":              str(r.get("id", "")),
+		"spell_name":      str(r.get("spell_name", "")),
+		"spell_desc":      str(r.get("spell_desc", "")),
+		"caster_handle":   int(r.get("caster_handle", -1)),
+		"caster_name":     str(r.get("caster_name", "")),
+		"sp_committed":    int(r.get("sp_committed", 1)),
+		"sp_cost":         int(r.get("sp_cost", r.get("sp_committed", 1))),
+		"domain":          int(r.get("domain", 0)),
+		"domain_name":     str(r.get("domain_name", "")),
+		"range_idx":       int(r.get("range_idx", 1)),
+		"is_attack":       bool(r.get("is_attack", true)),
+		"die_count":       int(r.get("die_count", 1)),
+		"die_sides":       int(r.get("die_sides", 6)),
+		"damage_type":     int(r.get("damage_type", 3)),
+		"damage_type_name": str(r.get("damage_type_name", "Force")),
+		"is_healing":      bool(r.get("is_healing", false)),
+		"duration_rounds": int(r.get("duration_rounds", 0)),
+		"max_targets":     int(r.get("max_targets", 1)),
+		"area_type":       int(r.get("area_type", 0)),
+		"conditions_csv":  str(r.get("conditions_csv", "")),
+		"is_teleport":     bool(r.get("is_teleport", false)),
+		"is_combustion":   bool(r.get("is_combustion", false)),
+	}
+
+func _deserialize_ritual(d: Dictionary) -> Dictionary:
+	return {
+		"id":              str(d.get("id", "")),
+		"spell_name":      str(d.get("spell_name", "")),
+		"spell_desc":      str(d.get("spell_desc", "")),
+		"caster_handle":   int(d.get("caster_handle", -1)),
+		"caster_name":     str(d.get("caster_name", "")),
+		"sp_committed":    int(d.get("sp_committed", 1)),
+		"sp_cost":         int(d.get("sp_cost", d.get("sp_committed", 1))),
+		"domain":          int(d.get("domain", 0)),
+		"domain_name":     str(d.get("domain_name", "")),
+		"range_idx":       int(d.get("range_idx", 1)),
+		"is_attack":       bool(d.get("is_attack", true)),
+		"die_count":       int(d.get("die_count", 1)),
+		"die_sides":       int(d.get("die_sides", 6)),
+		"damage_type":     int(d.get("damage_type", 3)),
+		"damage_type_name": str(d.get("damage_type_name", "Force")),
+		"is_healing":      bool(d.get("is_healing", false)),
+		"duration_rounds": int(d.get("duration_rounds", 0)),
+		"max_targets":     int(d.get("max_targets", 1)),
+		"area_type":       int(d.get("area_type", 0)),
+		"conditions_csv":  str(d.get("conditions_csv", "")),
+		"is_teleport":     bool(d.get("is_teleport", false)),
+		"is_combustion":   bool(d.get("is_combustion", false)),
+	}

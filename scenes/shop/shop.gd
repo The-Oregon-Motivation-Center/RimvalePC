@@ -117,22 +117,19 @@ func _switch_tab(idx: int) -> void:
 		_tab_btns[i] = new_chip
 	_refresh_list()
 
-## Deterministic price based on item name hash — never changes between sessions.
-func _get_item_price(item_name: String, category: String) -> int:
+## Returns the item's price from the registry.  Falls back to a hash-based
+## estimate only when the item is not in the registry (e.g. quest rewards).
+func _get_item_price(item_name: String, _category: String) -> int:
+	var details: PackedStringArray = _e.get_registry_item_details(item_name)
+	if details.size() >= 4:
+		var registry_price: int = int(details[3])
+		if registry_price > 0:
+			return registry_price
+	# Fallback for unknown items — should rarely trigger
 	var h: int = 0
 	for c in item_name:
 		h = (h * 31 + c.unicode_at(0)) & 0x7FFFFFFF
-	match category:
-		"Magic":
-			return 80 + (h % 421)    # 80–500
-		"Weapons":
-			return 40 + (h % 211)    # 40–250
-		"Armor":
-			return 50 + (h % 201)    # 50–250
-		"Consumable":
-			return 20 + (h % 131)    # 20–150
-		_:
-			return 10 + (h % 141)    # 10–150  (Misc)
+	return 10 + (h % 141)
 
 ## Sell price is 50 % of buy price (PHB: sell-to-director rate), floored at 5 g.
 func _get_sell_price(item_name: String) -> int:
@@ -214,11 +211,10 @@ func _refresh_list(filter: String = "") -> void:
 	else:
 		_build_sell_list()
 
-## Builds one item row as a modern card with icon, name+type stacked, price and action.
+## Builds one item row as a card with icon, name, description, price, and action.
 func _build_item_card(item_name: String, category: String, price: int,
 		action_label: String, action_col: Color, on_action: Callable) -> PanelContainer:
 	var card_p: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_CARD_DARK, RimvaleColors.DIVIDER, 10, 10)
-	card_p.custom_minimum_size = Vector2(0, 44)
 
 	var row = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
@@ -227,7 +223,7 @@ func _build_item_card(item_name: String, category: String, price: int,
 	# Category icon
 	row.add_child(RimvaleUtils.category_icon(category))
 
-	# Name + type column
+	# Name + description + type column
 	var info = VBoxContainer.new()
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -236,13 +232,28 @@ func _build_item_card(item_name: String, category: String, price: int,
 	var name_lbl: Label = RimvaleUtils.label(item_name, 15, RimvaleColors.TEXT_WHITE)
 	name_lbl.clip_text = true
 	info.add_child(name_lbl)
+
+	# Pull description from registry (last element of details array)
+	var details: PackedStringArray = _e.get_registry_item_details(item_name)
+	if details.size() >= 1:
+		var desc_text: String = str(details[details.size() - 1])
+		if desc_text.length() > 0:
+			var desc_lbl: Label = RimvaleUtils.label(desc_text, 11, RimvaleColors.TEXT_GRAY)
+			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			info.add_child(desc_lbl)
+
 	info.add_child(RimvaleUtils.label(category, 11, RimvaleColors.TEXT_GRAY))
 
-	# Price pill right next to action button
+	# Price pill + action on the right, vertically centered
+	var right_col = VBoxContainer.new()
+	right_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	right_col.add_theme_constant_override("separation", 4)
+	row.add_child(right_col)
+
 	var price_pill: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_DARK, RimvaleColors.GOLD, 12, 8)
 	var price_lbl: Label = RimvaleUtils.label("%d g" % price, 14, RimvaleColors.GOLD)
 	price_pill.add_child(price_lbl)
-	row.add_child(price_pill)
+	right_col.add_child(price_pill)
 
 	# Action button (Buy / Sell)
 	var action_btn: Button = RimvaleUtils.chip(action_label, true, 13)
@@ -257,7 +268,7 @@ func _build_item_card(item_name: String, category: String, price: int,
 	action_btn.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
 	action_btn.add_theme_color_override("font_hover_color", RimvaleColors.TEXT_WHITE)
 	action_btn.pressed.connect(on_action)
-	row.add_child(action_btn)
+	right_col.add_child(action_btn)
 
 	return card_p
 

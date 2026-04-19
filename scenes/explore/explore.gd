@@ -623,14 +623,14 @@ func _build_3d_walls() -> void:
 				continue
 
 			var seed_val: int = (x * 73856093) ^ (y * 19349663)
-			var wall_height: float = 2.5
+			var wall_height: float = 1.25
 			var wall_col: Color = _pc("wall", Color(0.18, 0.15, 0.22))
 
 			if t == T_WALL_RICH:
-				wall_height = 3.2
+				wall_height = 1.6
 				wall_col = _pc("wall_rich", Color(0.30, 0.24, 0.38))
 			elif t == T_WALL_POOR:
-				wall_height = 2.0
+				wall_height = 1.0
 				wall_col = _pc("wall_poor", Color(0.14, 0.11, 0.16))
 
 			# Check if this is an edge wall (adjacent to walkable tile)
@@ -665,7 +665,7 @@ func _build_3d_walls() -> void:
 		var cx: float = float(int(r[0])) + float(int(r[2])) * 0.5
 		var cy: float = float(int(r[1])) + float(int(r[3])) * 0.5
 		var wt: int = int(bld["wall_type"])
-		var h: float = 3.5 if wt == T_WALL_RICH else 2.8
+		var h: float = 1.75 if wt == T_WALL_RICH else 1.4
 
 		# Signpost with name
 		var post := MeshInstance3D.new()
@@ -839,7 +839,7 @@ func _build_3d_pois() -> void:
 		light.light_color = _poi_light_color(pt)
 		light.light_energy = 0.8
 		light.omni_range = 3.5
-		light.position = Vector3(wx, 1.5, wz)
+		light.position = Vector3(wx, 0.75, wz)
 		_poi_root.add_child(light)
 
 func _poi_light_color(pt: int) -> Color:
@@ -859,59 +859,59 @@ func _build_poi_rest_house(wx: float, wz: float) -> void:
 	# House body
 	var body := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.7, 0.6, 0.7)
+	bm.size = Vector3(0.7, 0.3, 0.7)
 	body.mesh = bm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.55, 0.45, 0.30)
 	mat.roughness = 0.85
 	body.material_override = mat
-	body.position = Vector3(wx, 0.3, wz)
+	body.position = Vector3(wx, 0.15, wz)
 	_poi_root.add_child(body)
-	# Roof (pyramid via rotated box)
+	# Roof
 	var roof := MeshInstance3D.new()
 	var rm := CylinderMesh.new()
 	rm.top_radius = 0.01
 	rm.bottom_radius = 0.55
-	rm.height = 0.5
+	rm.height = 0.25
 	rm.radial_segments = 4
 	roof.mesh = rm
 	var rmat := StandardMaterial3D.new()
 	rmat.albedo_color = Color(0.35, 0.55, 0.30)
 	rmat.roughness = 0.8
 	roof.material_override = rmat
-	roof.position = Vector3(wx, 0.85, wz)
+	roof.position = Vector3(wx, 0.42, wz)
 	_poi_root.add_child(roof)
 	# Chimney
 	var chimney := MeshInstance3D.new()
 	var chm := BoxMesh.new()
-	chm.size = Vector3(0.1, 0.3, 0.1)
+	chm.size = Vector3(0.1, 0.15, 0.1)
 	chimney.mesh = chm
 	var chmat := StandardMaterial3D.new()
 	chmat.albedo_color = Color(0.40, 0.30, 0.22)
 	chimney.material_override = chmat
-	chimney.position = Vector3(wx + 0.2, 1.05, wz + 0.1)
+	chimney.position = Vector3(wx + 0.2, 0.52, wz + 0.1)
 	_poi_root.add_child(chimney)
 	# Door
 	var door := MeshInstance3D.new()
 	var dm := BoxMesh.new()
-	dm.size = Vector3(0.15, 0.3, 0.02)
+	dm.size = Vector3(0.15, 0.15, 0.02)
 	door.mesh = dm
 	var dmat := StandardMaterial3D.new()
 	dmat.albedo_color = Color(0.30, 0.18, 0.08)
 	door.material_override = dmat
-	door.position = Vector3(wx, 0.15, wz - 0.35)
+	door.position = Vector3(wx, 0.08, wz - 0.35)
 	_poi_root.add_child(door)
 
 func _build_poi_shop(wx: float, wz: float) -> void:
 	# Counter
 	var counter := MeshInstance3D.new()
 	var cm := BoxMesh.new()
-	cm.size = Vector3(0.7, 0.4, 0.35)
+	cm.size = Vector3(0.7, 0.2, 0.35)
 	counter.mesh = cm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.55, 0.40, 0.20)
 	counter.material_override = mat
-	counter.position = Vector3(wx, 0.2, wz)
+	counter.position = Vector3(wx, 0.1, wz)
 	_poi_root.add_child(counter)
 	# Awning
 	var awning := MeshInstance3D.new()
@@ -921,56 +921,56 @@ func _build_poi_shop(wx: float, wz: float) -> void:
 	var amat := StandardMaterial3D.new()
 	amat.albedo_color = Color(0.85, 0.70, 0.20)
 	awning.material_override = amat
-	awning.position = Vector3(wx, 0.85, wz)
+	awning.position = Vector3(wx, 0.425, wz)
 	_poi_root.add_child(awning)
 	# Poles
 	for px in [-0.35, 0.35]:
 		var pole := MeshInstance3D.new()
 		var pm := CylinderMesh.new()
-		pm.top_radius = 0.02; pm.bottom_radius = 0.02; pm.height = 0.85
+		pm.top_radius = 0.02; pm.bottom_radius = 0.02; pm.height = 0.425
 		pole.mesh = pm
 		var pmat := StandardMaterial3D.new()
 		pmat.albedo_color = Color(0.40, 0.30, 0.15)
 		pole.material_override = pmat
-		pole.position = Vector3(wx + px, 0.425, wz - 0.25)
+		pole.position = Vector3(wx + px, 0.2125, wz - 0.25)
 		_poi_root.add_child(pole)
 	# Goods on counter
 	for i in range(3):
 		var good := MeshInstance3D.new()
 		var gm := BoxMesh.new()
-		gm.size = Vector3(0.08, 0.10, 0.08)
+		gm.size = Vector3(0.08, 0.05, 0.08)
 		good.mesh = gm
 		var gmat := StandardMaterial3D.new()
 		gmat.albedo_color = Color.from_hsv(float(i) * 0.3, 0.6, 0.7)
 		good.material_override = gmat
-		good.position = Vector3(wx - 0.2 + float(i) * 0.2, 0.45, wz)
+		good.position = Vector3(wx - 0.2 + float(i) * 0.2, 0.225, wz)
 		_poi_root.add_child(good)
 
 func _build_poi_tavern(wx: float, wz: float) -> void:
 	# Building
 	var body := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.8, 0.7, 0.7)
+	bm.size = Vector3(0.8, 0.35, 0.7)
 	body.mesh = bm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.50, 0.35, 0.18)
 	body.material_override = mat
-	body.position = Vector3(wx, 0.35, wz)
+	body.position = Vector3(wx, 0.175, wz)
 	_poi_root.add_child(body)
 	# Sloped roof
 	var roof := MeshInstance3D.new()
 	var rm := CylinderMesh.new()
-	rm.top_radius = 0.01; rm.bottom_radius = 0.60; rm.height = 0.45; rm.radial_segments = 4
+	rm.top_radius = 0.01; rm.bottom_radius = 0.60; rm.height = 0.225; rm.radial_segments = 4
 	roof.mesh = rm
 	var rmat := StandardMaterial3D.new()
 	rmat.albedo_color = Color(0.55, 0.30, 0.12)
 	roof.material_override = rmat
-	roof.position = Vector3(wx, 0.92, wz)
+	roof.position = Vector3(wx, 0.46, wz)
 	_poi_root.add_child(roof)
 	# Hanging sign
 	var sign := MeshInstance3D.new()
 	var sm := BoxMesh.new()
-	sm.size = Vector3(0.35, 0.2, 0.03)
+	sm.size = Vector3(0.35, 0.1, 0.03)
 	sign.mesh = sm
 	var smat := StandardMaterial3D.new()
 	smat.albedo_color = Color(0.85, 0.55, 0.15)
@@ -978,111 +978,111 @@ func _build_poi_tavern(wx: float, wz: float) -> void:
 	smat.emission = Color(0.85, 0.55, 0.15)
 	smat.emission_energy_multiplier = 0.3
 	sign.material_override = smat
-	sign.position = Vector3(wx + 0.5, 0.6, wz)
+	sign.position = Vector3(wx + 0.5, 0.3, wz)
 	_poi_root.add_child(sign)
 
 func _build_poi_blacksmith(wx: float, wz: float) -> void:
 	# Forge base
 	var forge := MeshInstance3D.new()
 	var fm := BoxMesh.new()
-	fm.size = Vector3(0.5, 0.4, 0.5)
+	fm.size = Vector3(0.5, 0.2, 0.5)
 	forge.mesh = fm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.30, 0.22, 0.18)
 	forge.material_override = mat
-	forge.position = Vector3(wx, 0.2, wz)
+	forge.position = Vector3(wx, 0.1, wz)
 	_poi_root.add_child(forge)
 	# Chimney / smoke stack
 	var stack := MeshInstance3D.new()
 	var sm := CylinderMesh.new()
-	sm.top_radius = 0.15; sm.bottom_radius = 0.18; sm.height = 1.2
+	sm.top_radius = 0.15; sm.bottom_radius = 0.18; sm.height = 0.6
 	stack.mesh = sm
 	var smat := StandardMaterial3D.new()
 	smat.albedo_color = Color(0.25, 0.18, 0.14)
 	stack.material_override = smat
-	stack.position = Vector3(wx + 0.15, 0.6, wz + 0.15)
+	stack.position = Vector3(wx + 0.15, 0.3, wz + 0.15)
 	_poi_root.add_child(stack)
 	# Fire glow inside forge
 	var fire_light := OmniLight3D.new()
 	fire_light.light_color = Color(1.0, 0.55, 0.15)
 	fire_light.light_energy = 1.2
 	fire_light.omni_range = 2.5
-	fire_light.position = Vector3(wx, 0.3, wz)
+	fire_light.position = Vector3(wx, 0.15, wz)
 	_poi_root.add_child(fire_light)
 	# Anvil
 	var anvil := MeshInstance3D.new()
 	var am := BoxMesh.new()
-	am.size = Vector3(0.18, 0.2, 0.12)
+	am.size = Vector3(0.18, 0.1, 0.12)
 	anvil.mesh = am
 	var amat := StandardMaterial3D.new()
 	amat.albedo_color = Color(0.35, 0.35, 0.38)
 	amat.metallic = 0.6
 	amat.roughness = 0.4
 	anvil.material_override = amat
-	anvil.position = Vector3(wx - 0.3, 0.1, wz - 0.2)
+	anvil.position = Vector3(wx - 0.3, 0.05, wz - 0.2)
 	_poi_root.add_child(anvil)
 
 func _build_poi_library(wx: float, wz: float) -> void:
 	# Tall building
 	var body := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.65, 1.0, 0.65)
+	bm.size = Vector3(0.65, 0.5, 0.65)
 	body.mesh = bm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.35, 0.32, 0.50)
 	body.material_override = mat
-	body.position = Vector3(wx, 0.5, wz)
+	body.position = Vector3(wx, 0.25, wz)
 	_poi_root.add_child(body)
 	# Dome top
 	var dome := MeshInstance3D.new()
 	var dm := SphereMesh.new()
-	dm.radius = 0.35; dm.height = 0.4
+	dm.radius = 0.35; dm.height = 0.2
 	dome.mesh = dm
 	var dmat := StandardMaterial3D.new()
 	dmat.albedo_color = Color(0.25, 0.50, 0.65)
 	dmat.metallic = 0.2
 	dome.material_override = dmat
-	dome.position = Vector3(wx, 1.15, wz)
+	dome.position = Vector3(wx, 0.575, wz)
 	_poi_root.add_child(dome)
 	# Window glow
 	var glow := OmniLight3D.new()
 	glow.light_color = Color(0.30, 0.65, 0.90)
 	glow.light_energy = 0.6
 	glow.omni_range = 2.0
-	glow.position = Vector3(wx, 0.6, wz - 0.35)
+	glow.position = Vector3(wx, 0.3, wz - 0.35)
 	_poi_root.add_child(glow)
 
 func _build_poi_bounty_board(wx: float, wz: float) -> void:
 	# Post
 	var post := MeshInstance3D.new()
 	var pm := CylinderMesh.new()
-	pm.top_radius = 0.04; pm.bottom_radius = 0.04; pm.height = 1.0
+	pm.top_radius = 0.04; pm.bottom_radius = 0.04; pm.height = 0.5
 	post.mesh = pm
 	var pmat := StandardMaterial3D.new()
 	pmat.albedo_color = Color(0.40, 0.30, 0.18)
 	post.material_override = pmat
-	post.position = Vector3(wx, 0.5, wz)
+	post.position = Vector3(wx, 0.25, wz)
 	_poi_root.add_child(post)
 	# Board
 	var board := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.6, 0.5, 0.05)
+	bm.size = Vector3(0.6, 0.25, 0.05)
 	board.mesh = bm
 	var bmat := StandardMaterial3D.new()
 	bmat.albedo_color = Color(0.55, 0.42, 0.22)
 	board.material_override = bmat
-	board.position = Vector3(wx, 0.85, wz)
+	board.position = Vector3(wx, 0.425, wz)
 	_poi_root.add_child(board)
 	# Paper notices
 	for i in range(3):
 		var paper := MeshInstance3D.new()
 		var nm := BoxMesh.new()
-		nm.size = Vector3(0.12, 0.15, 0.005)
+		nm.size = Vector3(0.12, 0.075, 0.005)
 		paper.mesh = nm
 		var nmat := StandardMaterial3D.new()
 		nmat.albedo_color = Color(0.90, 0.85, 0.70)
 		paper.material_override = nmat
-		paper.position = Vector3(wx - 0.15 + float(i) * 0.15, 0.85 + float(i % 2) * 0.08, wz - 0.028)
+		paper.position = Vector3(wx - 0.15 + float(i) * 0.15, 0.425 + float(i % 2) * 0.04, wz - 0.028)
 		paper.rotation.z = (float(i) - 1.0) * 0.1
 		_poi_root.add_child(paper)
 
@@ -1090,19 +1090,19 @@ func _build_poi_fountain(wx: float, wz: float) -> void:
 	# Basin
 	var basin := MeshInstance3D.new()
 	var bm := CylinderMesh.new()
-	bm.top_radius = 0.40; bm.bottom_radius = 0.45; bm.height = 0.3
+	bm.top_radius = 0.40; bm.bottom_radius = 0.45; bm.height = 0.15
 	basin.mesh = bm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.50, 0.48, 0.52)
 	mat.roughness = 0.5
 	mat.metallic = 0.15
 	basin.material_override = mat
-	basin.position = Vector3(wx, 0.15, wz)
+	basin.position = Vector3(wx, 0.075, wz)
 	_poi_root.add_child(basin)
 	# Water inside
 	var water := MeshInstance3D.new()
 	var wm := CylinderMesh.new()
-	wm.top_radius = 0.35; wm.bottom_radius = 0.35; wm.height = 0.08
+	wm.top_radius = 0.35; wm.bottom_radius = 0.35; wm.height = 0.04
 	water.mesh = wm
 	var wmat := StandardMaterial3D.new()
 	wmat.albedo_color = Color(0.20, 0.45, 0.70, 0.7)
@@ -1110,59 +1110,59 @@ func _build_poi_fountain(wx: float, wz: float) -> void:
 	wmat.metallic = 0.5
 	wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	water.material_override = wmat
-	water.position = Vector3(wx, 0.26, wz)
+	water.position = Vector3(wx, 0.13, wz)
 	_poi_root.add_child(water)
 	# Center spout
 	var spout := MeshInstance3D.new()
 	var sm := CylinderMesh.new()
-	sm.top_radius = 0.03; sm.bottom_radius = 0.06; sm.height = 0.6
+	sm.top_radius = 0.03; sm.bottom_radius = 0.06; sm.height = 0.3
 	spout.mesh = sm
 	var smat := StandardMaterial3D.new()
 	smat.albedo_color = Color(0.55, 0.52, 0.56)
 	smat.metallic = 0.3
 	spout.material_override = smat
-	spout.position = Vector3(wx, 0.45, wz)
+	spout.position = Vector3(wx, 0.225, wz)
 	_poi_root.add_child(spout)
 	# Water light
 	var wl := OmniLight3D.new()
 	wl.light_color = Color(0.25, 0.50, 0.85)
 	wl.light_energy = 0.5
 	wl.omni_range = 2.0
-	wl.position = Vector3(wx, 0.4, wz)
+	wl.position = Vector3(wx, 0.2, wz)
 	_poi_root.add_child(wl)
 
 func _build_poi_acf(wx: float, wz: float) -> void:
 	# Larger building
 	var body := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.8, 0.8, 0.8)
+	bm.size = Vector3(0.8, 0.4, 0.8)
 	body.mesh = bm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.28, 0.22, 0.42)
 	body.material_override = mat
-	body.position = Vector3(wx, 0.4, wz)
+	body.position = Vector3(wx, 0.2, wz)
 	_poi_root.add_child(body)
 	# Flat roof with antenna
 	var roof := MeshInstance3D.new()
 	var rm := BoxMesh.new()
-	rm.size = Vector3(0.85, 0.06, 0.85)
+	rm.size = Vector3(0.85, 0.03, 0.85)
 	roof.mesh = rm
 	var rmat := StandardMaterial3D.new()
 	rmat.albedo_color = Color(0.35, 0.28, 0.50)
 	rmat.metallic = 0.1
 	roof.material_override = rmat
-	roof.position = Vector3(wx, 0.83, wz)
+	roof.position = Vector3(wx, 0.415, wz)
 	_poi_root.add_child(roof)
 	# Antenna
 	var ant := MeshInstance3D.new()
 	var am := CylinderMesh.new()
-	am.top_radius = 0.01; am.bottom_radius = 0.02; am.height = 0.5
+	am.top_radius = 0.01; am.bottom_radius = 0.02; am.height = 0.25
 	ant.mesh = am
 	var amat := StandardMaterial3D.new()
 	amat.albedo_color = Color(0.50, 0.50, 0.55)
 	amat.metallic = 0.5
 	ant.material_override = amat
-	ant.position = Vector3(wx + 0.25, 1.1, wz - 0.2)
+	ant.position = Vector3(wx + 0.25, 0.55, wz - 0.2)
 	_poi_root.add_child(ant)
 	# Emblem glow
 	var emblem := MeshInstance3D.new()
@@ -1175,7 +1175,7 @@ func _build_poi_acf(wx: float, wz: float) -> void:
 	emat.emission = Color(0.50, 0.30, 0.85)
 	emat.emission_energy_multiplier = 1.5
 	emblem.material_override = emat
-	emblem.position = Vector3(wx, 0.65, wz - 0.41)
+	emblem.position = Vector3(wx, 0.325, wz - 0.41)
 	_poi_root.add_child(emblem)
 
 func _build_poi_exit_gate(wx: float, wz: float) -> void:
@@ -1183,24 +1183,24 @@ func _build_poi_exit_gate(wx: float, wz: float) -> void:
 	for px in [-0.25, 0.25]:
 		var pillar := MeshInstance3D.new()
 		var pm := BoxMesh.new()
-		pm.size = Vector3(0.15, 1.4, 0.15)
+		pm.size = Vector3(0.15, 0.7, 0.15)
 		pillar.mesh = pm
 		var pmat := StandardMaterial3D.new()
 		pmat.albedo_color = Color(0.45, 0.42, 0.48)
 		pmat.roughness = 0.6
 		pillar.material_override = pmat
-		pillar.position = Vector3(wx + px, 0.7, wz)
+		pillar.position = Vector3(wx + px, 0.35, wz)
 		_poi_root.add_child(pillar)
 	# Arch top
 	var arch := MeshInstance3D.new()
 	var am := BoxMesh.new()
-	am.size = Vector3(0.65, 0.12, 0.18)
+	am.size = Vector3(0.65, 0.06, 0.18)
 	arch.mesh = am
 	var amat := StandardMaterial3D.new()
 	amat.albedo_color = Color(0.48, 0.45, 0.52)
 	amat.roughness = 0.6
 	arch.material_override = amat
-	arch.position = Vector3(wx, 1.35, wz)
+	arch.position = Vector3(wx, 0.675, wz)
 	_poi_root.add_child(arch)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1214,24 +1214,6 @@ func _build_3d_entities() -> void:
 	_player_node = _create_entity_model(0, handles, true)
 	_player_node.position = _player_world_pos
 	_entity_root.add_child(_player_node)
-
-	# Selection ring
-	var ring := MeshInstance3D.new()
-	var tm := TorusMesh.new()
-	tm.inner_radius = 0.30
-	tm.outer_radius = 0.42
-	tm.rings = 12
-	tm.ring_segments = 16
-	ring.mesh = tm
-	var rmat := StandardMaterial3D.new()
-	rmat.albedo_color = Color(0.95, 0.80, 0.20)
-	rmat.emission_enabled = true
-	rmat.emission = Color(0.95, 0.80, 0.20)
-	rmat.emission_energy_multiplier = 1.5
-	ring.material_override = rmat
-	ring.position = Vector3(0, 0.02, 0)
-	ring.rotation.x = -PI * 0.5
-	_player_node.add_child(ring)
 
 	# Followers
 	_follower_nodes.clear()
