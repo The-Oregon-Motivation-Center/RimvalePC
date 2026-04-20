@@ -133,6 +133,9 @@ var story_shown_contacts: Array = []
 var current_region: String = "plains"
 ## Currently-focused sub-region (name from _LINEAGE_REGIONS), or "" for region-view.
 var current_subregion: String = ""
+## Saved explore position so player returns to same tile after dungeon
+var explore_return_pos: Vector2i = Vector2i(-1, -1)
+var explore_return_active: bool = false
 ## Major region ids the party has visited at least once.
 var visited_regions: Array = []
 ## Sub-region names the party has visited at least once.

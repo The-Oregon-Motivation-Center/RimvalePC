@@ -133,7 +133,12 @@ func _ready() -> void:
 	_terrain_style = int(_map_data.get("terrain_style", 3))
 	_encounter_rate = float(_map_data.get("encounter_rate", 0.18))
 	_encounter_guarantee = int(_map_data.get("encounter_guarantee", 8))
-	_player_pos = _map_data.get("player_spawn", Vector2i(15, 19))
+	# Use saved return position if coming back from a dungeon, otherwise use map spawn
+	if GameState.explore_return_active:
+		_player_pos = GameState.explore_return_pos
+		GameState.explore_return_active = false
+	else:
+		_player_pos = _map_data.get("player_spawn", Vector2i(15, 19))
 
 	var handles: Array = GameState.get_active_handles()
 	_trail_max = maxi(0, handles.size() - 1)
@@ -161,6 +166,8 @@ func _process(delta: float) -> void:
 			_move_lerp_t = 1.0
 			_player_moving = false
 			_player_world_pos = _player_target_pos
+			# If a direction key is still held, immediately start the next move
+			_poll_held_direction()
 		else:
 			_player_world_pos = _player_world_pos.lerp(_player_target_pos, _move_lerp_t)
 		_update_player_3d_pos()
@@ -1681,6 +1688,22 @@ func _unhandled_input(event: InputEvent) -> void:
 			if vp != null:
 				vp.set_input_as_handled()
 
+## Check if a direction key is currently held and start moving if so.
+func _poll_held_direction() -> void:
+	var raw_dir := Vector2.ZERO
+	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		raw_dir = Vector2(0, -1)
+	elif Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		raw_dir = Vector2(0, 1)
+	elif Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		raw_dir = Vector2(-1, 0)
+	elif Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		raw_dir = Vector2(1, 0)
+	if raw_dir != Vector2.ZERO:
+		var dir: Vector2i = _camera_relative_dir(raw_dir)
+		if dir != Vector2i.ZERO:
+			_try_move(dir)
+
 ## Convert a raw input direction into a grid direction relative to camera yaw.
 ## Camera yaw 0° means camera looks from +Z toward origin (south-facing),
 ## so "forward" (0,-1) maps to grid north. As yaw rotates, directions rotate too.
@@ -1808,6 +1831,10 @@ func _trigger_encounter() -> void:
 
 	var base_level: int = maxi(1, GameState.player_level)
 	var enemy_level: int = clampi(base_level + randi_range(-1, 1), 1, 15)
+
+	# Save player position so we return to this tile after dungeon
+	GameState.explore_return_pos = _player_pos
+	GameState.explore_return_active = true
 
 	RimvaleAPI.engine.start_dungeon(handles, enemy_level, 0, _terrain_style)
 	if GameState.recruited_allies.size() > 0:
@@ -2380,6 +2407,10 @@ func _launch_bounty(terrain: int, gold_reward: int) -> void:
 	var enemy_level: int = clampi(base_level + randi_range(0, 2), 1, 15)
 	GameState.earn_gold(gold_reward)
 	GameState.save_game()
+
+	# Save player position so we return to this tile after dungeon
+	GameState.explore_return_pos = _player_pos
+	GameState.explore_return_active = true
 
 	RimvaleAPI.engine.start_dungeon(handles, enemy_level, 0, terrain)
 	if GameState.recruited_allies.size() > 0:

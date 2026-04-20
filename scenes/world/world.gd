@@ -475,7 +475,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "plains", "name": "The Plains",
 		"flavor": "Rolling grasslands and the cradle of civilization.",
 		"icon": "🌾",
-		"pos": Vector2(0.70, 0.36),
+		"pos": Vector2(0.70, 0.40),
 		"accent": Color(0.60, 0.85, 0.35, 1.0),
 		"badge": "Plains Badge",
 		"subregions": ["The Plains", "Forest of SubEden", "Kingdom of Qunorum", "Wilds of Endero", "House of Arachana", "Eternal Library"],
@@ -498,7 +498,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "peaks", "name": "The Peaks of Isolation",
 		"flavor": "Windswept spires that swallow names whole.",
 		"icon": "🏔",
-		"pos": Vector2(0.42, 0.10),
+		"pos": Vector2(0.35, 0.14),
 		"accent": Color(0.75, 0.85, 0.95, 1.0),
 		"badge": "Peaks of Isolation Badge",
 		"subregions": ["Peaks of Isolation", "Pharaoh's Den", "The Darkness", "Arcane Collapse", "Argent Hall"],
@@ -540,7 +540,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "glass", "name": "The Glass Passage",
 		"flavor": "A mirror-lined corridor where reflection is a weapon.",
 		"icon": "🪞",
-		"pos": Vector2(0.15, 0.28),
+		"pos": Vector2(0.15, 0.40),
 		"accent": Color(0.75, 0.95, 1.00, 1.0),
 		"badge": "Glass Passage Badge",
 		"subregions": ["Glass Passage", "Sacral Separation", "Infernal Machine"],
@@ -557,10 +557,10 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "isles", "name": "The Isles",
 		"flavor": "Salt-kissed archipelagos and drowned workshops.",
 		"icon": "🏝",
-		"pos": Vector2(0.24, 0.80),
+		"pos": Vector2(0.24, 0.90),
 		"accent": Color(0.20, 0.75, 0.85, 1.0),
 		"badge": "Isles Badge",
-		"subregions": ["The Isles", "Depths of Denorim", "Gloamfen Hollow", "Moroboros"],
+		"subregions": ["Gloamfen Hollow", "The Isles", "Depths of Denorim", "Moroboros"],
 		"acf": [
 			["acf-isles-harbor", "Tiderunner Harbor", "The Isles",
 				"Our floating dock-yard. Smugglers run Enclave cores past the blockade nightly.", 120, false],
@@ -631,7 +631,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "titans", "name": "The Titan's Lament",
 		"flavor": "Volcanic scar where ancient giants wept iron.",
 		"icon": "🌋",
-		"pos": Vector2(0.13, 0.52),
+		"pos": Vector2(0.13, 0.64),
 		"accent": Color(0.95, 0.50, 0.30, 1.0),
 		"badge": "Titan's Lament Badge",
 		"subregions": ["Titan's Lament", "Vulcan Valley", "Mortal Arena"],
@@ -4575,8 +4575,8 @@ func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
 	var final_col: Color = col.lerp(col_hi, col_t * 0.4)
 
 	# ── Water channels ──────────────────────────────────────────────────────
-	# 1. Horizontal channel: mainland (y<0.60) vs southern islands (y>0.68)
-	var ch1_dist: float = absf(uv_z - 0.64)
+	# 1. Horizontal channel: western islands (Titans) vs southern islands (Isles)
+	var ch1_dist: float = absf(uv_z - 0.77)
 	if ch1_dist < 0.06 and best_dist > 0.10:
 		var ch1_t: float = (1.0 - clampf(ch1_dist / 0.06, 0.0, 1.0)) * 0.90
 		height = lerpf(height, -0.6, ch1_t)
@@ -4584,19 +4584,18 @@ func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
 
 	# 2. Vertical channel: western islands (Glass/Titans x<0.30) vs mainland (x>0.44)
 	#    Only applies in the mainland latitude band (y 0.15 to 0.58)
-	if uv_z > 0.12 and uv_z < 0.60:
+	if uv_z > 0.12 and uv_z < 0.72:
 		var ch2_dist: float = absf(uv_x - 0.33)
 		if ch2_dist < 0.24 and best_dist > 0.08:
 			var ch2_t: float = (1.0 - clampf(ch2_dist / 0.24, 0.0, 1.0)) * 0.85
 			height = lerpf(height, -0.6, ch2_t)
 			final_col = final_col.lerp(ocean_col, ch2_t)
 
-	# 3. Channel isolating Terminus Volarus (northeast island, x>0.74, y<0.22)
-	if uv_x > 0.68 and uv_z < 0.28:
-		# Diagonal water channel running from ~(0.74, 0.02) to ~(0.74, 0.24)
+	# 3. Channel isolating Terminus Volarus (northeast island, x>0.78, y<0.28)
+	if uv_x > 0.62 and uv_z < 0.32:
 		var ch3_dist: float = absf(uv_x - 0.74)
-		if ch3_dist < 0.05 and best_dist > 0.08:
-			var ch3_t: float = (1.0 - clampf(ch3_dist / 0.05, 0.0, 1.0)) * 0.85
+		if ch3_dist < 0.10 and best_dist > 0.08:
+			var ch3_t: float = (1.0 - clampf(ch3_dist / 0.10, 0.0, 1.0)) * 0.85
 			height = lerpf(height, -0.6, ch3_t)
 			final_col = final_col.lerp(ocean_col, ch3_t)
 
@@ -4625,15 +4624,25 @@ func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
 
 	# Continent edge fade to ocean
 	var edge_x: float = 1.0 - absf(uv_x - 0.5) * 2.3
-	var edge_z: float = 1.0 - absf(uv_z - 0.5) * 2.3
+	var edge_z: float = 1.0 - absf(uv_z - 0.5) * 2.0
 	var continent: float = clampf(minf(edge_x, edge_z), -0.5, 1.0)
 	if continent < 0.25:
 		var ocean_t: float = 1.0 - clampf(continent / 0.25, 0.0, 1.0)
 		height = lerpf(height, -0.6, ocean_t)
 		final_col = final_col.lerp(ocean_col, ocean_t)
 
-	# Too far from any region → ocean (Metro has 65% land radius)
-	var ocean_thresh: float = 0.09 if best_id == "metro" else 0.18
+	# Too far from any region → ocean (per-region land radii)
+	var ocean_thresh: float = 0.18
+	if best_id == "metro":
+		ocean_thresh = 0.09
+	elif best_id == "shadows":
+		ocean_thresh = 0.24
+	elif best_id == "terminus":
+		ocean_thresh = 0.23
+	elif best_id == "peaks":
+		ocean_thresh = 0.28
+	elif best_id == "plains":
+		ocean_thresh = 0.15
 	if best_dist > ocean_thresh:
 		var far_t: float = clampf((best_dist - ocean_thresh) / 0.08, 0.0, 1.0)
 		height = lerpf(height, -0.6, far_t)
@@ -5115,7 +5124,7 @@ func _ow_on_map_input(event: InputEvent) -> void:
 			# Project to XZ plane
 			right.y = 0; right = right.normalized()
 			forward.y = 0; forward = forward.normalized()
-			var offset: Vector3 = -right * delta.x * speed + forward * delta.y * speed
+			var offset: Vector3 = -right * delta.x * speed - forward * delta.y * speed
 			_ow_camera.position += offset
 			_ow_cam_look_target += offset
 			_ow_camera.look_at(_ow_cam_look_target, Vector3.UP)

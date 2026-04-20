@@ -18,7 +18,9 @@ const TAB_LABELS = ["⚔ Units", "🌍 World", "🛒 Shop", "📖 Codex", "👤 
 var _content_area: Control
 var _tab_buttons: Array = []
 var _current_scene: Node = null
+var _current_scene_path: String = ""
 var _nav_bar: Control
+var _screen_stack: Array = []   # stack of pushed screen paths for pop_screen()
 
 # Screens that hide the nav bar (full-screen takeover)
 var _hide_nav_scenes = [
@@ -109,6 +111,7 @@ func _update_tab_highlight() -> void:
 
 func _switch_tab(idx: int) -> void:
 	GameState.current_tab = idx
+	_screen_stack.clear()
 	_update_tab_highlight()
 	_load_scene(TAB_SCENES[idx])
 
@@ -124,6 +127,7 @@ func _load_scene(path: String) -> void:
 		return
 
 	_current_scene = packed.instantiate()
+	_current_scene_path = path
 	_current_scene.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_content_area.add_child(_current_scene)
 
@@ -135,12 +139,24 @@ func _load_scene(path: String) -> void:
 
 ## Navigate to a named full-screen overlay (hides nav bar).
 func push_screen(path: String) -> void:
+	# Remember what screen we came from so pop_screen can return to it
+	if _current_scene_path != "":
+		_screen_stack.append(_current_scene_path)
 	_load_scene(path)
 
-## Return to current tab.
+## Return to the previous screen (or current tab if stack is empty).
 func pop_screen() -> void:
-	_load_scene(TAB_SCENES[GameState.current_tab])
-	_nav_bar.visible = true
+	if _screen_stack.size() > 0:
+		var prev: String = _screen_stack.pop_back()
+		_load_scene(prev)
+	else:
+		_load_scene(TAB_SCENES[GameState.current_tab])
+		_nav_bar.visible = true
+
+## Navigate directly to a specific scene, clearing the screen stack.
+func go_to_scene(path: String) -> void:
+	_screen_stack.clear()
+	_load_scene(path)
 
 ## Switch to a specific tab by index.
 func go_to_tab(idx: int) -> void:

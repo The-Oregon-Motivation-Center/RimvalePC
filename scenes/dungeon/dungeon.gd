@@ -774,7 +774,7 @@ func _build_victory_modal() -> void:
 	inner.add_child(_modal_body)
 
 	_modal_btn = Button.new()
-	_modal_btn.text = "Return to Hub"
+	_modal_btn.text = "Back to Map"
 	_modal_btn.add_theme_font_size_override("font_size", 16)
 	_modal_btn.custom_minimum_size = Vector2(180, 40)
 	_modal_btn.pressed.connect(_on_back)
@@ -844,12 +844,12 @@ func _show_outcome_modal(result: String) -> void:
 			"XP Earned: %d\nGold: +%d\n\nLoot added to stash:\n%s%s%s" % [
 				total_xp, total_gold, item_str, quest_str, level_up_str]
 		)
-		_modal_btn.text = "Return to Hub"
+		_modal_btn.text = "Back to Map"
 	else:
 		_modal_title.text = "✗  DEFEAT"
 		_modal_title.add_theme_color_override("font_color", Color(0.85, 0.20, 0.15))
 		_modal_body.text = "Your party has fallen.\nAll players have been defeated."
-		_modal_btn.text  = "Return to Hub"
+		_modal_btn.text  = "Back to Map"
 		# Still clear the active quest on defeat (no rewards)
 		GameState.clear_active_dungeon_quest()
 
@@ -1627,7 +1627,7 @@ func _build_header() -> Control:
 	hbox.add_child(_spacer_h(8))
 
 	_btn_back = Button.new()
-	_btn_back.text = "← Hub"
+	_btn_back.text = "← Back to Map"
 	_btn_back.add_theme_font_size_override("font_size", 14)
 	_btn_back.pressed.connect(_on_back)
 	hbox.add_child(_btn_back)
@@ -4380,15 +4380,10 @@ func _on_back() -> void:
 	var combat_victory: bool = (_outcome == "victory")
 	_e.end_dungeon()
 	GameState.save_game()   # persist character HP, gold etc. earned in dungeon
-	# Navigate back through the main scene shell so the bottom nav bar is restored.
-	var main = get_parent().get_parent() if get_parent() else null
-	if main and main.has_method("pop_screen"):
-		main.pop_screen()
-		# If returning from story combat, notify the world scene
-		if was_story_combat:
-			call_deferred("_notify_story_combat_result", main, combat_victory)
-	else:
-		get_tree().change_scene_to_file("res://scenes/main/main.tscn")
+
+	# Return to the explore map — region/subregion already set in GameState
+	# Do NOT call travel_to_region (it clears subregion)
+	get_tree().change_scene_to_file("res://scenes/explore/explore.tscn")
 
 func _notify_story_combat_result(main_node: Node, victory: bool) -> void:
 	# The world scene is now the active child of main's content area.
