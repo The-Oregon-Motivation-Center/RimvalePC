@@ -1,27 +1,38 @@
-#pragma once
-// Cross-platform replacement for Android's AndroidOut.h
-// Used when building outside of Android (GDExtension, PC, macOS, iOS, etc.)
-// The interface is identical so engine source files compile unchanged.
-
 #ifndef ANDROIDGLINVESTIGATIONS_ANDROIDOUT_H
 #define ANDROIDGLINVESTIGATIONS_ANDROIDOUT_H
 
-#include <iostream>
+#include <android/log.h>
 #include <sstream>
 
+/*!
+ * Use this to log strings out to logcat. Note that you should use std::endl to commit the line
+ *
+ * ex:
+ *  aout << "Hello World" << std::endl;
+ */
 extern std::ostream aout;
 
-class AndroidOut : public std::stringbuf {
+/*!
+ * Use this class to create an output stream that writes to logcat. By default, a global one is
+ * defined as @a aout
+ */
+class AndroidOut: public std::stringbuf {
 public:
-    inline AndroidOut(const char* kLogTag) : logTag_(kLogTag) {}
+    /*!
+     * Creates a new output stream for logcat
+     * @param kLogTag the log tag to output
+     */
+    inline AndroidOut(const char* kLogTag) : logTag_(kLogTag){}
+
 protected:
     virtual int sync() override {
-        std::cout << "[" << logTag_ << "] " << str() << std::flush;
+        __android_log_print(ANDROID_LOG_DEBUG, logTag_, "%s", str().c_str());
         str("");
         return 0;
     }
+
 private:
     const char* logTag_;
 };
 
-#endif // ANDROIDGLINVESTIGATIONS_ANDROIDOUT_H
+#endif //ANDROIDGLINVESTIGATIONS_ANDROIDOUT_H

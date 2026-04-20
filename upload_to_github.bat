@@ -21,7 +21,7 @@ if errorlevel 1 (
 
 echo.
 set /p COMMIT_MSG="Enter commit message (or press Enter for default): "
-if "%COMMIT_MSG%"=="" set COMMIT_MSG=Dungeon exits return to region map, held-key continuous movement, world map shape tuning
+if "%COMMIT_MSG%"=="" set COMMIT_MSG=Add Create Construct spell with full builder UI, equipment sets, structures, dismiss/recall/reform actions
 
 echo.
 echo Committing with message: %COMMIT_MSG%
