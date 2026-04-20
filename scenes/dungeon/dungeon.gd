@@ -210,7 +210,6 @@ var _sb_pending_action: Dictionary = {}
 var _sb_stats: Array = [0, 0, 0, 0, 0]  # STR, SPD, INT, VIT, DIV
 var _sb_feats: Dictionary = {}
 var _sb_abilities: Array = []
-var _sb_name: String = "Construct"
 var _sb_cost_lbl: Label = null
 
 # Create Construct builder state
