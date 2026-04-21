@@ -13,6 +13,13 @@ const SKILL_NAMES: PackedStringArray = [
 ]
 const STAT_NAMES: PackedStringArray = ["Strength", "Speed", "Intellect", "Vitality", "Divinity"]
 const STAT_ICONS: PackedStringArray = ["💪", "⚡", "🧠", "❤", "✦"]
+const STAT_ABBREVS: PackedStringArray = ["STR", "SPD", "INT", "VIT", "DIV"]
+# Governing stat index for each skill (same order as SKILL_NAMES)
+const SKILL_STAT: PackedInt32Array = [
+	4, 2, 0, 1, 0,   # Arcane(DIV), Crafting(INT), CreatureHandling(STR), Cunning(SPD), Exertion(STR)
+	4, 2, 2, 1, 3,   # Intuition(DIV), Learnedness(INT), Medical(INT), Nimble(SPD), Perception(VIT)
+	4, 1, 4, 3        # Perform(DIV), Sneak(SPD), Speechcraft(DIV), Survival(VIT)
+]
 const SECTION_TITLES: PackedStringArray = ["Stats", "Skills", "Feats", "Magic", "Identity", "Equipment", "Lineage"]
 const DOMAIN_FEAT_NAMES: PackedStringArray = ["Rooted Initiate", "Alchemical Adept", "Ember Manipulator", "Whispering Mind"]
 const DOMAIN_NAMES: PackedStringArray = ["Biological", "Chemical", "Physical", "Spiritual"]
@@ -334,39 +341,45 @@ func _build_stats(parent: VBoxContainer) -> void:
 
 		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
-		row.custom_minimum_size = Vector2(0, 52)
+		row.custom_minimum_size = Vector2(0, 40)
 		parent.add_child(row)
 
-		# Icon + name
-		var info = VBoxContainer.new()
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		info.add_theme_constant_override("separation", 2)
-		row.add_child(info)
-		info.add_child(RimvaleUtils.label(STAT_ICONS[i] + " " + stat_name, 15, RimvaleColors.TEXT_WHITE))
-		info.add_child(RimvaleUtils.label(stat_descs[i], 11, RimvaleColors.TEXT_DIM))
+		# Icon + name + description (compact, no expand)
+		var name_lbl = RimvaleUtils.label(STAT_ICONS[i] + " " + stat_name, 15, RimvaleColors.TEXT_WHITE)
+		name_lbl.custom_minimum_size = Vector2(130, 0)
+		row.add_child(name_lbl)
+
+		var desc_lbl = RimvaleUtils.label(stat_descs[i], 11, RimvaleColors.TEXT_DIM)
+		desc_lbl.custom_minimum_size = Vector2(160, 0)
+		row.add_child(desc_lbl)
 
 		# Confirmed value (gray) + pending (highlighted if changed)
 		var val_lbl: Label
 		if pending > confirmed:
 			val_lbl = RimvaleUtils.label("%d → %d" % [confirmed, pending], 17, Color(0.30, 0.69, 0.31))
 		else:
-			val_lbl = RimvaleUtils.label(str(confirmed), 20, RimvaleColors.ACCENT)
-		val_lbl.custom_minimum_size = Vector2(60, 0)
+			val_lbl = RimvaleUtils.label(str(confirmed), 18, RimvaleColors.ACCENT)
+		val_lbl.custom_minimum_size = Vector2(54, 0)
 		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		row.add_child(val_lbl)
 		_stat_val_lbls[stat_name] = val_lbl
 
 		# Decrement button
-		var minus_btn = RimvaleUtils.button("−", RimvaleColors.TEXT_GRAY, 40, 16)
-		minus_btn.custom_minimum_size = Vector2(36, 0)
+		var minus_btn = RimvaleUtils.button("−", RimvaleColors.TEXT_GRAY, 38, 15)
+		minus_btn.custom_minimum_size = Vector2(34, 0)
 		minus_btn.pressed.connect(func(): _decrement_stat(stat_name))
 		row.add_child(minus_btn)
 
 		# Increment button
-		var plus_btn = RimvaleUtils.button("+", RimvaleColors.SUCCESS, 40, 16)
-		plus_btn.custom_minimum_size = Vector2(36, 0)
+		var plus_btn = RimvaleUtils.button("+", RimvaleColors.SUCCESS, 38, 15)
+		plus_btn.custom_minimum_size = Vector2(34, 0)
 		plus_btn.pressed.connect(func(): _increment_stat(stat_name, stat_idx))
 		row.add_child(plus_btn)
+
+		# Push remaining space to the right (keeps controls compact on the left)
+		var row_spacer = Control.new()
+		row_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(row_spacer)
 
 func _increment_stat(stat_name: String, stat_idx: int) -> void:
 	var pending: int = _pending_stats.get(stat_name, 0)
@@ -496,10 +509,11 @@ func _build_skills(parent: VBoxContainer) -> void:
 		)
 		row.add_child(fav_btn)
 
-		# Skill name
-		var name_lbl = RimvaleUtils.label(skill_name, 14,
+		# Skill name with governing stat abbreviation
+		var stat_tag: String = STAT_ABBREVS[SKILL_STAT[i]]
+		var name_lbl = RimvaleUtils.label("%s (%s)" % [skill_name, stat_tag], 14,
 			Color(0.91, 0.12, 0.39) if is_fav else RimvaleColors.TEXT_WHITE)
-		name_lbl.custom_minimum_size = Vector2(140, 0)
+		name_lbl.custom_minimum_size = Vector2(170, 0)
 		row.add_child(name_lbl)
 
 		# Value label
@@ -746,10 +760,22 @@ func _build_feat_card(feat_name: String, tier: int, category: String, tree_name:
 	title_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(title_row)
 
+	# For domain feats, show the tier-specific name (e.g. "Verdant Channeler" at T2)
+	var display_name: String = feat_name
+	var feat_entry: Dictionary = _e.get_feat_registry_entry(feat_name) if _e.has_method("get_feat_registry_entry") else {}
+	if feat_entry.has("tier_names"):
+		var current_tier: int = _e.get_character_feat_tier(_handle, feat_name) if is_unlocked else tier
+		var tn: Dictionary = feat_entry["tier_names"]
+		if tn.has(current_tier):
+			display_name = str(tn[current_tier])
+		# Show domain name as subtitle
+		if feat_entry.has("domain"):
+			tree_name = str(feat_entry["domain"]) + " Domain"
+
 	var status_mark: String = "✓ " if is_unlocked else ("○ " if can_unlock else "✗ ")
 	var name_col: Color = Color(0.30, 0.69, 0.31) if is_unlocked else \
 		(RimvaleColors.TEXT_WHITE if can_unlock else RimvaleColors.TEXT_DIM)
-	var name_lbl = RimvaleUtils.label(status_mark + feat_name, 14, name_col)
+	var name_lbl = RimvaleUtils.label(status_mark + display_name, 14, name_col)
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_row.add_child(name_lbl)
 
@@ -1771,7 +1797,7 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 		parent.add_child(row)
 
 		var info = VBoxContainer.new()
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.custom_minimum_size = Vector2(220, 0)
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
 
@@ -1798,6 +1824,10 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 			_render_section()
 		)
 		row.add_child(stash_btn)
+
+		var row_spacer = Control.new()
+		row_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(row_spacer)
 
 func _build_stash_list(parent: VBoxContainer) -> void:
 	if GameState.stash.size() == 0:
@@ -1826,7 +1856,7 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 		parent.add_child(row)
 
 		var info = VBoxContainer.new()
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.custom_minimum_size = Vector2(220, 0)
 		info.add_theme_constant_override("separation", 2)
 		row.add_child(info)
 		info.add_child(RimvaleUtils.label(item_name, 14, RimvaleColors.TEXT_WHITE))
@@ -1840,6 +1870,10 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 			_render_section()
 		)
 		row.add_child(take_btn)
+
+		var row_spacer = Control.new()
+		row_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(row_spacer)
 
 # ── Section 6: Lineage ────────────────────────────────────────────────────────
 

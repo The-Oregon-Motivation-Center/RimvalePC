@@ -38,7 +38,7 @@ var _forage_tasks_vbox: VBoxContainer
 var _task_timer: float = 0.0
 
 # ── Dungeon Dive state ───────────────────────────────────────────────────────
-var _dd_type: int          = 0   # 0=Standard 1=Kaiju 2=Apex 3=Militia 4=Mob
+var _dd_type: int          = 0   # 0=Standard 1=Kaiju 2=Apex 3=Militia 4=Mob 5=Custom
 var _dd_enemy_level: int   = 3
 var _dd_kaiju_idx: int     = 0
 var _dd_apex_idx: int      = 0
@@ -48,6 +48,20 @@ var _dd_mob_level: int     = 3
 var _dd_terrain_style: int = 0
 var _dd_config_panel: VBoxContainer
 var _dd_type_btns: Array   = []
+var _dd_custom_monster_idx: int = 0
+
+# ── Monster Creator state ────────────────────────────────────────────────────
+var _mc_overlay: Control
+var _mc_name_edit: LineEdit
+var _mc_level_slider: HSlider
+var _mc_apex_check: CheckButton
+var _mc_stats: Dictionary = {"STR": 1, "SPD": 1, "INT": 1, "VIT": 1, "DIV": 1}
+var _mc_stat_labels: Dictionary = {}
+var _mc_abilities: Array = []
+var _mc_ability_category_opt: OptionButton
+var _mc_ability_buttons: Array = []
+var _mc_ability_grid: GridContainer
+var _mc_saved_vbox: VBoxContainer
 
 # ── Story tab refs ────────────────────────────────────────────────────────────
 var _story_sections_vbox: VBoxContainer  # rebuilt when badges change
@@ -243,6 +257,65 @@ const DD_MILITIAS: Array = [
 	["Void Warband",     "Raid Militia — Lv.6",       "10 void-touched warriors. Void-Touched Frenzy. Immune to charm & fear; breaks at 50% losses."],
 	["Storm Riders",     "Storm Militia — Lv.5",      "10 riders. Skirmishers, Tactician commander. Resistant to lightning & thunder. High mobility."],
 	["Sacred Vigil",     "Sacred Militia — Lv.5",     "10 temple guards. Divine Zeal, Priest commander. AC 18, +1d4 radiant vs undead. Healing costs –2 SP."],
+]
+
+# -- Monster Abilities (14 categories) ------------------------------------
+const MONSTER_ABILITY_CATEGORIES: Array = [
+	{"name": "General", "abilities": [
+		"Multiattack", "Pack Tactics", "Regeneration", "Ambush",
+		"Resistance", "Frightful Presence", "Legendary Action"
+	]},
+	{"name": "Movement", "abilities": [
+		"Burrowing", "Climbing", "Swimming", "Flying",
+		"Teleportation", "Phasing", "Amphibious"
+	]},
+	{"name": "Size", "abilities": [
+		"Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan", "Colossal"
+	]},
+	{"name": "Magic", "abilities": [
+		"Innate Spellcasting", "Spell Resistance", "Antimagic Aura",
+		"Magic Absorption", "Counterspell", "Arcane Burst"
+	]},
+	{"name": "Animal", "abilities": [
+		"Keen Senses", "Pounce", "Constrict", "Swallow",
+		"Venomous Bite", "Camouflage", "Pack Leader"
+	]},
+	{"name": "Environmental", "abilities": [
+		"Tremorsense", "Darkvision", "Heat Aura", "Cold Aura",
+		"Sandstorm", "Aquatic Adaptation", "Bioluminescence"
+	]},
+	{"name": "Biological", "abilities": [
+		"Acid Spit", "Poison Cloud", "Spore Burst", "Regenerative Limbs",
+		"Hive Mind", "Adaptive Hide", "Parasitic Bond"
+	]},
+	{"name": "Chemical", "abilities": [
+		"Corrosive Touch", "Explosive Gas", "Paralytic Toxin",
+		"Pheromone Control", "Alchemical Blood", "Ink Cloud"
+	]},
+	{"name": "Physical", "abilities": [
+		"Tail Sweep", "Gore", "Trample", "Stone Skin",
+		"Iron Grip", "Quake Stomp", "Spine Volley"
+	]},
+	{"name": "Spiritual", "abilities": [
+		"Life Drain", "Fear Aura", "Spirit Walk", "Possession",
+		"Soul Bind", "Radiant Smite", "Haunt"
+	]},
+	{"name": "Unity", "abilities": [
+		"War Cry", "Shield Wall", "Coordinated Strike", "Rally",
+		"Formation", "Sacrifice", "Inspire"
+	]},
+	{"name": "Void", "abilities": [
+		"Void Bolt", "Dimensional Rift", "Gravity Well", "Nullify",
+		"Entropy", "Void Shield", "Spatial Tear"
+	]},
+	{"name": "Chaos", "abilities": [
+		"Wild Surge", "Mutation", "Reality Warp", "Chaos Bolt",
+		"Instability Aura", "Madness Gaze", "Probability Shift"
+	]},
+	{"name": "Lineage", "abilities": [
+		"Breath Weapon", "Shapeshift", "Elemental Body", "Fey Step",
+		"Undead Fortitude", "Celestial Radiance", "Infernal Command"
+	]},
 ]
 
 # ── Contact NPCs ─────────────────────────────────────────────────────────────
@@ -700,8 +773,12 @@ func _ready() -> void:
 	_build_base_tab(_content_area)
 	_build_magic_world_tab(_content_area)
 
-	# Show first tab
-	_on_tab_selected(0)
+	# Show the correct tab — if returning from a tab-launched dungeon, go back there
+	var start_tab: int = 0
+	if GameState.dungeon_source == "tab":
+		start_tab = GameState.dungeon_return_tab
+		GameState.dungeon_source = "explore"  # reset so next load starts at Map
+	_on_tab_selected(start_tab)
 
 func _on_tab_selected(idx: int) -> void:
 	current_tab = idx
@@ -1613,6 +1690,9 @@ func _on_story_trigger_combat() -> void:
 		# Standard combat from failed skill check
 		RimvaleAPI.engine.start_dungeon(party, difficulty, 0, 0)
 
+	# Mark source so dungeon returns to world scene (Story tab) not explore
+	GameState.dungeon_source = "tab"
+	GameState.dungeon_return_tab = 2  # Story tab index
 	# Persist full quest + mission state so the fresh world scene can restore
 	GameState.quest_state["story_combat_active"] = true
 	GameState.quest_state["exec_quest"] = _story_exec_quest.duplicate()
@@ -1810,6 +1890,7 @@ func _build_dungeon_tab(parent: Control) -> void:
 		["Apex Encounter",    Color(0.48, 0.12, 0.64, 1.0)],
 		["Militia Encounter", Color(0.00, 0.51, 0.56, 1.0)],
 		["Mob Encounter",     Color(0.75, 0.44, 0.25, 1.0)],
+		["Custom Monster",    Color(0.80, 0.20, 0.80, 1.0)],
 	]
 	_dd_type_btns.clear()
 	for i in range(type_data.size()):
@@ -1875,6 +1956,14 @@ func _build_dungeon_tab(parent: Control) -> void:
 			chip.add_child(RimvaleUtils.label("%s %s" % [aicon, str(ra.get("name", "Ally"))], 10, acol))
 			allies_row.add_child(chip)
 		vbox.add_child(RimvaleUtils.spacer(4))
+
+	# ── Monster Creator Button ───────────────────────────────────────────────────
+	var monster_creator_btn = RimvaleUtils.button("Monster Creator", RimvaleColors.ACCENT, 52, 13)
+	monster_creator_btn.custom_minimum_size = Vector2(250, 52)
+	monster_creator_btn.pressed.connect(_mc_open)
+	vbox.add_child(monster_creator_btn)
+
+	vbox.add_child(RimvaleUtils.spacer(4))
 
 	# ── Launch Button ────────────────────────────────────────────────────────
 	var launch_btn = RimvaleUtils.button("Launch Dungeon Dive", RimvaleColors.GOLD, 60, 14)
@@ -2018,6 +2107,26 @@ func _dd_rebuild_config() -> void:
 			lrow.add_child(lslider)
 			_dd_config_panel.add_child(lrow)
 
+		5: # Custom Monster
+			var info = RimvaleUtils.label(
+				"Deploy a custom monster you have created. Select from your collection.",
+				11, RimvaleColors.TEXT_GRAY)
+			info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_dd_config_panel.add_child(info)
+			if GameState.custom_monsters.size() == 0:
+				_dd_config_panel.add_child(RimvaleUtils.label(
+					"No custom monsters created. Use Monster Creator to build one.",
+					11, Color(0.80, 0.30, 0.30)))
+			else:
+				var mopt = OptionButton.new()
+				mopt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				for cm in GameState.custom_monsters:
+					mopt.add_item(str(cm.get("name", "Unknown")))
+				mopt.selected = _dd_custom_monster_idx
+				_dd_config_panel.add_child(mopt)
+				mopt.item_selected.connect(func(idx: int) -> void:
+					_dd_custom_monster_idx = idx)
+
 func _dd_mob_size_label(count: int) -> String:
 	if count <= 20:
 		return "Small mob (≤20) — +5 ft movement"
@@ -2049,6 +2158,9 @@ func _dd_launch() -> void:
 	if handles.is_empty():
 		push_warning("[Dungeon] No active party — assign a strike team first")
 		return
+	# Mark that we launched from the dungeon tab so we return here, not explore
+	GameState.dungeon_source = "tab"
+	GameState.dungeon_return_tab = 3  # Dungeon tab index
 	# Ensure all ritual spells are registered before entering dungeon
 	GameState.ensure_ritual_spells_registered()
 	match _dd_type:
@@ -2062,6 +2174,14 @@ func _dd_launch() -> void:
 			RimvaleAPI.engine.start_militia_dungeon(handles, _dd_militia_idx, _dd_terrain_style)
 		4: # Mob
 			RimvaleAPI.engine.start_mob_dungeon(handles, _dd_mob_count, _dd_mob_level, _dd_terrain_style)
+		5: # Custom Monster
+			if GameState.custom_monsters.size() == 0:
+				push_warning("[Dungeon] No custom monsters created")
+				return
+			var idx: int = clampi(_dd_custom_monster_idx, 0, GameState.custom_monsters.size() - 1)
+			var monster: Dictionary = GameState.custom_monsters[idx]
+			if RimvaleAPI.engine.has_method("start_custom_monster_dungeon"):
+				RimvaleAPI.engine.start_custom_monster_dungeon(handles, monster, _dd_terrain_style)
 	# Spawn recruited allies into the dungeon as friendly entities
 	if GameState.recruited_allies.size() > 0:
 		RimvaleAPI.engine.spawn_allies(GameState.recruited_allies)
@@ -2072,6 +2192,333 @@ func _dd_launch() -> void:
 	else:
 		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
 
+
+# -- Monster Creator --
+
+func _mc_open() -> void:
+	if _mc_overlay != null and is_instance_valid(_mc_overlay):
+		_mc_overlay.queue_free()
+	_mc_overlay = Control.new()
+	_mc_overlay.anchor_left = 0.0
+	_mc_overlay.anchor_top = 0.0
+	_mc_overlay.anchor_right = 1.0
+	_mc_overlay.anchor_bottom = 1.0
+	var bg = ColorRect.new()
+	bg.color = Color.BLACK
+	bg.modulate.a = 0.5
+	bg.anchor_left = 0.0
+	bg.anchor_top = 0.0
+	bg.anchor_right = 1.0
+	bg.anchor_bottom = 1.0
+	_mc_overlay.add_child(bg)
+	get_parent().add_child(_mc_overlay)
+
+	# Main panel
+	var panel = PanelContainer.new()
+	panel.anchor_left = 0.05
+	panel.anchor_top = 0.05
+	panel.anchor_right = 0.95
+	panel.anchor_bottom = 0.95
+	var psb = StyleBoxFlat.new()
+	psb.bg_color = RimvaleColors.BG_CARD_DARK
+	psb.border_color = RimvaleColors.ACCENT
+	psb.set_border_width_all(2)
+	psb.set_corner_radius_all(8)
+	psb.set_content_margin_all(12)
+	panel.add_theme_stylebox_override("panel", psb)
+	_mc_overlay.add_child(panel)
+
+	var scroll = ScrollContainer.new()
+	scroll.anchor_left = 0.0
+	scroll.anchor_top = 0.0
+	scroll.anchor_right = 1.0
+	scroll.anchor_bottom = 1.0
+	panel.add_child(scroll)
+
+	var vbox = VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 10)
+	scroll.add_child(vbox)
+
+	# Header
+	var hbox = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	var back_btn = RimvaleUtils.button("Back", Color(0.5, 0.5, 0.5), 40, 12)
+	back_btn.custom_minimum_size = Vector2(100, 40)
+	back_btn.pressed.connect(_mc_close)
+	hbox.add_child(back_btn)
+	hbox.add_child(RimvaleUtils.label("Monster Creator", 18, RimvaleColors.ACCENT))
+	hbox.add_spacer(false)
+	vbox.add_child(hbox)
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Name field
+	vbox.add_child(RimvaleUtils.label("Monster Name", 13, RimvaleColors.TEXT_WHITE))
+	_mc_name_edit = LineEdit.new()
+	_mc_name_edit.text = "Custom Monster"
+	_mc_name_edit.custom_minimum_size = Vector2(0, 36)
+	vbox.add_child(_mc_name_edit)
+
+	# Level slider
+	vbox.add_child(RimvaleUtils.label("Level", 13, RimvaleColors.TEXT_WHITE))
+	var level_hbox = HBoxContainer.new()
+	level_hbox.add_theme_constant_override("separation", 8)
+	var level_lbl = RimvaleUtils.label("Level: 1", 12, RimvaleColors.TEXT_GRAY)
+	level_lbl.custom_minimum_size = Vector2(80, 0)
+	level_hbox.add_child(level_lbl)
+	_mc_level_slider = HSlider.new()
+	_mc_level_slider.min_value = 1
+	_mc_level_slider.max_value = 20
+	_mc_level_slider.step = 1
+	_mc_level_slider.value = 1
+	_mc_level_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mc_level_slider.value_changed.connect(func(v: float) -> void:
+		level_lbl.text = "Level: %d" % int(v)
+		_mc_update_derived_stats())
+	level_hbox.add_child(_mc_level_slider)
+	vbox.add_child(level_hbox)
+
+	# Apex toggle
+	var apex_hbox = HBoxContainer.new()
+	apex_hbox.add_theme_constant_override("separation", 8)
+	apex_hbox.add_child(RimvaleUtils.label("Apex Monster", 12, RimvaleColors.TEXT_WHITE))
+	_mc_apex_check = CheckButton.new()
+	_mc_apex_check.toggled.connect(func(_v: bool) -> void:
+		_mc_update_derived_stats())
+	apex_hbox.add_child(_mc_apex_check)
+	vbox.add_child(apex_hbox)
+
+	vbox.add_child(RimvaleUtils.spacer(4))
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Stats section
+	vbox.add_child(RimvaleUtils.label("Stat Points", 13, RimvaleColors.TEXT_WHITE))
+	var stats_info = RimvaleUtils.label("Level + 5 = %d points to distribute (0-20 each)" % (1 + 5), 11, RimvaleColors.TEXT_GRAY)
+	vbox.add_child(stats_info)
+	_mc_level_slider.value_changed.connect(func(v: float) -> void:
+		var points = int(v) + 5
+		stats_info.text = "Level + 5 = %d points to distribute (0-20 each)" % points)
+
+	var stats_grid = GridContainer.new()
+	stats_grid.columns = 2
+	stats_grid.add_theme_constant_override("h_separation", 8)
+	stats_grid.add_theme_constant_override("v_separation", 8)
+
+	for stat in ["STR", "SPD", "INT", "VIT", "DIV"]:
+		var stat_vbox = VBoxContainer.new()
+		var stat_lbl = RimvaleUtils.label("%s: 1" % stat, 11, RimvaleColors.TEXT_GRAY)
+		stat_vbox.add_child(stat_lbl)
+		var stat_hbox = HBoxContainer.new()
+		stat_hbox.add_theme_constant_override("separation", 4)
+		var minus_btn = RimvaleUtils.button("-", Color(0.5, 0.5, 0.5), 32, 11)
+		minus_btn.custom_minimum_size = Vector2(40, 32)
+		minus_btn.pressed.connect(func() -> void:
+			if _mc_stats[stat] > 0:
+				_mc_stats[stat] -= 1
+				_mc_update_stat_display())
+		stat_hbox.add_child(minus_btn)
+		var plus_btn = RimvaleUtils.button("+", RimvaleColors.ACCENT, 32, 11)
+		plus_btn.custom_minimum_size = Vector2(40, 32)
+		plus_btn.pressed.connect(func() -> void:
+			if _mc_stats[stat] < 20:
+				_mc_stats[stat] += 1
+				_mc_update_stat_display())
+		stat_hbox.add_child(plus_btn)
+		stat_vbox.add_child(stat_hbox)
+		stats_grid.add_child(stat_vbox)
+		_mc_stat_labels[stat] = stat_lbl
+
+	vbox.add_child(stats_grid)
+
+	vbox.add_child(RimvaleUtils.spacer(4))
+
+	# Derived stats card
+	var derived_hbox = HBoxContainer.new()
+	derived_hbox.add_theme_constant_override("separation", 16)
+	var hp_lbl = RimvaleUtils.label("HP: 4", 11, RimvaleColors.ACCENT)
+	derived_hbox.add_child(hp_lbl)
+	var ap_lbl = RimvaleUtils.label("AP: 4", 11, RimvaleColors.ACCENT)
+	derived_hbox.add_child(ap_lbl)
+	var sp_lbl = RimvaleUtils.label("SP: 4", 11, RimvaleColors.ACCENT)
+	derived_hbox.add_child(sp_lbl)
+	vbox.add_child(derived_hbox)
+	_mc_stat_labels["HP"] = hp_lbl
+	_mc_stat_labels["AP"] = ap_lbl
+	_mc_stat_labels["SP"] = sp_lbl
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Abilities section
+	vbox.add_child(RimvaleUtils.label("Abilities", 13, RimvaleColors.TEXT_WHITE))
+	var abilities_info = RimvaleUtils.label("Points: 1/1", 11, RimvaleColors.TEXT_GRAY)
+	vbox.add_child(abilities_info)
+
+	var ability_select_hbox = HBoxContainer.new()
+	ability_select_hbox.add_theme_constant_override("separation", 8)
+	ability_select_hbox.add_child(RimvaleUtils.label("Category:", 11, RimvaleColors.TEXT_GRAY))
+	_mc_ability_category_opt = OptionButton.new()
+	for cat in MONSTER_ABILITY_CATEGORIES:
+		_mc_ability_category_opt.add_item(cat["name"])
+	_mc_ability_category_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mc_ability_category_opt.item_selected.connect(_mc_update_abilities)
+	ability_select_hbox.add_child(_mc_ability_category_opt)
+	vbox.add_child(ability_select_hbox)
+
+	# Ability buttons grid
+	_mc_ability_grid = GridContainer.new()
+	_mc_ability_grid.columns = 3
+	_mc_ability_grid.add_theme_constant_override("h_separation", 6)
+	_mc_ability_grid.add_theme_constant_override("v_separation", 6)
+	vbox.add_child(_mc_ability_grid)
+	_mc_update_abilities(0)
+
+	vbox.add_child(RimvaleUtils.spacer(4))
+
+	# Selected abilities display
+	var sel_lbl = RimvaleUtils.label("Selected Abilities:", 12, RimvaleColors.TEXT_WHITE)
+	vbox.add_child(sel_lbl)
+	var abilities_display = VBoxContainer.new()
+	abilities_display.custom_minimum_size = Vector2(0, 80)
+	var abilities_scroll = ScrollContainer.new()
+	abilities_scroll.add_child(abilities_display)
+	vbox.add_child(abilities_scroll)
+	_mc_stat_labels["abilities_display"] = abilities_display
+
+	vbox.add_child(RimvaleUtils.spacer(4))
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Save button
+	var save_btn = RimvaleUtils.button("Save Monster", RimvaleColors.GOLD, 52, 13)
+	save_btn.custom_minimum_size = Vector2(200, 52)
+	save_btn.pressed.connect(_mc_save)
+	vbox.add_child(save_btn)
+
+	vbox.add_child(RimvaleUtils.spacer(4))
+
+	# Saved monsters list
+	vbox.add_child(RimvaleUtils.label("Saved Monsters", 13, RimvaleColors.TEXT_WHITE))
+	_mc_saved_vbox = VBoxContainer.new()
+	_mc_saved_vbox.add_theme_constant_override("separation", 4)
+	vbox.add_child(_mc_saved_vbox)
+	_mc_refresh_saved_list()
+
+func _mc_close() -> void:
+	if _mc_overlay != null and is_instance_valid(_mc_overlay):
+		_mc_overlay.queue_free()
+	_mc_overlay = null
+
+func _mc_update_stat_display() -> void:
+	for stat in ["STR", "SPD", "INT", "VIT", "DIV"]:
+		if stat in _mc_stat_labels:
+			_mc_stat_labels[stat].text = "%s: %d" % [stat, _mc_stats[stat]]
+	_mc_update_derived_stats()
+
+func _mc_update_derived_stats() -> void:
+	var level = int(_mc_level_slider.value)
+	var is_apex = _mc_apex_check.is_pressed()
+	var vit = _mc_stats.get("VIT", 1)
+	var str_val = _mc_stats.get("STR", 1)
+	var div = _mc_stats.get("DIV", 1)
+
+	var hp = (5 if is_apex else 3) * level + vit
+	var ap = (10 if is_apex else 3) + str_val
+	var sp = (10 if is_apex else 3) + level + div
+
+	if "HP" in _mc_stat_labels:
+		_mc_stat_labels["HP"].text = "HP: %d" % hp
+	if "AP" in _mc_stat_labels:
+		_mc_stat_labels["AP"].text = "AP: %d" % ap
+	if "SP" in _mc_stat_labels:
+		_mc_stat_labels["SP"].text = "SP: %d" % sp
+
+func _mc_update_abilities(cat_idx: int) -> void:
+	if cat_idx < 0 or cat_idx >= MONSTER_ABILITY_CATEGORIES.size():
+		return
+	# Clear old buttons from grid
+	if _mc_ability_grid != null and is_instance_valid(_mc_ability_grid):
+		for child in _mc_ability_grid.get_children():
+			child.queue_free()
+	_mc_ability_buttons.clear()
+	var cat = MONSTER_ABILITY_CATEGORIES[cat_idx]
+	var abilities = cat.get("abilities", [])
+	for ab in abilities:
+		var btn = RimvaleUtils.button(ab, Color(0.4, 0.6, 0.8), 40, 10)
+		btn.custom_minimum_size = Vector2(120, 40)
+		btn.toggle_mode = true
+		btn.pressed.connect(func() -> void:
+			if ab in _mc_abilities:
+				_mc_abilities.erase(ab)
+			else:
+				_mc_abilities.append(ab)
+			_mc_refresh_abilities_display())
+		if ab in _mc_abilities:
+			btn.set_pressed_no_signal(true)
+		_mc_ability_buttons.append(btn)
+		if _mc_ability_grid != null and is_instance_valid(_mc_ability_grid):
+			_mc_ability_grid.add_child(btn)
+
+func _mc_refresh_abilities_display() -> void:
+	var display = _mc_stat_labels.get("abilities_display")
+	if display:
+		for child in display.get_children():
+			child.queue_free()
+		for ab in _mc_abilities:
+			display.add_child(RimvaleUtils.label("• %s" % ab, 10, RimvaleColors.TEXT_WHITE))
+
+func _mc_save() -> void:
+	var monster: Dictionary = {
+		"name": _mc_name_edit.text if _mc_name_edit.text != "" else "Custom Monster",
+		"level": int(_mc_level_slider.value),
+		"apex": _mc_apex_check.is_pressed(),
+		"stats": _mc_stats.duplicate(),
+		"abilities": _mc_abilities.duplicate(),
+	}
+	GameState.custom_monsters.append(monster)
+	GameState.save_game()
+	_mc_refresh_saved_list()
+
+func _mc_refresh_saved_list() -> void:
+	if _mc_saved_vbox == null or not is_instance_valid(_mc_saved_vbox):
+		return
+	for child in _mc_saved_vbox.get_children():
+		child.queue_free()
+	if GameState.custom_monsters.is_empty():
+		_mc_saved_vbox.add_child(RimvaleUtils.label("No monsters saved yet.", 11, RimvaleColors.TEXT_GRAY))
+		return
+	for idx in range(GameState.custom_monsters.size()):
+		var cm = GameState.custom_monsters[idx]
+		var chip = PanelContainer.new()
+		var csb = StyleBoxFlat.new()
+		csb.bg_color = Color(0.2, 0.2, 0.3)
+		csb.border_color = RimvaleColors.ACCENT
+		csb.set_border_width_all(1)
+		csb.set_corner_radius_all(4)
+		csb.set_content_margin_all(8)
+		chip.add_theme_stylebox_override("panel", csb)
+
+		var chip_hbox = HBoxContainer.new()
+		chip_hbox.add_theme_constant_override("separation", 12)
+		var info_lbl = RimvaleUtils.label(
+			"Lv.%d %s%s" % [cm.get("level", 1), cm.get("name", ""), " (Apex)" if cm.get("apex") else ""],
+			11, RimvaleColors.TEXT_WHITE)
+		chip_hbox.add_child(info_lbl)
+		chip_hbox.add_spacer(false)
+
+		var edit_btn = RimvaleUtils.button("Edit", Color(0.4, 0.6, 0.8), 36, 10)
+		edit_btn.custom_minimum_size = Vector2(80, 36)
+		chip_hbox.add_child(edit_btn)
+
+		var del_btn = RimvaleUtils.button("Delete", Color(0.8, 0.3, 0.3), 36, 10)
+		del_btn.custom_minimum_size = Vector2(80, 36)
+		del_btn.pressed.connect(func() -> void:
+			GameState.custom_monsters.remove_at(idx)
+			GameState.save_game()
+			_mc_refresh_saved_list())
+		chip_hbox.add_child(del_btn)
+
+		chip.add_child(chip_hbox)
+		_mc_saved_vbox.add_child(chip)
 func _build_crafting_tab(parent: Control) -> void:
 	var craft_panel = Control.new()
 	craft_panel.anchor_left = 0.0
@@ -3045,7 +3492,7 @@ func _on_begin_ritual() -> void:
 		"domain":          _rb_domain,
 		"domain_name":     domain_name,
 		"range_idx":       _rb_range_idx,
-		"is_attack":       not _rb_is_saving_throw,
+		"is_attack":       (not _rb_is_saving_throw) and (not _rb_is_healing),
 		"die_count":       _rb_die_count,
 		"die_sides":       die_sides,
 		"damage_type":     _rb_damage_type,

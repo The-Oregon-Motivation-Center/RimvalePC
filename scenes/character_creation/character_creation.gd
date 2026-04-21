@@ -490,6 +490,12 @@ const SKILL_NAMES: Array = [
 	"Nimble", "Perception", "Perform", "Sneak",
 	"Speechcraft", "Survival"
 ]
+const STAT_ABBREVS: PackedStringArray = ["STR", "SPD", "INT", "VIT", "DIV"]
+const SKILL_STAT: PackedInt32Array = [
+	4, 2, 0, 1, 0,   # Arcane(DIV), Crafting(INT), CreatureHandling(STR), Cunning(SPD), Exertion(STR)
+	4, 2, 2, 1, 3,   # Intuition(DIV), Learnedness(INT), Medical(INT), Nimble(SPD), Perception(VIT)
+	4, 1, 4, 3        # Perform(DIV), Sneak(SPD), Speechcraft(DIV), Survival(VIT)
+]
 
 ## Skill ranks selected so far during creation (index → rank 0-10)
 var _skill_ranks: Array = [0,0,0,0,0,0,0,0,0,0,0,0,0,0]
@@ -517,8 +523,9 @@ func _build_step3() -> void:
 		var row = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 
-		var name_lbl = RimvaleUtils.label(SKILL_NAMES[i], 13, RimvaleColors.TEXT_WHITE)
-		name_lbl.custom_minimum_size = Vector2(140, 0)
+		var stat_tag: String = STAT_ABBREVS[SKILL_STAT[i]]
+		var name_lbl = RimvaleUtils.label("%s (%s)" % [SKILL_NAMES[i], stat_tag], 13, RimvaleColors.TEXT_WHITE)
+		name_lbl.custom_minimum_size = Vector2(170, 0)
 		row.add_child(name_lbl)
 
 		# Minus button

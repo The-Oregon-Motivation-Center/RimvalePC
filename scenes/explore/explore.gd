@@ -45,6 +45,8 @@ const CHAR_TILE := {
 }
 
 const ExploreMaps = preload("res://scenes/explore/explore_maps.gd")
+const WorldData = preload("res://autoload/world_data.gd")
+const NpcBackstories = preload("res://autoload/npc_backstories.gd")
 
 # ── Map data (loaded from ExploreMaps) ──────────────────────────────────────
 var _map_data: Dictionary = {}
@@ -66,6 +68,16 @@ var _encounter_guarantee: int = 8
 
 # ── AP action cost tracking (Rimvale Mobile parity) ─────────────────────────
 var _poi_actions_taken: int = 0
+
+# ── Hidden caches ──────────────────────────────────────────────────────────
+var _hidden_cache_map: Dictionary = {}   # Vector2i → cache data dict
+var _cache_markers: Dictionary = {}      # Vector2i → Node3D (sparkle)
+var _field_med_used: bool = false        # One field medicine per map visit
+
+# ── Random NPCs ────────────────────────────────────────────────────────────
+var _spawned_npcs: Array = []            # Array of npc data dicts with "pos" Vector2i added
+var _npc_markers: Dictionary = {}        # Vector2i → Node3D marker
+var _npc_positions: Dictionary = {}      # Vector2i → npc data dict (for quick lookup)
 
 var _region_id: String = ""
 var _subregion: String = ""
@@ -146,6 +158,11 @@ func _ready() -> void:
 
 	_generate_map()
 	_build_ui()
+	_init_hidden_caches()
+	_init_random_npcs()
+
+	# Reset social cooldowns when entering a new subregion
+	GameState.social_cooldowns.clear()
 
 	# Set initial camera target on player
 	_player_world_pos = _tile_to_world(_player_pos.x, _player_pos.y)
@@ -1797,6 +1814,14 @@ func _try_move(dir: Vector2i) -> void:
 	# Update minimap
 	_update_minimap_player()
 
+	# Check for hidden caches near new position
+	_check_nearby_caches(new_pos)
+
+	# Check if we stepped on a random NPC
+	if _npc_positions.has(new_pos):
+		_show_npc_panel(_npc_positions[new_pos])
+		return
+
 	var tile: int = _get_tile(new_pos.x, new_pos.y)
 	if tile == T_DANGER:
 		_on_danger_step()
@@ -1835,6 +1860,7 @@ func _trigger_encounter() -> void:
 	# Save player position so we return to this tile after dungeon
 	GameState.explore_return_pos = _player_pos
 	GameState.explore_return_active = true
+	GameState.dungeon_source = "explore"
 
 	RimvaleAPI.engine.start_dungeon(handles, enemy_level, 0, _terrain_style)
 	if GameState.recruited_allies.size() > 0:
@@ -1882,6 +1908,17 @@ func _show_location_info() -> void:
 	var desc := RimvaleUtils.label(_content.get("desc", "An explorable region of Rimvale."), 11, RimvaleColors.TEXT_GRAY)
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
+
+	# Faction presence
+	var rk: String = WorldData.subregion_to_key(_subregion)
+	var faction_info: Dictionary = WorldData.get_faction_for_region(rk)
+	if not faction_info.is_empty():
+		_info_vbox.add_child(RimvaleUtils.spacer(4))
+		_info_vbox.add_child(RimvaleUtils.label("⚜ %s Territory" % str(faction_info.get("name", "")), 12, RimvaleColors.GOLD))
+		var tf := RimvaleUtils.label(str(faction_info.get("territory_feature", "")), 10, RimvaleColors.TEXT_DIM)
+		tf.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_info_vbox.add_child(tf)
+
 	_info_vbox.add_child(RimvaleUtils.separator())
 
 	_info_vbox.add_child(RimvaleUtils.label("PARTY", 13, RimvaleColors.ACCENT))
@@ -1913,6 +1950,21 @@ func _show_location_info() -> void:
 			var col: Color = RimvaleColors.HP_GREEN if hp > max_hp / 2 else RimvaleColors.DANGER
 			row.add_child(RimvaleUtils.label("%s  %d/%d HP" % [nm, hp, max_hp], 11, col))
 			_info_vbox.add_child(row)
+
+	# Field Medicine button
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+	var med_info: Array = _best_party_skill("Medical")
+	var med_mod: int = med_info[1]
+	var med_dc: int = 10 + GameState.player_level
+	var med_color: Color = RimvaleColors.TEXT_DIM if _field_med_used else RimvaleColors.HP_GREEN
+	var med_suffix: String = " (used)" if _field_med_used else " (2 AP)"
+	var med_btn := RimvaleUtils.button(
+		"🩺 Field Medicine [Medical +%d vs DC %d]%s" % [med_mod, med_dc, med_suffix],
+		med_color, 36, 11)
+	if _field_med_used:
+		med_btn.disabled = true
+	med_btn.pressed.connect(_do_field_medicine)
+	_info_vbox.add_child(med_btn)
 
 	_info_vbox.add_child(RimvaleUtils.separator())
 	_info_vbox.add_child(RimvaleUtils.label("CONTROLS", 13, RimvaleColors.TEXT_GRAY))
@@ -2089,6 +2141,32 @@ func _show_acf_panel() -> void:
 	)
 	_info_vbox.add_child(manage_btn)
 
+	# Stationed ACF personnel
+	var region_key: String = WorldData.subregion_to_key(_subregion)
+	var stationed: Array = WorldData.get_acf_agents_for_region(region_key)
+	if stationed.size() > 0:
+		_info_vbox.add_child(RimvaleUtils.separator())
+		_info_vbox.add_child(RimvaleUtils.label("👥 Stationed Personnel", 13, RimvaleColors.ACCENT))
+		_info_vbox.add_child(RimvaleUtils.spacer(2))
+		for npc in stationed:
+			var npc_card := RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.DIVIDER, 4, 6)
+			var cv := VBoxContainer.new()
+			cv.add_theme_constant_override("separation", 2)
+			npc_card.add_child(cv)
+			var role_col: Color = RimvaleColors.GOLD if str(npc.get("role", "")).find("Archmage") >= 0 or str(npc.get("role", "")).find("Grand") >= 0 else RimvaleColors.ACCENT
+			cv.add_child(RimvaleUtils.label("%s — %s" % [str(npc.get("name", "Unknown")), str(npc.get("role", "Agent"))], 12, role_col))
+			var lineage_lbl := RimvaleUtils.label("%s • %s" % [str(npc.get("lineage", "")), str(npc.get("description", ""))], 10, RimvaleColors.TEXT_GRAY)
+			lineage_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			cv.add_child(lineage_lbl)
+			_info_vbox.add_child(npc_card)
+
+	# Social interactions
+	_add_social_section(_info_vbox, "acf", [
+		["Medical", "Field Surgery", "heal:full", "Expert triage! All agents restored to full HP.", "heal:half", "Rough patching. Half HP restored.", "🩺"],
+		["Arcane", "Assist Arcane Research", "sp:4", "Your arcane insight aids the researchers. +4 SP to all.", "none", "The research is beyond your current understanding.", "✨"],
+		["Speechcraft", "Requisition Supplies", "item:Health Potion|item:Potion of Revive", "Supply officer approves your request. Health Potion and Potion of Revive added to stash!", "none", "\"Request denied. Fill out form 27-B.\"", "🗣"],
+	], _show_acf_panel)
+
 # ── Supply Shop ─────────────────────────────────────────────────────────────
 
 func _show_shop_panel() -> void:
@@ -2145,6 +2223,13 @@ func _show_shop_panel() -> void:
 		row.add_child(buy_btn)
 		cvbox.add_child(row)
 		_info_vbox.add_child(card)
+
+	# Social interactions
+	_add_social_section(_info_vbox, "shop", [
+		["Speechcraft", "Haggle for Discount", "gold:25", "The merchant relents and refunds 25 gold. A shrewd bargain!", "none", "The merchant scoffs. \"My prices are fair.\"", "🗣"],
+		["Intuition", "Appraise Stock", "item:Health Potion", "You spot an underpriced gem! Health Potion added to stash for free.", "none", "Everything looks fairly priced. Nothing stands out.", "👁"],
+		["Cunning", "Sleight of Hand", "item:AP Tonic", "Quick fingers! AP Tonic slipped into your pack unnoticed.", "lose_gold:50", "Caught red-handed! You pay a gold fine.", "🤏"],
+	], _show_shop_panel)
 
 func _apply_shop_item(item_name: String) -> void:
 	var handles: Array = GameState.get_active_handles()
@@ -2213,6 +2298,12 @@ func _show_rest_panel() -> void:
 	)
 	_info_vbox.add_child(save_btn)
 
+	# Social interactions
+	_add_social_section(_info_vbox, "rest", [
+		["Medical", "Tend to Wounds", "heal:full", "Expert care! Everyone is fully restored and refreshed.", "none", "Bandages applied, but the technique was rough. Normal rest is enough.", "🩺"],
+		["Survival", "Forage Supplies", "item:Field Rations|item:Antitoxin", "You gather useful herbs and provisions. Field Rations and Antitoxin added to stash.", "none", "Slim pickings in the area. Nothing useful found.", "🌿"],
+	], _show_rest_panel)
+
 # ── Tavern ──────────────────────────────────────────────────────────────────
 
 func _show_tavern_panel() -> void:
@@ -2263,6 +2354,14 @@ func _show_tavern_panel() -> void:
 	)
 	_info_vbox.add_child(rest_btn)
 
+	# Social interactions
+	_add_social_section(_info_vbox, "tavern", [
+		["Speechcraft", "Sweet-Talk the Barkeep", "gold:30", "The barkeep shares secrets and comps your tab. +30 Gold.", "none", "The barkeep sees through your flattery. Maybe next time.", "🗣"],
+		["Perform", "Entertain the Crowd", "xp:50|gold:20", "The crowd roars! Tips and fame. +50 XP, +20 Gold.", "none", "Tough crowd. A few polite claps.", "🎵"],
+		["Intuition", "Read the Room", "xp:25", "You sense who is lying and who speaks truth. Valuable intel gained. +25 XP.", "none", "Too many conversations at once. You can't get a clear read.", "👁"],
+		["Cunning", "Cheat at Cards", "gold:60", "Nobody suspects a thing. +60 Gold.", "lose_gold:30", "Caught! You pay gold to avoid a beating.", "🃏"],
+	], _show_tavern_panel)
+
 # ── Blacksmith ──────────────────────────────────────────────────────────────
 
 func _show_blacksmith_panel() -> void:
@@ -2307,6 +2406,13 @@ func _show_blacksmith_panel() -> void:
 	)
 	_info_vbox.add_child(reinforce_btn)
 
+	# Social interactions
+	_add_social_section(_info_vbox, "smith", [
+		["Crafting", "Assist at the Forge", "xp:40", "You work the bellows expertly. The smith is impressed. +40 XP.", "none", "You singe your eyebrows but learn nothing useful.", "🔨"],
+		["Speechcraft", "Negotiate Bulk Deal", "gold:40", "The smith agrees to a standing discount. +40 Gold refund.", "none", "\"I don't do deals. Price is price.\"", "🗣"],
+		["Creature Handling", "Calm the Pack Beast", "xp:30|item:Iron Shield", "The beast settles. The grateful smith gives you a spare shield. +30 XP.", "none", "The beast snorts and you back away carefully.", "🐴"],
+	], _show_blacksmith_panel)
+
 # ── Library ─────────────────────────────────────────────────────────────────
 
 func _show_library_panel() -> void:
@@ -2345,6 +2451,13 @@ func _show_library_panel() -> void:
 		_show_message("Quiet meditation. +3 SP restored to each agent.", RimvaleColors.SP_PURPLE, _show_library_panel)
 	)
 	_info_vbox.add_child(meditate_btn)
+
+	# Social interactions
+	_add_social_section(_info_vbox, "library", [
+		["Learnedness", "Deep Study", "xp:100", "Breakthrough! Ancient knowledge flows into your mind. +100 XP.", "xp:20", "The texts are dense, but you learn a little. +20 XP.", "📖"],
+		["Arcane", "Decipher Ancient Tome", "sp:5", "The arcane text resonates with your spirit. +5 SP to all.", "none", "The symbols swim before your eyes. Incomprehensible.", "✨"],
+		["Intuition", "Search the Hidden Stacks", "item:Scroll of Protection", "Behind a false shelf you find a Scroll of Protection!", "none", "The library is vast but you find nothing unusual.", "🔍"],
+	], _show_library_panel)
 
 # ── Bounty Board ────────────────────────────────────────────────────────────
 
@@ -2397,6 +2510,13 @@ func _show_bounty_panel() -> void:
 		cvbox.add_child(row)
 		_info_vbox.add_child(card)
 
+	# Social interactions
+	_add_social_section(_info_vbox, "bounty", [
+		["Survival", "Track the Target", "xp:40", "You find tracks and shortcuts. The next bounty will be easier. +40 XP.", "none", "The trail goes cold. No useful leads.", "🐾"],
+		["Perception", "Spot a Hidden Contract", "gold:80", "A sealed note behind the board! A private contract worth 80 gold.", "none", "The board seems straightforward. Nothing hidden.", "👁"],
+		["Cunning", "Forge a Completion Slip", "gold:100", "A convincing forgery. The clerk pays out 100 gold, no questions asked.", "lose_gold:40", "The clerk spots the fake! You pay a 40 gold penalty.", "📝"],
+	], _show_bounty_panel)
+
 func _launch_bounty(terrain: int, gold_reward: int) -> void:
 	var handles: PackedInt64Array = GameState.get_active_handles()
 	if handles.is_empty():
@@ -2411,6 +2531,7 @@ func _launch_bounty(terrain: int, gold_reward: int) -> void:
 	# Save player position so we return to this tile after dungeon
 	GameState.explore_return_pos = _player_pos
 	GameState.explore_return_active = true
+	GameState.dungeon_source = "explore"
 
 	RimvaleAPI.engine.start_dungeon(handles, enemy_level, 0, terrain)
 	if GameState.recruited_allies.size() > 0:
@@ -2478,6 +2599,390 @@ func _show_fountain_panel() -> void:
 	)
 	_info_vbox.add_child(wish_btn)
 
+	# Social interactions
+	_add_social_section(_info_vbox, "fountain", [
+		["Arcane", "Attune to the Waters", "sp:3|ap:3", "The waters sing with power. +3 SP and +3 AP to all.", "none", "The water is just... water.", "✨"],
+		["Perception", "Search the Basin", "gold:45", "Glinting beneath the surface — coins! +45 Gold recovered.", "none", "Nothing but murky water and old pennies.", "👁"],
+		["Perform", "Sing at the Fountain", "xp:60", "Passersby stop to listen. A crowd gathers, captivated. +60 XP.", "none", "Your voice echoes off the stone. Nobody stops.", "🎵"],
+	], _show_fountain_panel)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RANDOM NPC ENCOUNTER & RECRUITMENT SYSTEM
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _init_random_npcs() -> void:
+	_spawned_npcs.clear()
+	_npc_positions.clear()
+	_npc_markers.clear()
+
+	# Get 3-5 random NPCs seeded by subregion name (deterministic per map)
+	var seed_val: int = hash(_subregion) + 9999
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	var npc_count: int = rng.randi_range(3, 5)
+	var npcs: Array = NpcBackstories.get_random_npcs(npc_count, seed_val)
+
+	# Filter out already-recruited NPCs
+	var available: Array = []
+	for npc in npcs:
+		if not GameState.recruited_npc_names.has(str(npc.get("name", ""))):
+			available.append(npc)
+
+	# Place each NPC on a walkable tile
+	var placed: int = 0
+	var attempts: int = 0
+	var spawn: Vector2i = _map_data.get("player_spawn", Vector2i(15, 19))
+	while placed < available.size() and attempts < 300:
+		attempts += 1
+		var tx: int = rng.randi_range(2, GRID_W - 3)
+		var ty: int = rng.randi_range(2, GRID_H - 3)
+		if not _is_walkable(tx, ty): continue
+		if _poi_map.has(Vector2i(tx, ty)): continue
+		if _hidden_cache_map.has(Vector2i(tx, ty)): continue
+		if _npc_positions.has(Vector2i(tx, ty)): continue
+		if abs(tx - spawn.x) + abs(ty - spawn.y) < 4: continue
+
+		var npc: Dictionary = available[placed].duplicate()
+		var pos := Vector2i(tx, ty)
+		npc["pos"] = pos
+		_spawned_npcs.append(npc)
+		_npc_positions[pos] = npc
+
+		# Build 3D marker using lineage portrait
+		var npc_lineage: String = str(npc.get("lineage", "Elf"))
+		var marker := _build_npc_marker(pos, npc_lineage)
+		_npc_markers[pos] = marker
+		placed += 1
+
+func _build_npc_marker(pos: Vector2i, lineage: String) -> Node3D:
+	var marker := Node3D.new()
+	var world_pos: Vector3 = _tile_to_world(pos.x, pos.y)
+	marker.position = world_pos
+
+	# Build a sprite model using the NPC's lineage portrait
+	var npc_color := Color(0.3, 0.85, 1.0)  # cyan tint for NPC identification
+	var model: Node3D = CharacterModelBuilder.build_sprite_model(
+		lineage, "None", "None", "None", 0.50, npc_color)
+	if model != null:
+		model.position.y = 0.0
+		marker.add_child(model)
+	else:
+		# Fallback capsule if no portrait available
+		var capsule := MeshInstance3D.new()
+		var cm := CapsuleMesh.new()
+		cm.radius = 0.12; cm.height = 0.5
+		capsule.mesh = cm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = npc_color
+		mat.emission_enabled = true
+		mat.emission = npc_color
+		mat.emission_energy_multiplier = 1.5
+		capsule.material_override = mat
+		capsule.position.y = 0.3
+		marker.add_child(capsule)
+
+	# Floating question mark diamond above the NPC
+	var icon_mesh := MeshInstance3D.new()
+	var icon_box := BoxMesh.new()
+	icon_box.size = Vector3(0.08, 0.08, 0.08)
+	icon_mesh.mesh = icon_box
+	icon_mesh.position = Vector3(0, 0.7, 0)
+	icon_mesh.rotation_degrees = Vector3(45, 45, 0)
+	var icon_mat := StandardMaterial3D.new()
+	icon_mat.albedo_color = Color(1.0, 0.9, 0.3, 0.9)
+	icon_mat.emission_enabled = true
+	icon_mat.emission = Color(1.0, 0.9, 0.3)
+	icon_mat.emission_energy_multiplier = 2.5
+	icon_mesh.material_override = icon_mat
+	marker.add_child(icon_mesh)
+
+	_world3d_root.add_child(marker)
+	return marker
+
+func _show_npc_panel(npc: Dictionary) -> void:
+	_clear_info()
+	var npc_name: String = str(npc.get("name", "Stranger"))
+	var lineage: String = str(npc.get("lineage", "Unknown"))
+	var personality: String = str(npc.get("personality", ""))
+	var backstory: String = str(npc.get("backstory", ""))
+	var skill_affinity: String = str(npc.get("skill_affinity", "Speechcraft"))
+	var recruit_quest: String = str(npc.get("recruit_quest", ""))
+	var recruit_dc: int = int(npc.get("recruit_dc", 12))
+	var combat_class: String = str(npc.get("combat_class", "warrior"))
+	var trust: int = int(GameState.npc_trust.get(npc_name, 0))
+
+	# Header
+	_info_vbox.add_child(RimvaleUtils.label("👤 " + npc_name, 16, RimvaleColors.CYAN))
+	var subtitle := RimvaleUtils.label("%s • %s • %s" % [lineage, personality, combat_class.capitalize()], 11, RimvaleColors.TEXT_GRAY)
+	_info_vbox.add_child(subtitle)
+	_info_vbox.add_child(RimvaleUtils.spacer(2))
+
+	var story_lbl := RimvaleUtils.label(backstory, 11, RimvaleColors.TEXT_DIM)
+	story_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(story_lbl)
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	# Trust level display
+	var trust_names: Array = ["Stranger", "Acquaintance", "Trusted", "Recruited"]
+	var trust_colors: Array = [RimvaleColors.TEXT_DIM, RimvaleColors.WARNING, RimvaleColors.HP_GREEN, RimvaleColors.GOLD]
+	var trust_idx: int = clampi(trust, 0, 3)
+	_info_vbox.add_child(RimvaleUtils.label("Trust: %s (%d/3)" % [trust_names[trust_idx], trust], 12, trust_colors[trust_idx]))
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+
+	_add_ap_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+
+	var cap_npc: Dictionary = npc
+	var cap_name: String = npc_name
+
+	if trust < 3:
+		# Social interaction to build trust
+		var talk_skill: String = skill_affinity
+		var talk_info: Array = _best_party_skill(talk_skill)
+		var talk_mod: int = talk_info[1]
+		var talk_dc: int = recruit_dc
+		var talk_key: String = "npc::" + npc_name
+
+		var already_talked: bool = GameState.social_cooldowns.has(talk_key)
+		var talk_color: Color = RimvaleColors.TEXT_DIM if already_talked else RimvaleColors.ACCENT
+		var talk_suffix: String = " (done)" if already_talked else " %s" % _ap_cost_str()
+		var talk_btn := RimvaleUtils.button(
+			"🗣 Talk [%s +%d vs DC %d]%s" % [talk_skill, talk_mod, talk_dc, talk_suffix],
+			talk_color, 38, 11)
+		if already_talked:
+			talk_btn.disabled = true
+		var cap_skill: String = talk_skill
+		var cap_dc: int = talk_dc
+		var cap_key: String = talk_key
+		talk_btn.pressed.connect(func():
+			if not _try_action(func(): _show_npc_panel(cap_npc)): return
+			var best: Array = _best_party_skill(cap_skill)
+			var h: int = best[0]
+			if h < 0:
+				_show_message("No party member available.", RimvaleColors.DANGER, func(): _show_npc_panel(cap_npc))
+				return
+			var result: PackedStringArray = RimvaleAPI.engine.execute_skill_challenge(h, cap_skill, cap_dc)
+			var passed: bool = str(result[0]) == "1"
+			var detail: String = str(result[4])
+			GameState.social_cooldowns[cap_key] = true
+			if passed:
+				var old_trust: int = int(GameState.npc_trust.get(cap_name, 0))
+				GameState.npc_trust[cap_name] = mini(old_trust + 1, 2)
+				GameState.save_game()
+				if GameState.npc_trust[cap_name] >= 2:
+					_show_skill_result(detail, "%s trusts you now! They ask for your help: \"%s\"" % [cap_name, str(cap_npc.get("recruit_quest", "Help me."))], RimvaleColors.HP_GREEN, func(): _show_npc_panel(cap_npc))
+				else:
+					_show_skill_result(detail, "%s warms up to you. Trust increased!" % cap_name, RimvaleColors.HP_GREEN, func(): _show_npc_panel(cap_npc))
+			else:
+				_show_skill_result(detail, "%s remains guarded. Try again next visit." % cap_name, RimvaleColors.WARNING, func(): _show_npc_panel(cap_npc))
+		)
+		_info_vbox.add_child(talk_btn)
+
+		# Perform skill — alternate social approach
+		if talk_skill != "Perform":
+			var perf_info: Array = _best_party_skill("Perform")
+			var perf_mod: int = perf_info[1]
+			var perf_key: String = "npc_perf::" + npc_name
+			var perf_done: bool = GameState.social_cooldowns.has(perf_key)
+			var perf_color: Color = RimvaleColors.TEXT_DIM if perf_done else RimvaleColors.ACCENT
+			var perf_suffix: String = " (done)" if perf_done else " %s" % _ap_cost_str()
+			var perf_btn := RimvaleUtils.button(
+				"🎵 Perform [Perform +%d vs DC %d]%s" % [perf_mod, recruit_dc, perf_suffix],
+				perf_color, 38, 11)
+			if perf_done:
+				perf_btn.disabled = true
+			var cap_perf_key: String = perf_key
+			perf_btn.pressed.connect(func():
+				if not _try_action(func(): _show_npc_panel(cap_npc)): return
+				var best: Array = _best_party_skill("Perform")
+				var h: int = best[0]
+				if h < 0:
+					_show_message("No party member available.", RimvaleColors.DANGER, func(): _show_npc_panel(cap_npc))
+					return
+				var result: PackedStringArray = RimvaleAPI.engine.execute_skill_challenge(h, "Perform", cap_dc)
+				var passed: bool = str(result[0]) == "1"
+				var detail: String = str(result[4])
+				GameState.social_cooldowns[cap_perf_key] = true
+				if passed:
+					var old_trust: int = int(GameState.npc_trust.get(cap_name, 0))
+					GameState.npc_trust[cap_name] = mini(old_trust + 1, 2)
+					GameState.save_game()
+					_show_skill_result(detail, "%s is charmed by your performance! Trust increased." % cap_name, RimvaleColors.HP_GREEN, func(): _show_npc_panel(cap_npc))
+				else:
+					_show_skill_result(detail, "A lukewarm reception. %s is unimpressed." % cap_name, RimvaleColors.WARNING, func(): _show_npc_panel(cap_npc))
+			)
+			_info_vbox.add_child(perf_btn)
+
+		# If trust is at 2 (Trusted), show the quest/recruit option
+		if trust >= 2:
+			_info_vbox.add_child(RimvaleUtils.separator())
+			_info_vbox.add_child(RimvaleUtils.label("📋 Quest: %s" % recruit_quest, 12, RimvaleColors.WARNING))
+			_info_vbox.add_child(RimvaleUtils.spacer(2))
+
+			var has_active_quest: bool = GameState.npc_active_quests.has(npc_name)
+			if not has_active_quest:
+				var accept_btn := RimvaleUtils.button("✦ Accept Quest %s" % _ap_cost_str(), RimvaleColors.WARNING, 38, 12)
+				accept_btn.pressed.connect(func():
+					if not _try_action(func(): _show_npc_panel(cap_npc)): return
+					GameState.npc_active_quests[cap_name] = str(cap_npc.get("recruit_quest", ""))
+					GameState.save_game()
+					_show_message("Quest accepted! Complete a dungeon bounty to fulfill %s's request." % cap_name, RimvaleColors.WARNING, func(): _show_npc_panel(cap_npc))
+				)
+				_info_vbox.add_child(accept_btn)
+			else:
+				_info_vbox.add_child(RimvaleUtils.label("Quest active — complete a bounty dungeon to fulfill it.", 11, RimvaleColors.TEXT_DIM))
+				# Complete quest button (requires having done at least 1 bounty/dungeon)
+				var complete_btn := RimvaleUtils.button("✦ Complete Quest & Recruit %s" % _ap_cost_str(), RimvaleColors.HP_GREEN, 38, 12)
+				complete_btn.pressed.connect(func():
+					if not _try_action(func(): _show_npc_panel(cap_npc)): return
+					_recruit_npc(cap_npc)
+				)
+				_info_vbox.add_child(complete_btn)
+	else:
+		# Already recruited
+		_info_vbox.add_child(RimvaleUtils.label("✅ %s has joined your roster!" % npc_name, 13, RimvaleColors.GOLD))
+
+	# Gift option — costs gold for trust
+	if trust < 3:
+		_info_vbox.add_child(RimvaleUtils.spacer(4))
+		var gift_cost: int = 25 + GameState.player_level * 5
+		var gift_key: String = "npc_gift::" + npc_name
+		var gift_done: bool = GameState.social_cooldowns.has(gift_key)
+		var gift_color: Color = RimvaleColors.TEXT_DIM if gift_done else RimvaleColors.GOLD
+		var gift_suffix: String = " (done)" if gift_done else ""
+		var gift_btn := RimvaleUtils.button(
+			"🎁 Give Gift (%dg)%s" % [gift_cost, gift_suffix],
+			gift_color, 34, 11)
+		if gift_done or GameState.gold < gift_cost:
+			gift_btn.disabled = true
+		var cap_gift_key: String = gift_key
+		var cap_gift_cost: int = gift_cost
+		gift_btn.pressed.connect(func():
+			if GameState.gold < cap_gift_cost:
+				_show_message("Not enough gold.", RimvaleColors.DANGER, func(): _show_npc_panel(cap_npc))
+				return
+			GameState.gold -= cap_gift_cost
+			GameState.social_cooldowns[cap_gift_key] = true
+			var old_trust: int = int(GameState.npc_trust.get(cap_name, 0))
+			GameState.npc_trust[cap_name] = mini(old_trust + 1, 2)
+			GameState.save_game()
+			_show_message("%s gratefully accepts your gift. Trust increased!" % cap_name, RimvaleColors.HP_GREEN, func(): _show_npc_panel(cap_npc))
+		)
+		_info_vbox.add_child(gift_btn)
+
+func _recruit_npc(npc: Dictionary) -> void:
+	var npc_name: String = str(npc.get("name", "Recruit"))
+	var lineage: String = str(npc.get("lineage", "Elf"))
+	var combat_class: String = str(npc.get("combat_class", "warrior"))
+	var skill_affinity: String = str(npc.get("skill_affinity", "Exertion"))
+
+	# Skill name → index: Arcane=0, Crafting=1, Creature Handling=2, Cunning=3,
+	# Exertion=4, Intuition=5, Learnedness=6, Medical=7, Nimble=8, Perception=9,
+	# Perform=10, Sneak=11, Speechcraft=12, Survival=13
+	const SKILL_LOOKUP: Dictionary = {
+		"Arcane": 0, "Crafting": 1, "Creature Handling": 2, "Cunning": 3,
+		"Exertion": 4, "Intuition": 5, "Learnedness": 6, "Medical": 7,
+		"Nimble": 8, "Perception": 9, "Perform": 10, "Sneak": 11,
+		"Speechcraft": 12, "Survival": 13,
+	}
+
+	# Create the character in the engine
+	var age: int = randi_range(18, 50)
+	var h: int = RimvaleAPI.engine.create_character(npc_name, lineage, age)
+
+	# Level up to match player level
+	var target_level: int = maxi(1, GameState.player_level)
+	var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+	if cd != null:
+		cd["level"] = target_level
+		cd["max_hp"] = 20 + (target_level - 1) * 8
+		cd["hp"] = cd["max_hp"]
+		cd["max_sp"] = 6 + (target_level - 1) * 2
+		cd["sp"] = cd["max_sp"]
+		cd["ac"] = 10 + target_level / 3
+		cd["stat_pts"] = 0
+		cd["feat_pts"] = target_level / 3
+		cd["skill_pts"] = 0
+		cd["xp"] = 0
+		cd["xp_req"] = 100 * target_level
+
+		# Ensure skills array exists
+		var skills: Array = cd.get("skills", [0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+		while skills.size() < 14: skills.append(0)
+
+		# Set base stats and skills by combat class
+		var stats: Array = cd.get("stats", [1,1,1,1,1])
+		match combat_class:
+			"warrior":
+				stats[0] = 3 + target_level / 2  # STR
+				stats[3] = 2 + target_level / 3  # VIT
+				skills[4] = 3 + target_level      # Exertion
+				skills[8] = 1 + target_level / 2  # Nimble
+				cd["ac"] += 2; cd["max_hp"] += target_level * 3
+				cd["hp"] = cd["max_hp"]
+			"mage":
+				stats[4] = 3 + target_level / 2  # DIV
+				stats[2] = 2 + target_level / 3  # INT
+				skills[0] = 3 + target_level      # Arcane
+				skills[6] = 2 + target_level / 2  # Learnedness
+				cd["max_sp"] += target_level * 2; cd["sp"] = cd["max_sp"]
+			"healer":
+				stats[2] = 3 + target_level / 2  # INT
+				stats[4] = 2 + target_level / 3  # DIV
+				skills[7] = 3 + target_level      # Medical
+				skills[5] = 2 + target_level / 2  # Intuition
+				cd["max_sp"] += target_level; cd["sp"] = cd["max_sp"]
+			"rogue":
+				stats[1] = 3 + target_level / 2  # SPD
+				stats[2] = 2 + target_level / 3  # INT
+				skills[11] = 3 + target_level     # Sneak
+				skills[3] = 2 + target_level / 2  # Cunning
+				skills[8] = 1 + target_level / 2  # Nimble
+			"ranger":
+				stats[3] = 3 + target_level / 2  # VIT
+				stats[0] = 2 + target_level / 3  # STR
+				skills[13] = 3 + target_level     # Survival
+				skills[9] = 2 + target_level / 2  # Perception
+				skills[2] = 1 + target_level / 2  # Creature Handling
+			"support":
+				stats[4] = 3 + target_level / 2  # DIV
+				stats[2] = 2 + target_level / 3  # INT
+				skills[12] = 3 + target_level     # Speechcraft
+				skills[10] = 2 + target_level / 2 # Perform
+				skills[5] = 1 + target_level / 2  # Intuition
+		cd["stats"] = stats
+
+		# Boost their affinity skill
+		var aff_idx: int = SKILL_LOOKUP.get(skill_affinity, -1)
+		if aff_idx >= 0:
+			skills[aff_idx] = maxi(skills[aff_idx], 3 + target_level)
+		cd["skills"] = skills
+
+	# Add to collection so they appear on the Units page
+	GameState.add_to_collection(h)
+
+	# Mark as recruited
+	GameState.npc_trust[npc_name] = 3
+	GameState.recruited_npc_names.append(npc_name)
+	if GameState.npc_active_quests.has(npc_name):
+		GameState.npc_active_quests.erase(npc_name)
+
+	# Remove NPC marker from map
+	var pos: Vector2i = npc.get("pos", Vector2i(-1, -1))
+	if _npc_markers.has(pos):
+		_npc_markers[pos].queue_free()
+		_npc_markers.erase(pos)
+	if _npc_positions.has(pos):
+		_npc_positions.erase(pos)
+
+	# Grant XP for recruitment
+	for ph in GameState.get_active_handles():
+		RimvaleAPI.engine.add_xp(ph, 50, 20)
+	GameState.player_xp += 50
+	GameState.save_game()
+
+	_show_message("✦ %s has joined your roster! +50 XP. Assign them to your active team at any ACF outpost." % npc_name, RimvaleColors.GOLD, _show_location_info)
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  POI ICON / LABEL HELPERS (preserved for info panel use)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2507,6 +3012,364 @@ func _poi_label_color(poi_type: int) -> Color:
 		POI_FOUNTAIN:   return RimvaleColors.AP_BLUE
 		POI_EXIT:       return RimvaleColors.TEXT_GRAY
 	return RimvaleColors.TEXT_WHITE
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SOCIAL SKILL INTERACTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+## Returns the best party member handle + total modifier for a given skill.
+func _best_party_skill(skill_name: String) -> Array:  # [handle, modifier]
+	var e = RimvaleAPI.engine
+	const SK_NAMES: Array = [
+		"Arcane","Crafting","Creature Handling","Cunning","Exertion",
+		"Intuition","Learnedness","Medical","Nimble","Perception",
+		"Perform","Sneak","Speechcraft","Survival"
+	]
+	const SK_STAT: Array = [4,2,0,1,0, 4,2,2,1,3, 4,1,4,3]
+	var skill_idx: int = SK_NAMES.find(skill_name)
+	if skill_idx < 0: return [-1, 0]
+	var best_h: int = -1
+	var best_mod: int = -999
+	for h in GameState.get_active_handles():
+		var cd: Dictionary = e.get_char_dict(h)
+		if cd == null: continue
+		var rank: int = e.get_character_skill(h, skill_idx)
+		var stats: Array = cd.get("stats", [1,1,1,1,1])
+		var mod: int = rank + int(stats[SK_STAT[skill_idx]])
+		if mod > best_mod:
+			best_mod = mod; best_h = h
+	return [best_h, best_mod]
+
+## Base DC that scales with region difficulty (player level).
+func _social_dc() -> int:
+	return 8 + GameState.player_level
+
+## Adds a "Social Interactions" section to the given parent VBox.
+## actions: Array of arrays: [skill_name, label, success_reward, success_msg, fail_reward, fail_msg, icon]
+## Reward format: "gold:30", "xp:50", "sp:5", "item:Health Potion", "heal:full", "heal:half",
+##   "ap:3", "lose_gold:30", "none", or combined "gold:20|xp:50"
+func _add_social_section(parent: VBoxContainer, poi_key: String,
+		actions: Array, return_panel: Callable) -> void:
+	parent.add_child(RimvaleUtils.separator())
+	parent.add_child(RimvaleUtils.label("💬 Social Interactions", 13, RimvaleColors.ACCENT))
+	parent.add_child(RimvaleUtils.spacer(2))
+
+	for act in actions:
+		var skill_name: String = str(act[0])
+		var btn_label: String = str(act[1])
+		var s_reward: String = str(act[2])
+		var s_msg: String = str(act[3])
+		var f_reward: String = str(act[4])
+		var f_msg: String = str(act[5])
+		var icon: String = str(act[6]) if act.size() > 6 else "🎭"
+
+		var cooldown_key: String = poi_key + "::" + skill_name
+		var already_used: bool = GameState.social_cooldowns.has(cooldown_key)
+
+		var info: Array = _best_party_skill(skill_name)
+		var best_mod: int = info[1]
+		var dc: int = _social_dc()
+
+		var color: Color = RimvaleColors.TEXT_DIM if already_used else RimvaleColors.ACCENT
+		var suffix: String = " (done)" if already_used else " %s" % _ap_cost_str()
+		var btn := RimvaleUtils.button(
+			"%s %s [%s +%d vs DC %d]%s" % [icon, btn_label, skill_name, best_mod, dc, suffix],
+			color, 38, 11)
+		if already_used:
+			btn.disabled = true
+
+		var sk_cap: String = skill_name
+		var cd_cap: String = cooldown_key
+		var sr_cap: String = s_reward
+		var sm_cap: String = s_msg
+		var fr_cap: String = f_reward
+		var fm_cap: String = f_msg
+		var rp_cap: Callable = return_panel
+		btn.pressed.connect(func():
+			if not _try_action(rp_cap): return
+			var best: Array = _best_party_skill(sk_cap)
+			var h: int = best[0]
+			if h < 0:
+				_show_message("No party member available.", RimvaleColors.DANGER, rp_cap)
+				return
+			var result: PackedStringArray = RimvaleAPI.engine.execute_skill_challenge(h, sk_cap, _social_dc())
+			var passed: bool = str(result[0]) == "1"
+			var detail: String = str(result[4])
+			GameState.social_cooldowns[cd_cap] = true
+			if passed:
+				_apply_social_reward(sr_cap)
+				_show_skill_result(detail, sm_cap, RimvaleColors.HP_GREEN, rp_cap)
+			else:
+				_apply_social_reward(fr_cap)
+				_show_skill_result(detail, fm_cap, RimvaleColors.WARNING, rp_cap)
+		)
+		parent.add_child(btn)
+
+## Apply a reward string like "gold:30", "xp:50|gold:20", "item:Health Potion", etc.
+func _apply_social_reward(reward_str: String) -> void:
+	if reward_str == "none" or reward_str.is_empty():
+		return
+	var parts: PackedStringArray = reward_str.split("|")
+	for part in parts:
+		var kv: PackedStringArray = part.split(":", true, 1)
+		if kv.size() < 2: continue
+		var key: String = kv[0].strip_edges()
+		var val: String = kv[1].strip_edges()
+		match key:
+			"gold":
+				GameState.earn_gold(int(val))
+			"xp":
+				for h in GameState.get_active_handles():
+					RimvaleAPI.engine.add_xp(h, int(val), 20)
+				GameState.player_xp += int(val)
+			"sp":
+				for h in GameState.get_active_handles():
+					RimvaleAPI.engine.restore_character_sp(h, int(val))
+			"ap":
+				for h in GameState.get_active_handles():
+					var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+					if cd != null:
+						cd["ap"] = mini(int(cd.get("ap", 0)) + int(val), int(cd.get("max_ap", 10)))
+			"item":
+				GameState.add_to_stash(val)
+			"heal":
+				if val == "full":
+					for h in GameState.get_active_handles():
+						var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+						if cd != null:
+							cd["hp"] = int(cd.get("max_hp", 20))
+							cd["ap"] = int(cd.get("max_ap", 10))
+				elif val == "half":
+					for h in GameState.get_active_handles():
+						RimvaleAPI.engine.short_rest(h)
+				else:
+					for h in GameState.get_active_handles():
+						var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+						if cd != null:
+							var heal_amt: int = int(val)
+							cd["hp"] = mini(int(cd.get("hp", 1)) + heal_amt, int(cd.get("max_hp", 20)))
+			"lose_gold":
+				var loss: int = mini(int(val), GameState.gold)
+				GameState.gold -= loss
+	GameState.save_game()
+
+## Skill result message with roll detail shown above the outcome.
+func _show_skill_result(detail: String, msg: String, col: Color, return_panel: Callable) -> void:
+	_clear_info()
+	var detail_lbl := RimvaleUtils.label(detail, 11, RimvaleColors.TEXT_GRAY)
+	detail_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(detail_lbl)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+	var msg_lbl := RimvaleUtils.label(msg, 14, col)
+	msg_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(msg_lbl)
+	await get_tree().create_timer(2.0).timeout
+	if is_instance_valid(self):
+		return_panel.call()
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIELD MEDICINE (Medical skill anywhere on the map)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _do_field_medicine() -> void:
+	if _field_med_used:
+		_show_message("Already used field medicine on this expedition.", RimvaleColors.TEXT_DIM)
+		return
+	var cost: int = 2
+	# Check if anyone has 2+ AP
+	var e = RimvaleAPI.engine
+	var spender_h: int = -1
+	for h in GameState.get_active_handles():
+		var cd: Dictionary = e.get_char_dict(h)
+		if cd != null and int(cd.get("ap", 0)) >= cost:
+			spender_h = h
+			cd["ap"] = int(cd["ap"]) - cost
+			break
+	if spender_h < 0:
+		_show_message("Need at least 2 AP to perform field medicine.", RimvaleColors.DANGER)
+		return
+	_field_med_used = true
+	var best: Array = _best_party_skill("Medical")
+	var h: int = best[0]
+	if h < 0:
+		_show_message("No party member can attempt this.", RimvaleColors.DANGER)
+		return
+	var dc: int = 10 + GameState.player_level
+	var result: PackedStringArray = e.execute_skill_challenge(h, "Medical", dc)
+	var passed: bool = str(result[0]) == "1"
+	var detail: String = str(result[4])
+	if passed:
+		for hh in GameState.get_active_handles():
+			var cd: Dictionary = e.get_char_dict(hh)
+			if cd != null:
+				var heal: int = int(int(cd.get("max_hp", 20)) * 0.30)
+				cd["hp"] = mini(int(cd.get("hp", 1)) + heal, int(cd.get("max_hp", 20)))
+		GameState.save_game()
+		_show_skill_result(detail, "Field surgery successful! Party healed 30% HP.", RimvaleColors.HP_GREEN, _show_location_info)
+	else:
+		for hh in GameState.get_active_handles():
+			var cd: Dictionary = e.get_char_dict(hh)
+			if cd != null:
+				var heal: int = int(int(cd.get("max_hp", 20)) * 0.10)
+				cd["hp"] = mini(int(cd.get("hp", 1)) + heal, int(cd.get("max_hp", 20)))
+		GameState.save_game()
+		_show_skill_result(detail, "Rough patch job. Party healed 10% HP.", RimvaleColors.WARNING, _show_location_info)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HIDDEN CACHE SYSTEM (Perception)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _init_hidden_caches() -> void:
+	_hidden_cache_map.clear()
+	var caches: Array = _content.get("hidden_caches", [])
+
+	# Auto-generate caches if the map doesn't define any
+	if caches.is_empty():
+		caches = _generate_default_caches()
+
+	for c in caches:
+		# Format: [x, y, type, label, dc, reward_type, reward_val]
+		if c.size() < 7: continue
+		var pos := Vector2i(int(c[0]), int(c[1]))
+		var cache_key: String = _subregion + "::" + str(pos.x) + "," + str(pos.y)
+		if cache_key in GameState.discovered_caches:
+			continue  # already found — skip
+		_hidden_cache_map[pos] = {
+			"type": str(c[2]),
+			"label": str(c[3]),
+			"dc": int(c[4]),
+			"reward_type": str(c[5]),
+			"reward_val": int(c[6]),
+			"key": cache_key
+		}
+
+## Generate 4 hidden caches on random walkable tiles.
+func _generate_default_caches() -> Array:
+	var result: Array = []
+	var cache_templates: Array = [
+		["stash", "Hidden Gold Stash", "gold", 40 + GameState.player_level * 10],
+		["stash", "Concealed Cache", "gold", 30 + GameState.player_level * 8],
+		["lore", "Ancient Inscription", "xp", 50 + GameState.player_level * 15],
+		["item", "Health Potion", "item", 0],
+		["stash", "Buried Treasure", "gold", 60 + GameState.player_level * 12],
+		["lore", "Forgotten Lore Fragment", "xp", 70 + GameState.player_level * 10],
+		["item", "Potion of Revive", "item", 0],
+		["heal", "Healing Spring", "hp", 15 + GameState.player_level * 3],
+	]
+	# Use a seeded RNG based on subregion name for consistency
+	var seed_val: int = hash(_subregion)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+
+	var placed: int = 0
+	var attempts: int = 0
+	while placed < 4 and attempts < 200:
+		attempts += 1
+		var tx: int = rng.randi_range(2, GRID_W - 3)
+		var ty: int = rng.randi_range(2, GRID_H - 3)
+		if not _is_walkable(tx, ty): continue
+		# Don't place on POIs
+		if _poi_map.has(Vector2i(tx, ty)): continue
+		# Don't place too close to spawn
+		var spawn: Vector2i = _map_data.get("player_spawn", Vector2i(15, 19))
+		if abs(tx - spawn.x) + abs(ty - spawn.y) < 5: continue
+		# Don't overlap existing caches
+		var overlap: bool = false
+		for existing in result:
+			if int(existing[0]) == tx and int(existing[1]) == ty:
+				overlap = true; break
+		if overlap: continue
+
+		var template: Array = cache_templates[rng.randi_range(0, cache_templates.size() - 1)]
+		var dc: int = 10 + GameState.player_level + rng.randi_range(-2, 3)
+		result.append([tx, ty, template[0], template[1], dc, template[2], template[3]])
+		placed += 1
+	return result
+
+func _check_nearby_caches(pos: Vector2i) -> void:
+	# Check the 9 tiles in a 1-tile radius around player
+	for dx in range(-1, 2):
+		for dy in range(-1, 2):
+			var check := Vector2i(pos.x + dx, pos.y + dy)
+			if not _hidden_cache_map.has(check): continue
+			var cache: Dictionary = _hidden_cache_map[check]
+			var best: Array = _best_party_skill("Perception")
+			if best[0] < 0: continue
+			var result: PackedStringArray = RimvaleAPI.engine.execute_skill_challenge(
+				best[0], "Perception", int(cache["dc"]))
+			var passed: bool = str(result[0]) == "1"
+			if passed:
+				_reveal_cache(check, cache, str(result[4]))
+
+func _reveal_cache(pos: Vector2i, cache: Dictionary, detail: String) -> void:
+	# Mark as discovered
+	GameState.discovered_caches.append(cache["key"])
+	_hidden_cache_map.erase(pos)
+	GameState.save_game()
+
+	# Build 3D sparkle marker
+	var marker := _build_cache_marker(pos)
+	_cache_markers[pos] = marker
+
+	# Show discovery in info panel
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label("✨ Hidden Discovery!", 16, RimvaleColors.GOLD))
+	var det_lbl := RimvaleUtils.label(detail, 11, RimvaleColors.TEXT_GRAY)
+	det_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(det_lbl)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+	_info_vbox.add_child(RimvaleUtils.label(str(cache["label"]), 14, RimvaleColors.GOLD))
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+
+	# Award the reward
+	var rtype: String = cache["reward_type"]
+	var rval: int = cache["reward_val"]
+	var reward_msg: String = ""
+	match rtype:
+		"gold":
+			GameState.earn_gold(rval)
+			reward_msg = "+%d Gold found!" % rval
+		"xp":
+			for h in GameState.get_active_handles():
+				RimvaleAPI.engine.add_xp(h, rval, 20)
+			GameState.player_xp += rval
+			reward_msg = "+%d XP gained!" % rval
+		"item":
+			var item_name: String = str(cache.get("label", "Health Potion"))
+			GameState.add_to_stash(item_name)
+			reward_msg = "%s added to stash!" % item_name
+		"hp":
+			for h in GameState.get_active_handles():
+				var cd: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+				if cd != null:
+					cd["hp"] = mini(int(cd.get("hp", 1)) + rval, int(cd.get("max_hp", 20)))
+			reward_msg = "Party healed +%d HP!" % rval
+		"sp":
+			for h in GameState.get_active_handles():
+				RimvaleAPI.engine.restore_character_sp(h, rval)
+			reward_msg = "Party restored +%d SP!" % rval
+	_info_vbox.add_child(RimvaleUtils.label(reward_msg, 14, RimvaleColors.HP_GREEN))
+	GameState.save_game()
+
+func _build_cache_marker(pos: Vector2i) -> Node3D:
+	var marker := Node3D.new()
+	var world_pos: Vector3 = _tile_to_world(pos.x, pos.y)
+	marker.position = world_pos + Vector3(0, 0.6, 0)
+	# Glowing diamond shape
+	var mesh_inst := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(0.15, 0.15, 0.15)
+	mesh_inst.mesh = box
+	mesh_inst.rotation_degrees = Vector3(45, 45, 0)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.20, 0.9)
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.85, 0.20)
+	mat.emission_energy_multiplier = 3.0
+	mesh_inst.material_override = mat
+	marker.add_child(mesh_inst)
+	_world3d_root.add_child(marker)
+	return marker
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  EXIT

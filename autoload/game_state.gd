@@ -136,12 +136,26 @@ var current_subregion: String = ""
 ## Saved explore position so player returns to same tile after dungeon
 var explore_return_pos: Vector2i = Vector2i(-1, -1)
 var explore_return_active: bool = false
+## Where the dungeon was launched from: "explore" = region map, "tab" = dungeon tab
+var dungeon_source: String = "explore"
+## Which world-scene tab to return to after a tab-launched dungeon (3 = Dungeon)
+var dungeon_return_tab: int = 3
 ## Major region ids the party has visited at least once.
 var visited_regions: Array = []
 ## Sub-region names the party has visited at least once.
 var visited_subregions: Array = []
 ## IDs of ACF locations that have been cleared (for tracking progress).
 var cleared_acf_locations: Array = []
+## Hidden caches the party has discovered (keys: "subregion::x,y")
+var discovered_caches: Array = []
+## Social actions used this visit per POI (reset on leaving subregion)
+var social_cooldowns: Dictionary = {}
+## Names of random NPCs already recruited (persist across saves)
+var recruited_npc_names: Array = []
+## NPC trust progress: { "npc_name": int_trust_level } — 0=stranger, 1=acquaintance, 2=trusted, 3=recruited
+var npc_trust: Dictionary = {}
+## Active NPC quests: { "npc_name": "quest_desc" } — cleared on completion
+var npc_active_quests: Dictionary = {}
 
 # ── Base Building ─────────────────────────────────────────────────────────────
 ## Base tier (1-5). Determines max facilities and defender cap.
@@ -256,6 +270,10 @@ func has_facility(bonus_name: String) -> bool:
 ## Recruited allies the player can summon into dungeons.
 ## Each entry: {"type":"militia"|"mob"|"kaiju", "def_idx":int, "name":String, "level":int, ...}
 var recruited_allies: Array = []
+
+## Custom monsters created by the player
+## Each entry: {"name":String, "level":int, "apex":bool, "stats":{}, "abilities":[], ...}
+var custom_monsters: Array = []
 
 ## Ally category: Militia, Mob, or Kaiju
 ## Militia definitions — 15 types from Mobile C++ Militia.h
@@ -689,6 +707,11 @@ func wipe_all() -> void:
 	visited_regions.clear()
 	visited_subregions.clear()
 	cleared_acf_locations.clear()
+	discovered_caches.clear()
+	social_cooldowns.clear()
+	recruited_npc_names.clear()
+	npc_trust.clear()
+	npc_active_quests.clear()
 	base_tier = 1
 	base_supplies = 50
 	base_defense = 10
@@ -696,6 +719,7 @@ func wipe_all() -> void:
 	base_acreage = 2
 	base_facilities = [0]
 	recruited_allies = []
+	custom_monsters = []
 	quest_state = {"active_dungeon_quest": {}, "completed_quest_ids": []}
 	gold = 500
 	tokens = 5
@@ -823,6 +847,10 @@ func save_game() -> bool:
 		"visited_regions":           visited_regions,
 		"visited_subregions":        visited_subregions,
 		"cleared_acf_locations":     cleared_acf_locations,
+		"discovered_caches":         discovered_caches,
+		"recruited_npc_names":       recruited_npc_names,
+		"npc_trust":                 npc_trust,
+		"npc_active_quests":         npc_active_quests,
 		"base_tier":                 base_tier,
 		"base_supplies":             base_supplies,
 		"base_defense":              base_defense,
@@ -830,6 +858,7 @@ func save_game() -> bool:
 		"base_acreage":              base_acreage,
 		"base_facilities":           base_facilities,
 		"recruited_allies":          recruited_allies,
+		"custom_monsters":           custom_monsters,
 		"stash":                     stash,
 		"team_indices":              team_indices,
 		"characters":                chars_data,
@@ -902,6 +931,10 @@ func load_game() -> bool:
 	visited_regions          = Array(data.get("visited_regions", []))
 	visited_subregions       = Array(data.get("visited_subregions", []))
 	cleared_acf_locations    = Array(data.get("cleared_acf_locations", []))
+	discovered_caches        = Array(data.get("discovered_caches", []))
+	recruited_npc_names      = Array(data.get("recruited_npc_names", []))
+	npc_trust                = Dictionary(data.get("npc_trust", {}))
+	npc_active_quests        = Dictionary(data.get("npc_active_quests", {}))
 	base_tier                = int(data.get("base_tier", 1))
 	base_supplies            = int(data.get("base_supplies", 50))
 	base_defense             = int(data.get("base_defense", 10))
@@ -909,6 +942,7 @@ func load_game() -> bool:
 	base_acreage             = int(data.get("base_acreage", 2))
 	base_facilities          = Array(data.get("base_facilities", [0]))
 	recruited_allies         = Array(data.get("recruited_allies", []))
+	custom_monsters          = Array(data.get("custom_monsters", []))
 	stash                    = Array(data.get("stash",                    []))
 	last_login_date          = str(data.get("last_login_date", ""))
 

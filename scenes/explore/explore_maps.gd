@@ -208,6 +208,12 @@ static func _upper_forty() -> Dictionary:
 				["Golden fortune—+50 Gold", "gold", 50],
 				["Blessed insight—+1 SP", "sp", 1]
 			],
+			"hidden_caches": [
+				[4, 16, "stash", "Noble's Hidden Purse", 12, "gold", 75],
+				[25, 5, "lore", "Etched Rune on Wall", 14, "xp", 80],
+				[18, 18, "item", "Potion of Healing", 10, "item", 0],
+				[12, 3, "stash", "Loose Cobblestone Cache", 13, "gold", 50],
+			],
 			"legend": {
 				"road": "Cobbled Promenade",
 				"plaza": "Grand Plaza",

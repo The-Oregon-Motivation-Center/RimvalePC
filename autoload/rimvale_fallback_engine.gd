@@ -402,6 +402,9 @@ func get_character_feat_tier(handle: int, feat_name: String) -> int:
 	if not _chars.has(handle): return 0
 	return int(_chars[handle].get("feats", {}).get(feat_name, 0))
 
+func get_feat_registry_entry(feat_name: String) -> Dictionary:
+	return _FEAT_REGISTRY.get(feat_name, {})
+
 func get_character_injuries(handle: int) -> PackedStringArray:
 	return PackedStringArray(_chars.get(handle, {}).get("injuries", []))
 
@@ -2873,22 +2876,22 @@ func _ensure_feat_registry() -> void:
 			2: "See in magical darkness. Once/rest become intangible for 1 round.",
 			3: "Once/rest summon a shadowy minion (effect SP ≤ level). Once/LR bargain with Shadows for a miracle."}},
 		# ── Domain Feats ──
-		"Rooted Initiate": {"cat": cd, "tiers": {
-			1: "Biological domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Bio spells create 10 ft cube of half-cover plants.",
-			2: "Bio SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Bio spells grant attack bonus equal to SP spent.",
-			3: "Bio SP penalty eliminated. Once/LR heal (3×Divinity) HP and remove a minor condition."}},
-		"Alchemical Adept": {"cat": cd, "tiers": {
-			1: "Chemical domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Once/SR create basic solution; auto-success on minor.",
-			2: "Chemical SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Once/SR neutralize a toxin or cast a 4 SP chemical spell for free.",
-			3: "Chemical SP penalty eliminated. Once/LR trigger reaction to blind/daze/slow in 30 ft area."}},
-		"Ember Manipulator": {"cat": cd, "tiers": {
-			1: "Physical domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Once/SR ignite flame; reduces fire spell cost by 3 SP.",
-			2: "Physical SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Once/LR create illusion; disadvantage on attacks vs allies for 1 min.",
-			3: "Physical SP penalty eliminated. Telekinesis/constructs cost 2 less SP."}},
-		"Whispering Mind": {"cat": cd, "tiers": {
-			1: "Spiritual domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Divinity/SR send telepathic message with instant response.",
-			2: "Spiritual SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Once/LR nullify a magical effect for 1 round.",
-			3: "Spiritual SP penalty eliminated. Animated constructs gain hover and intangible for free."}},
+		"Rooted Initiate": {"cat": cd, "domain": "Biological", "tier_names": {1: "Rooted Initiate", 2: "Verdant Channeler", 3: "Gaia's Mastery"}, "tiers": {
+			1: "Primary: Biological domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: When you cast a Biological spell, cause small plants or moss to grow in a 10 ft cube, providing half cover until end of your next turn.",
+			2: "Primary: Biological domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: When you cast a Biological spell, grant yourself a bonus to your next attack equal to the SP spent.",
+			3: "Primary: Biological domain SP penalty eliminated (Minor: 0, Mod: 0, Maj: 0). Secondary: Once/LR call upon the earth to heal HP equal to 3x Divinity score and remove a minor condition (poisoned, fatigued, etc.)."}},
+		"Alchemical Adept": {"cat": cd, "domain": "Chemical", "tier_names": {1: "Alchemical Adept", 2: "Fluid Transmuter", 3: "Combustion Savant"}, "tiers": {
+			1: "Primary: Chemical domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: Once/SR create a basic alchemical solution (10 min). Reduces difficulty by 1 rank; auto-success if minor.",
+			2: "Primary: Chemical domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: Once/SR neutralize a non-magical poison/toxin (up to 1ft³) as a free action, or cast a Chemical spell of 4 SP or less for free.",
+			3: "Primary: Chemical domain SP penalty eliminated (Minor: 0, Mod: 0, Maj: 0). Secondary: Once/LR trigger a controlled chemical reaction to blind, daze, or slow enemies in a 30 ft area within 100 ft. Standard spell DC. No SP required."}},
+		"Ember Manipulator": {"cat": cd, "domain": "Physical", "tier_names": {1: "Ember Manipulator", 2: "Kinetic Shaper", 3: "Mirage Architect"}, "tiers": {
+			1: "Primary: Physical domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: Once/SR as a free action, ignite a small flame, reducing fire spell cost by 3 SP (max -6 with sources, min 0).",
+			2: "Primary: Physical domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: Once/LR as an action, create an illusion that conceals you and allies (disadvantage on attacks against you for 1 minute).",
+			3: "Primary: Physical domain SP penalty eliminated (Minor: 0, Mod: 0, Maj: 0). Secondary: When you use telekinesis or create an inanimate construct, it costs 2 less SP (min 0)."}},
+		"Whispering Mind": {"cat": cd, "domain": "Spiritual", "tier_names": {1: "Whispering Mind", 2: "Ethereal Summoner", 3: "Veilbreaker"}, "tiers": {
+			1: "Primary: Spiritual domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: Divinity score times per SR, send a brief telepathic message to an ally within sight. Target can respond immediately.",
+			2: "Primary: Spiritual domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: Once/LR as an action, nullify a magical effect or barrier in your vicinity for 1 round.",
+			3: "Primary: Spiritual domain SP penalty eliminated (Minor: 0, Mod: 0, Maj: 0). Secondary: When you summon or create an animate construct, it gains hover and intangible without adding to SP cost."}},
 		# ── Exploration Feats ──
 		"Agile Explorer": {"cat": ce, "tiers": {
 			1: "Climb at full speed; not vulnerable while climbing. Once/LR auto-succeed on a fall/prone check.",
@@ -2968,10 +2971,6 @@ func _ensure_feat_registry() -> void:
 			1: "Primary: 1/SR move through up to 15 ft of solid matter as part of a Move action. Secondary: Surface retains a shimmering scar for 1 round; creatures within 5 ft take 1d4 + Divinity psychic damage."}},
 		"Barkskin Ritual": {"cat": cmi, "tiers": {
 			1: "Primary: 1/LR as an action, grow bark over skin or armor; for 1 hour gain +2 AC and resistance to slashing damage. Secondary: While active, creatures that grapple you or strike you in melee take 1 piercing damage at the start of their turn."}},
-		"Biological Domain": {"cat": cd, "tiers": {
-			1: "Primary: Biological domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: Biological spells create 10ft cube of half cover plants/moss.",
-			2: "Primary: Biological domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: Bio spells grant attack bonus equal to SP spent.",
-			3: "Primary: Biological domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 0). Secondary: 1/LR heal HP (3x DIV) and remove minor condition."}},
 		"Blade Scripture": {"cat": cmi, "tiers": {
 			1: "Primary: 1/LR as part of an attack action, inscribe a rune on your weapon; for 10 minutes deals +1d6 radiant or necrotic damage (your choice) and you heal 1 HP each time you hit. Secondary: While active, weapon sheds dim light in 10 ft radius; activate or deactivate as a Basic action."}},
 		"Breath of Stone": {"cat": cmi, "tiers": {
@@ -2990,10 +2989,6 @@ func _ensure_feat_registry() -> void:
 			3: "Primary: orb of chaos, 5ft radius, -1 spell cost. Secondary: 1/LR, upgrade Chaos spell 1 rank in 2 parameters."}},
 		"Chaos's Flow": {"cat": cmi, "tiers": {
 			1: "Primary: 1/SR as a reaction, impose disadvantage on an enemy's check; if target succeeds, ability is not consumed and you can try again until a target fails. Secondary: If the enemy fails, you gain +1d4 to your next roll."}},
-		"Chemical Domain": {"cat": cd, "tiers": {
-			1: "Primary: Chemical domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: 1/SR create basic solution; reduces difficulty 1 rank (auto-success if minor).",
-			2: "Primary: Chemical domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: 1/SR neutralize toxin as free action OR cast 4 SP chemical spell for free.",
-			3: "Primary: Chemical domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 0). Secondary: 1/LR trigger reaction to blind/daze/slow in 30ft area (100ft range, Standard DC)."}},
 		"Coinreader's Wink": {"cat": cmi, "tiers": {
 			1: "Primary: 1/LR basic action, study a creature's body language for 10 seconds; gain advantage on next Insight, Deception, or Persuasion check against that creature for 1 hour. Secondary: If you succeed, the target becomes more careless, lowering DC of future social checks against them by 2 for 1 hour."}},
 		"Crafting & Artifice": {"cat": ccr, "tiers": {
@@ -3074,10 +3069,6 @@ func _ensure_feat_registry() -> void:
 			1: "Primary: Proficiency with Painter's supplies; add Divinity to checks to create, appraise, or restore artwork. Secondary: As an action, paint a symbol granting an ally advantage on one social or morale check in the next minute.",
 			2: "Primary: Add 2x Divinity to all Painter's Supplies checks. Secondary: 1/LR on a failed art check, succeed instead without wasting materials.",
 			3: "Primary: Add 3x Divinity to all Painter's Supplies checks. Secondary: 1/week create artwork so lifelike it can distract, inspire, or briefly fool magical detection."}},
-		"Physical Domain": {"cat": cd, "tiers": {
-			1: "Primary: Physical domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: 1/SR free action ignite flame; reduces fire spell cost by 3 SP (max -6 with sources, min 0).",
-			2: "Primary: Physical domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: 1/LR action create illusion; disadvantage on attacks against allies for 1 min.",
-			3: "Primary: Physical domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 0). Secondary: Telekinesis/constructs cost 2 less SP (min 0)."}},
 		"Planar Graze": {"cat": cmi, "tiers": {
 			1: "Primary: 1/SR when you make a melee or ranged attack, on a hit deal +1d8 force damage and push target 15 ft (no save). Secondary: If target hits a solid surface, they take +1d6 psychic damage."}},
 		"Poisoner's Kit": {"cat": ccr, "tiers": {
@@ -3106,10 +3097,6 @@ func _ensure_feat_registry() -> void:
 			3: "Primary: Reduce required preparation time by half (minimum 1 hour). Secondary: 1/week craft or enhance a weapon or armor to grant it a minor magical property or increased durability."}},
 		"Spark Leech": {"cat": cmi, "tiers": {
 			1: "Primary: 1/SR as a reaction when a creature within 10 ft casts a spell, force a Divinity save (DC 10 + Divinity); on failure, steal SP equal to your Divinity score. Secondary: If successful, gain +1 to your next saving throw."}},
-		"Spiritual Domain": {"cat": cd, "tiers": {
-			1: "Primary: Spiritual domain SP penalty reduced (Minor: 0, Mod: 2, Maj: 4). Secondary: DIV/SR send telepathic message with instant response.",
-			2: "Primary: Spiritual domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 2). Secondary: 1/LR action nullify magical effect/barrier for 1 round.",
-			3: "Primary: Spiritual domain SP penalty reduced (Minor: 0, Mod: 0, Maj: 0). Secondary: Animate constructs gain hover and intangible for free."}},
 		"Split Second Read": {"cat": cmi, "tiers": {
 			1: "Primary: 1/LR free action, instantly learn if a creature is afraid, angry, calm, or hiding something — no check required. Secondary: Gain +1 to AC or saving throws against effects initiated by that creature for the next 10 minutes."}},
 		"Stormbound Titan": {"cat": casc, "tiers": {
@@ -3458,11 +3445,22 @@ func generate_quest(region: String = "") -> PackedStringArray:
 
 ## Roll a skill challenge for an entity.
 ## Returns PackedStringArray: [passed(0/1), roll(str), modifier(str), dc(str), detail_text]
-func execute_skill_challenge(entity_handle: int, skill_name: String, dc: int) -> PackedStringArray:
+func execute_skill_challenge(entity_handle: int, skill_name: String, dc: int, stat_override: int = -1) -> PackedStringArray:
 	const SKILL_NAMES: Array = [
 		"Arcane","Crafting","Creature Handling","Cunning","Exertion",
 		"Intuition","Learnedness","Medical","Nimble","Perception",
 		"Perform","Sneak","Speechcraft","Survival"
+	]
+	# Governing stat index for each skill:
+	# DIV=4: Arcane, Intuition, Perform, Speechcraft
+	# INT=2: Crafting, Learnedness, Medical
+	# STR=0: Creature Handling, Exertion
+	# SPD=1: Cunning, Nimble, Sneak
+	# VIT=3: Perception, Survival
+	const SKILL_STAT: PackedInt32Array = [
+		4, 2, 0, 1, 0,   # Arcane(DIV), Crafting(INT), CreatureHandling(STR), Cunning(SPD), Exertion(STR)
+		4, 2, 2, 1, 3,   # Intuition(DIV), Learnedness(INT), Medical(INT), Nimble(SPD), Perception(VIT)
+		4, 1, 4, 3        # Perform(DIV), Sneak(SPD), Speechcraft(DIV), Survival(VIT)
 	]
 	var skill_idx: int = SKILL_NAMES.find(skill_name)
 	var modifier: int  = 0
@@ -3470,6 +3468,11 @@ func execute_skill_challenge(entity_handle: int, skill_name: String, dc: int) ->
 	if entity_handle >= 0 and _chars.has(entity_handle):
 		if skill_idx >= 0:
 			modifier = get_character_skill(entity_handle, skill_idx)
+			# Add the governing stat value
+			var c: Dictionary = _chars[entity_handle]
+			var stats: Array = c.get("stats", [1, 1, 1, 1, 1])
+			var stat_idx: int = stat_override if stat_override >= 0 else SKILL_STAT[skill_idx]
+			modifier += int(stats[stat_idx])
 		roller_name = str(get_character_name(entity_handle))
 
 	var d20: int   = randi() % 20 + 1
@@ -4425,7 +4428,7 @@ func _dung_spawn_summon(caster_id: String, creature_name: String, creature_level
 		"handle":       -1,
 		"lineage_name": "Summon",
 		"x": spawn_x, "y": spawn_y, "z": 0,
-		"is_player":   false,
+		"is_player":   true,
 		"is_friendly": true,
 		"is_dead":     false,
 		"is_flying":   false,
@@ -4438,7 +4441,10 @@ func _dung_spawn_summon(caster_id: String, creature_name: String, creature_level
 		"ac":    sac,
 		"speed": sspd,
 		"ap_spent":  0,
+		"actions_taken": 0,
 		"move_used": 0,
+		"hit_bonus_buff": 0,
+		"hit_penalty":    0,
 		"equipped_weapon": s_weapon,
 		"equipped_armor":  "None",
 		"equipped_shield": "None",
@@ -4451,6 +4457,9 @@ func _dung_spawn_summon(caster_id: String, creature_name: String, creature_level
 		"creature_level": lv,
 	}
 	_dungeon_entities.append(ent)
+	# Add to player queue so the player can control this summon
+	if _dungeon_is_player_phase:
+		_dungeon_player_queue.append(summon_id)
 	return ent
 
 ## Cast Summon Creature spell — creates a custom construct from player-specified build.
@@ -4556,7 +4565,7 @@ func _dung_cast_summon_creature(caster: Dictionary, spell_name: String, build: D
 		"handle":       -1,
 		"lineage_name": "Summon",
 		"x": spawn_x, "y": spawn_y, "z": 0,
-		"is_player":   false,
+		"is_player":   true,
 		"is_friendly": true,
 		"is_dead":     false,
 		"is_flying":   false,
@@ -4569,7 +4578,10 @@ func _dung_cast_summon_creature(caster: Dictionary, spell_name: String, build: D
 		"ac":    s_ac,
 		"speed": s_speed,
 		"ap_spent":  0,
+		"actions_taken": 0,
 		"move_used": 0,
+		"hit_bonus_buff": 0,
+		"hit_penalty":    0,
 		"equipped_weapon": "Strike",
 		"equipped_armor":  "None",
 		"equipped_shield": "None",
@@ -4583,6 +4595,9 @@ func _dung_cast_summon_creature(caster: Dictionary, spell_name: String, build: D
 		"summon_feats":  custom_feats.duplicate(),  # store for reference
 	}
 	_dungeon_entities.append(ent)
+	# Add to player queue so the player can control this summon
+	if _dungeon_is_player_phase:
+		_dungeon_player_queue.append(summon_id)
 
 	return _dung_ok("%s summons %s at (%d, %d)! [%d SP spent, %d rounds]" % [
 		caster["name"], creature_name, spawn_x, spawn_y, total_sp, dur], ap_cost, total_sp)
@@ -6930,7 +6945,8 @@ func get_custom_spells() -> Array:
 	for sp_name in _SPELL_DB:
 		var s: Dictionary = _SPELL_DB[sp_name]
 		if s.get("custom", false):
-			result.append(sp_name)
+			result.append([sp_name, s.get("dom", 0), str(s.get("sc", 2)), s.get("desc", ""),
+				str(s.get("rt", 0)), str(s.get("atk", false))])
 	return result
 
 # ── Terrain registry ──────────────────────────────────────────────────────────
@@ -10055,6 +10071,12 @@ func _feat_sp_modifier(caster: Dictionary, spell_dom: String) -> int:
 		var tier: int = int(feats.get(dom_feat, 0)) if feats.get(dom_feat) is int \
 			else (1 if feats[dom_feat] else 0)
 		delta -= clampi(tier, 0, 3)
+	# Backward compat: old saves may store under "<Domain> Domain" name
+	var old_name: String = spell_dom + " Domain"
+	if dom_feat != "" and not feats.has(dom_feat) and feats.has(old_name):
+		var tier2: int = int(feats.get(old_name, 0)) if feats.get(old_name) is int \
+			else (1 if feats[old_name] else 0)
+		delta -= clampi(tier2, 0, 3)
 	# Spell Shaper (magic feat): −1 per tier (capped at −2). Registry name has a space.
 	if feats.has("Spell Shaper"):
 		var t2: int = int(feats.get("Spell Shaper", 0)) if feats.get("Spell Shaper") is int \
@@ -11860,4 +11882,85 @@ func start_mob_dungeon(player_handles, mob_count: int, mob_level: int, terrain_s
 			"inventory":   _generate_creature_loot(mob_level),
 			"looted":      false,
 		})
+	_update_fog()
+
+func start_custom_monster_dungeon(player_handles, custom_monster: Dictionary, terrain_style: int) -> void:
+	start_dungeon(player_handles, 1, -1, terrain_style)
+	_dungeon_type = 5  # Custom Monster
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	var level: int = int(custom_monster.get("level", 1))
+	var is_apex: bool = bool(custom_monster.get("apex", false))
+	var name_str: String = str(custom_monster.get("name", "Custom Monster"))
+	var stats: Dictionary = custom_monster.get("stats", {"STR": 1, "SPD": 1, "INT": 1, "VIT": 1, "DIV": 1})
+
+	# Calculate derived stats based on monster creation rules
+	var str_val: int = int(stats.get("STR", 1))
+	var spd_val: int = int(stats.get("SPD", 1))
+	var int_val: int = int(stats.get("INT", 1))
+	var vit_val: int = int(stats.get("VIT", 1))
+	var div_val: int = int(stats.get("DIV", 1))
+
+	var hp: int
+	var ap: int
+	var sp: int
+	var ac: int = 10
+
+	if is_apex:
+		hp = 5 * level + vit_val
+		ap = 10 + str_val
+		sp = 10 + level + div_val
+	else:
+		hp = 3 * level + vit_val
+		ap = 3 + str_val
+		sp = 3 + level + div_val
+
+	_dungeon_encounter_name = "Custom Monster: %s" % name_str
+	_dungeon_enemy_level = level
+
+	# Find a valid floor tile far from players
+	var occupied: Dictionary = {}
+	for e in _dungeon_entities:
+		occupied[Vector2i(int(e["x"]), int(e["y"]))] = true
+	var best_pos: Array = [12, 12]
+	var best_dist: int = 0
+	for fy in range(MAP_SIZE):
+		for fx in range(MAP_SIZE):
+			if _dungeon_map[fy * MAP_SIZE + fx] == 0:  # floor
+				if occupied.has(Vector2i(fx, fy)):
+					continue
+				var min_pd: int = 999
+				for e in _dungeon_entities:
+					var dx: int = abs(fx - int(e["x"]))
+					var dy: int = abs(fy - int(e["y"]))
+					min_pd = mini(min_pd, maxi(dx, dy))
+				if min_pd > best_dist:
+					best_dist = min_pd
+					best_pos = [fx, fy]
+
+	_dungeon_entities.append({
+		"id":             "enemy_0",
+		"name":           name_str,
+		"handle":         -1,
+		"lineage_name":   "Custom",
+		"x": best_pos[0], "y": best_pos[1], "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"hp":    hp,    "max_hp": hp,
+		"ap":    ap,    "max_ap": ap,
+		"sp":    sp,    "max_sp": sp,
+		"ac":    ac,
+		"speed": 5 + spd_val,
+		"ap_spent":  0, "actions_taken": 0, "move_used": 0,
+		"equipped_weapon": "Claw",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   _generate_creature_loot(level),
+		"looted":      false,
+		"is_boss":     is_apex,
+	})
 	_update_fog()

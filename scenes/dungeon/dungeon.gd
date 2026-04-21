@@ -256,6 +256,7 @@ var _cam_drag_last: Vector2 = Vector2.ZERO
 var _log_text:         RichTextLabel
 var _btn_next_unit:    Button
 var _btn_end_phase:    Button
+var _btn_end_dungeon:  Button
 var _btn_back:         Button
 var _phase_label:      Label
 var _round_label:      Label
@@ -817,12 +818,24 @@ func _check_outcome() -> void:
 		_phase_label.text = "VICTORY!"
 		_phase_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.10))
 		_add_log("[color=gold]✦ All enemies defeated! Victory![/color]")
+		_add_log("[color=yellow]You may continue exploring. Press \"End Dungeon\" when ready.[/color]")
+		# Re-enable movement so the player can keep exploring
+		_btn_next_unit.disabled = false
+		_btn_end_phase.disabled = false
+		# Show the End Dungeon button
+		_btn_end_dungeon.visible = true
 	else:
 		_phase_label.text = "DEFEAT"
 		_phase_label.add_theme_color_override("font_color", Color(0.85, 0.20, 0.20))
 		_add_log("[color=red]✗ Your party has fallen![/color]")
-	# Brief log delay before modal (visual polish — show it on next frame)
-	_show_outcome_modal.call_deferred(result)
+		# Defeat: show modal immediately
+		_show_outcome_modal.call_deferred(result)
+
+func _on_end_dungeon_pressed() -> void:
+	_btn_end_dungeon.visible = false
+	_btn_next_unit.disabled = true
+	_btn_end_phase.disabled = true
+	_show_outcome_modal("victory")
 
 func _show_outcome_modal(result: String) -> void:
 	if result == "victory":
@@ -1380,7 +1393,7 @@ func _on_learn_custom_spell() -> void:
 
 	_e.add_custom_spell(
 		spell_name, _sb_domain, final_cost, desc,
-		_sb_range_idx, not _sb_is_saving_throw,
+		_sb_range_idx, (not _sb_is_saving_throw) and (not _sb_is_healing),
 		_sb_die_count, die_sides, _sb_damage_type,
 		_sb_is_healing, dur_rounds, _sb_targets,
 		_sb_area_idx, cond_csv, _sb_is_teleport,
@@ -1577,10 +1590,22 @@ func _build_ui() -> void:
 	root.add_child(_build_header())
 
 	# Map fills all available space above the bottom bar
-	root.add_child(_build_center_panel())
+	var center = _build_center_panel()
+	center.size_flags_stretch_ratio = 1.0
+	root.add_child(center)
 
 	# Mobile-style bottom bar (unit tabs + badges + action buttons)
-	root.add_child(_build_bottom_bar())
+	# Wrap in ScrollContainer so the bar never overflows the screen
+	var bottom_scroll := ScrollContainer.new()
+	bottom_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bottom_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	bottom_scroll.size_flags_stretch_ratio = 1.2  # bottom bar gets slightly more space
+	bottom_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	bottom_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	var bottom_bar := _build_bottom_bar()
+	bottom_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bottom_scroll.add_child(bottom_bar)
+	root.add_child(bottom_scroll)
 
 	_move_popup = _build_move_popup()
 	add_child(_move_popup)
@@ -1953,6 +1978,18 @@ func _build_right_panel() -> Control:
 	_btn_end_phase.pressed.connect(_on_end_phase)
 	turn_row.add_child(_btn_end_phase)
 
+	# Victory: "End Dungeon" button (hidden until all enemies are defeated)
+	_btn_end_dungeon = _colored_btn("✦ End Dungeon — Claim Victory ✦", Color(0.75, 0.65, 0.05))
+	_btn_end_dungeon.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_btn_end_dungeon.custom_minimum_size = Vector2(0, 44)
+	_btn_end_dungeon.visible = false
+	_btn_end_dungeon.pressed.connect(_on_end_dungeon_pressed)
+	var end_dung_margin := MarginContainer.new()
+	for s2 in ["left","right","top","bottom"]:
+		end_dung_margin.add_theme_constant_override("margin_" + s2, 4)
+	end_dung_margin.add_child(_btn_end_dungeon)
+	outer_vbox.add_child(end_dung_margin)
+
 	# Divider + battle log
 	outer_vbox.add_child(_hsep())
 
@@ -2184,6 +2221,18 @@ func _build_bottom_bar() -> Control:
 	_btn_end_phase.pressed.connect(_on_end_phase)
 	util_row.add_child(_btn_end_phase)
 
+	# Victory: "End Dungeon" button (hidden until all enemies defeated)
+	_btn_end_dungeon = _colored_btn("✦ End Dungeon — Claim Victory ✦", Color(0.75, 0.65, 0.05))
+	_btn_end_dungeon.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_btn_end_dungeon.custom_minimum_size = Vector2(0, 44)
+	_btn_end_dungeon.visible = false
+	_btn_end_dungeon.pressed.connect(_on_end_dungeon_pressed)
+	var end_dung_margin2 := MarginContainer.new()
+	for s3 in ["left","right","top","bottom"]:
+		end_dung_margin2.add_theme_constant_override("margin_" + s3, 4)
+	end_dung_margin2.add_child(_btn_end_dungeon)
+	outer.add_child(end_dung_margin2)
+
 	# ── Battle log ────────────────────────────────────────────────────────────
 	# Top accent line — gold strip to draw the eye
 	var log_accent := ColorRect.new()
@@ -2193,7 +2242,8 @@ func _build_bottom_bar() -> Control:
 
 	var log_bg := ColorRect.new()
 	log_bg.color = Color(0.05, 0.04, 0.08)
-	log_bg.custom_minimum_size = Vector2(0, 110)
+	log_bg.custom_minimum_size = Vector2(0, 130)
+	log_bg.clip_children = CanvasItem.CLIP_CHILDREN_AND_DRAW
 	outer.add_child(log_bg)
 
 	var log_margin := MarginContainer.new()
@@ -2384,41 +2434,39 @@ func _build_loot_popup() -> Control:
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	vbox.add_child(btn_row)
 
-	var btn_close := _colored_btn("✗ Close", Color(0.35, 0.12, 0.12))
-	btn_close.custom_minimum_size = Vector2(90, 34)
-	btn_close.pressed.connect(func(): _loot_popup.visible = false)
-	btn_row.add_child(btn_close)
-
-	var btn_take := _colored_btn("★ Take All", Color(0.15, 0.45, 0.18))
-	btn_take.custom_minimum_size = Vector2(100, 34)
-	btn_take.pressed.connect(_on_loot_take_all)
-	btn_row.add_child(btn_take)
+	var btn_ok := _colored_btn("OK  [Enter]", Color(0.15, 0.45, 0.18))
+	btn_ok.custom_minimum_size = Vector2(120, 34)
+	btn_ok.pressed.connect(func(): _loot_popup.visible = false)
+	btn_row.add_child(btn_ok)
 
 	return overlay
 
 func _open_loot_popup(entity_id: String, enemy_name: String) -> void:
 	_loot_entity_id = entity_id
-	_loot_title_lbl.text = "⚔  %s — Loot" % enemy_name
 
 	for child in _loot_items_vbox.get_children():
 		child.queue_free()
 
 	var items: PackedStringArray = _e.get_dungeon_entity_loot(entity_id)
 	if items.is_empty():
+		# Already looted — don't show popup again
+		return
+
+	# Auto-loot immediately
+	var active := GameState.get_active_handles()
+	var ph: int = active[0] if not active.is_empty() else -1
+	_e.loot_dungeon_entity(entity_id, ph)
+
+	_loot_title_lbl.text = "✓  %s — Loot Collected!" % enemy_name
+	for item in items:
 		var lbl := Label.new()
-		lbl.text = "(Already looted)"
+		lbl.text = "• " + str(item)
 		lbl.add_theme_font_size_override("font_size", 12)
-		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		lbl.add_theme_color_override("font_color", Color(0.4, 0.9, 0.5))
 		_loot_items_vbox.add_child(lbl)
-	else:
-		for item in items:
-			var lbl := Label.new()
-			lbl.text = "• " + str(item)
-			lbl.add_theme_font_size_override("font_size", 12)
-			lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.80))
-			_loot_items_vbox.add_child(lbl)
 
 	_loot_popup.visible = true
+	_loot_popup.grab_focus()
 
 func _on_loot_take_all() -> void:
 	if _loot_entity_id.is_empty(): return
@@ -3943,6 +3991,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
 		# Enter / Space confirms the move popup when it's visible
 		if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER or event.keycode == KEY_SPACE:
+			if _loot_popup != null and _loot_popup.visible:
+				_loot_popup.visible = false
+				get_viewport().set_input_as_handled()
+				return
 			if _move_popup != null and _move_popup.visible and not _pending_move.is_empty():
 				_on_move_confirm()
 				get_viewport().set_input_as_handled()
@@ -4292,6 +4344,17 @@ func _on_action_pressed(action: Dictionary) -> void:
 			_open_construct_builder_dialog(action)
 			return
 
+	# Healing spells: always target allies, even if is_attack was set by mistake
+	if action_id == 10 and range_idx > 0:  # ACT_CAST_SPELL with range
+		var _sp_nm: String = str(action.get("matrix_id", ""))
+		var _sp_db: Dictionary = _e._SPELL_DB.get(_sp_nm, {})
+		if bool(_sp_db.get("heal", false)):
+			_pending_action = action.duplicate()
+			_pending_action["_target_friendly"] = true
+			_action_mode_lbl.text = "Click an ally to target…  [ESC to cancel]"
+			_update_3d_view()
+			return
+
 	# Single-target attack / grapple: enter target-selection mode (click enemy)
 	if is_attack or action_id == 18:  # 18 = ACT_GRAPPLE
 		_pending_action = action.duplicate()
@@ -4428,9 +4491,22 @@ func _on_back() -> void:
 
 	GameState.save_game()   # persist character HP, gold etc. earned in dungeon
 
-	# Return to the explore map — region/subregion already set in GameState
-	# Do NOT call travel_to_region (it clears subregion)
-	get_tree().change_scene_to_file("res://scenes/explore/explore.tscn")
+	# Return via main shell's pop_screen if available (preserves nav bar),
+	# otherwise fall back to direct scene change.
+	# Walk up the tree to find the main shell (it has pop_screen method)
+	var main: Node = get_parent()
+	while main != null and not main.has_method("pop_screen"):
+		main = main.get_parent()
+	if main != null:
+		if GameState.dungeon_source == "tab":
+			GameState.current_tab = 1  # World tab in main shell
+		main.pop_screen()
+	else:
+		# Fallback: direct scene change (no main shell)
+		if GameState.dungeon_source == "tab":
+			get_tree().change_scene_to_file("res://scenes/world/world.tscn")
+		else:
+			get_tree().change_scene_to_file("res://scenes/explore/explore.tscn")
 
 func _notify_story_combat_result(main_node: Node, victory: bool) -> void:
 	# The world scene is now the active child of main's content area.
@@ -5052,7 +5128,7 @@ func _sc_register_spell() -> void:
 		sc_handle = int(ent.get("handle", -2))
 	_e.add_custom_spell(
 		sname, _sc_domain, cost, _sc_description(),
-		_sc_range_idx, not _sc_is_saving_throw,
+		_sc_range_idx, (not _sc_is_saving_throw) and (not _sc_is_healing),
 		die_count, die_sides, _sc_damage_type,
 		_sc_is_healing, dur_rounds, targets,
 		area, cond_csv, _sc_is_teleport,
