@@ -110,6 +110,7 @@ var _cam_target: Vector3 = Vector3.ZERO
 var _cam_current_pos: Vector3 = Vector3.ZERO
 var _cam_dragging: bool = false
 var _cam_drag_start: Vector2 = Vector2.ZERO
+var _cam_free: bool = false           # true when WASD has panned camera away from party
 
 # ── Player 3D state ────────────────────────────────────────────────────────
 var _player_node: Node3D
@@ -119,6 +120,11 @@ var _player_target_pos: Vector3 = Vector3.ZERO
 var _player_moving: bool = false
 var _player_facing: float = 0.0  # yaw radians
 var _move_lerp_t: float = 0.0
+
+# ── Auto-walk pathfinding state ────────────────────────────────────────────
+var _auto_path: Array = []            # Array[Vector2i] — remaining tiles to walk
+var _auto_path_active: bool = false   # true while auto-walking
+var _path_markers: Array = []         # Array[Node3D] — glowing path tiles
 
 # ── UI refs ─────────────────────────────────────────────────────────────────
 var _info_vbox: VBoxContainer
@@ -192,15 +198,23 @@ func _process(delta: float) -> void:
 			_move_lerp_t = 1.0
 			_player_moving = false
 			_player_world_pos = _player_target_pos
-			# If a direction key is still held, immediately start the next move
-			_poll_held_direction()
+			if _auto_path_active:
+				# Continue auto-walk unless an event stopped it
+				_auto_walk_next_step()
+			else:
+				# If a direction key is still held, immediately start the next move
+				_poll_held_direction()
 		else:
 			_player_world_pos = _player_world_pos.lerp(_player_target_pos, _move_lerp_t)
 		_update_player_3d_pos()
 		_update_follower_3d_positions()
 
-	# Smooth camera follow
-	_cam_target = _cam_target.lerp(_player_world_pos, delta * 6.0)
+	# WASD free camera pan (continuous while keys held)
+	_poll_wasd_camera(delta)
+
+	# Smooth camera follow — only when not in free-cam mode
+	if not _cam_free:
+		_cam_target = _cam_target.lerp(_player_world_pos, delta * 6.0)
 	_update_camera_pos()
 
 	# Danger tile pulse via emission
@@ -285,6 +299,137 @@ func _get_tile_y(tx: int, ty: int) -> float:
 	if t == T_WATER:
 		return -0.15
 	return 0.0
+
+# ── A* Pathfinding ─────────────────────────────────────────────────────────
+
+func _find_path(from: Vector2i, to: Vector2i) -> Array:
+	## A* pathfinding on the tile grid. Returns Array[Vector2i] (excluding `from`).
+	## Returns empty array if no path exists.
+	if from == to:
+		return []
+	if not _is_walkable(to.x, to.y):
+		return []
+
+	# Open set as a simple sorted list (grid is only 30x22 = 660 tiles, fine for linear scan)
+	var open: Array = []          # Array of Vector2i
+	var g_score: Dictionary = {}  # Vector2i → float
+	var f_score: Dictionary = {}  # Vector2i → float
+	var came_from: Dictionary = {} # Vector2i → Vector2i
+
+	g_score[from] = 0.0
+	f_score[from] = float(_heuristic(from, to))
+	open.append(from)
+
+	var directions: Array = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+
+	while not open.is_empty():
+		# Find node in open set with lowest f_score
+		var current: Vector2i = open[0]
+		var best_f: float = f_score.get(current, 99999.0)
+		for i in range(1, open.size()):
+			var cf: float = f_score.get(open[i], 99999.0)
+			if cf < best_f:
+				best_f = cf
+				current = open[i]
+
+		if current == to:
+			# Reconstruct path
+			var path: Array = []
+			var node: Vector2i = to
+			while node != from:
+				path.push_front(node)
+				node = came_from[node]
+			return path
+
+		open.erase(current)
+		var cur_g: float = g_score.get(current, 99999.0)
+
+		for dir in directions:
+			var neighbor: Vector2i = current + dir
+			if not _is_walkable(neighbor.x, neighbor.y):
+				continue
+			var tentative_g: float = cur_g + 1.0
+			if tentative_g < g_score.get(neighbor, 99999.0):
+				came_from[neighbor] = current
+				g_score[neighbor] = tentative_g
+				f_score[neighbor] = tentative_g + float(_heuristic(neighbor, to))
+				if not open.has(neighbor):
+					open.append(neighbor)
+
+	return []  # No path found
+
+func _heuristic(a: Vector2i, b: Vector2i) -> int:
+	## Manhattan distance heuristic for A*.
+	return abs(a.x - b.x) + abs(a.y - b.y)
+
+# ── Path Visualization ────────────────────────────────────────────────────
+
+func _show_path_markers(path: Array) -> void:
+	## Draw glowing tiles along the planned path.
+	_clear_path_markers()
+	for pos in path:
+		var marker := MeshInstance3D.new()
+		var quad := PlaneMesh.new()
+		quad.size = Vector2(0.7, 0.7)
+		marker.mesh = quad
+
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.3, 0.85, 1.0, 0.45)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.emission_enabled = true
+		mat.emission = Color(0.3, 0.85, 1.0)
+		mat.emission_energy_multiplier = 1.5
+		mat.no_depth_test = true
+		marker.material_override = mat
+
+		var wp: Vector3 = _tile_to_world(pos.x, pos.y)
+		marker.position = Vector3(wp.x, wp.y + 0.06, wp.z)
+		_overlay_root.add_child(marker)
+		_path_markers.append(marker)
+
+func _clear_path_markers() -> void:
+	## Remove all path visualization nodes.
+	for m in _path_markers:
+		if is_instance_valid(m):
+			m.queue_free()
+	_path_markers.clear()
+
+# ── Auto-Walk Controller ──────────────────────────────────────────────────
+
+func _start_auto_walk(path: Array) -> void:
+	## Begin auto-walking along a computed path.
+	if path.is_empty():
+		return
+	_auto_path = path.duplicate()
+	_auto_path_active = true
+	_show_path_markers(_auto_path)
+	_auto_walk_next_step()
+
+func _auto_walk_next_step() -> void:
+	## Move to the next tile in the auto-walk queue.
+	if _auto_path.is_empty():
+		_stop_auto_walk()
+		return
+	var next_pos: Vector2i = _auto_path[0]
+	var dir: Vector2i = next_pos - _player_pos
+	# Sanity check: should be exactly 1 tile away
+	if abs(dir.x) + abs(dir.y) != 1:
+		_stop_auto_walk()
+		return
+	_auto_path.remove_at(0)
+	# Update path markers — remove the one we're stepping onto
+	if not _path_markers.is_empty():
+		var front_marker = _path_markers[0]
+		if is_instance_valid(front_marker):
+			front_marker.queue_free()
+		_path_markers.remove_at(0)
+	_try_move(dir)
+
+func _stop_auto_walk() -> void:
+	## Cancel auto-walk and clean up path visuals.
+	_auto_path.clear()
+	_auto_path_active = false
+	_clear_path_markers()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  UI CONSTRUCTION — 3D viewport + info panel
@@ -1867,17 +2012,26 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if _player_moving:
 		return  # ignore input during movement animation
+	# Arrow keys or Escape cancel auto-walk
+	if _auto_path_active and event is InputEventKey and event.pressed and not event.echo:
+		var cancel_keys := [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ESCAPE]
+		if event.keycode in cancel_keys:
+			_stop_auto_walk()
+			if event.keycode == KEY_ESCAPE:
+				return  # Escape just cancels, doesn't move
 	if event is InputEventKey and event.pressed and not event.echo:
+		# Arrow keys move the party (camera-relative grid movement)
 		var raw_dir := Vector2.ZERO
 		match event.keycode:
-			KEY_W, KEY_UP:    raw_dir = Vector2(0, -1)   # "forward"
-			KEY_S, KEY_DOWN:  raw_dir = Vector2(0,  1)   # "backward"
-			KEY_A, KEY_LEFT:  raw_dir = Vector2(-1, 0)   # "strafe left"
-			KEY_D, KEY_RIGHT: raw_dir = Vector2( 1, 0)   # "strafe right"
+			KEY_UP:    raw_dir = Vector2(0, -1)
+			KEY_DOWN:  raw_dir = Vector2(0,  1)
+			KEY_LEFT:  raw_dir = Vector2(-1, 0)
+			KEY_RIGHT: raw_dir = Vector2( 1, 0)
 			KEY_HOME:
 				_cam_yaw = 0.0
 				_cam_pitch = 40.0
 				_cam_dist = 10.0
+				_cam_free = false
 		if raw_dir != Vector2.ZERO:
 			var dir: Vector2i = _camera_relative_dir(raw_dir)
 			if dir != Vector2i.ZERO:
@@ -1886,16 +2040,42 @@ func _unhandled_input(event: InputEvent) -> void:
 			if vp != null:
 				vp.set_input_as_handled()
 
-## Check if a direction key is currently held and start moving if so.
+## WASD free camera pan — moves the camera target freely across the map.
+## Camera snaps back to the party when the player moves (arrow keys / click-to-walk).
+func _poll_wasd_camera(delta: float) -> void:
+	var pan_speed: float = 12.0  # world units per second
+	var move := Vector2.ZERO
+	if Input.is_key_pressed(KEY_W):
+		move.y -= 1.0
+	if Input.is_key_pressed(KEY_S):
+		move.y += 1.0
+	if Input.is_key_pressed(KEY_A):
+		move.x -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		move.x += 1.0
+	if move == Vector2.ZERO:
+		return
+	# Rotate movement by camera yaw so W always pushes "forward" from the camera's perspective
+	var yaw_rad: float = deg_to_rad(_cam_yaw)
+	var world_dx: float = move.x * cos(yaw_rad) - move.y * sin(yaw_rad)
+	var world_dz: float = move.x * sin(yaw_rad) + move.y * cos(yaw_rad)
+	_cam_target.x += world_dx * pan_speed * delta
+	_cam_target.z += world_dz * pan_speed * delta
+	# Clamp to map bounds
+	_cam_target.x = clampf(_cam_target.x, 0.0, float(GRID_W))
+	_cam_target.z = clampf(_cam_target.z, 0.0, float(GRID_H))
+	_cam_free = true
+
+## Check if an arrow key is currently held and start moving if so.
 func _poll_held_direction() -> void:
 	var raw_dir := Vector2.ZERO
-	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+	if Input.is_key_pressed(KEY_UP):
 		raw_dir = Vector2(0, -1)
-	elif Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+	elif Input.is_key_pressed(KEY_DOWN):
 		raw_dir = Vector2(0, 1)
-	elif Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+	elif Input.is_key_pressed(KEY_LEFT):
 		raw_dir = Vector2(-1, 0)
-	elif Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+	elif Input.is_key_pressed(KEY_RIGHT):
 		raw_dir = Vector2(1, 0)
 	if raw_dir != Vector2.ZERO:
 		var dir: Vector2i = _camera_relative_dir(raw_dir)
@@ -1940,6 +2120,8 @@ func _on_3d_input(event: InputEvent) -> void:
 
 func _on_3d_click(screen_pos: Vector2) -> void:
 	if _player_moving:
+		# Click while moving cancels auto-walk
+		_stop_auto_walk()
 		return
 	# Raycast from camera to find clicked tile
 	if _cam3d == null:
@@ -1960,16 +2142,15 @@ func _on_3d_click(screen_pos: Vector2) -> void:
 	if tx < 0 or tx >= GRID_W or ty < 0 or ty >= GRID_H:
 		return
 
-	# Move one step toward clicked tile
-	var diff := Vector2i(tx, ty) - _player_pos
-	if diff == Vector2i.ZERO:
+	var target := Vector2i(tx, ty)
+	if target == _player_pos:
 		return
-	var move_dir := Vector2i.ZERO
-	if abs(diff.x) >= abs(diff.y):
-		move_dir.x = 1 if diff.x > 0 else -1
-	else:
-		move_dir.y = 1 if diff.y > 0 else -1
-	_try_move(move_dir)
+
+	# Compute A* path and begin auto-walk
+	var path: Array = _find_path(_player_pos, target)
+	if path.is_empty():
+		return
+	_start_auto_walk(path)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MOVEMENT (game logic preserved, 3D animation added)
@@ -1987,7 +2168,8 @@ func _try_move(dir: Vector2i) -> void:
 
 	_player_pos = new_pos
 
-	# Start smooth 3D movement
+	# Start smooth 3D movement — snap camera back to party
+	_cam_free = false
 	_player_target_pos = _tile_to_world(new_pos.x, new_pos.y)
 	_player_moving = true
 	_move_lerp_t = 0.0
@@ -1998,13 +2180,15 @@ func _try_move(dir: Vector2i) -> void:
 	# Check for hidden caches near new position
 	_check_nearby_caches(new_pos)
 
-	# Check if we stepped on a random NPC
+	# Check if we stepped on a random NPC — stop auto-walk
 	if _npc_positions.has(new_pos):
+		_stop_auto_walk()
 		_show_npc_panel(_npc_positions[new_pos])
 		return
 
 	var tile: int = _get_tile(new_pos.x, new_pos.y)
 	if tile == T_DANGER:
+		_stop_auto_walk()
 		_on_danger_step()
 	elif tile == T_POI:
 		_on_poi_step(new_pos)
