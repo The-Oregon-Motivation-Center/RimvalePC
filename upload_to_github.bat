@@ -21,7 +21,7 @@ if errorlevel 1 (
 
 echo.
 set /p COMMIT_MSG="Enter commit message (or press Enter for default): "
-if "%COMMIT_MSG%"=="" set COMMIT_MSG=Add Create Construct spell with full builder UI, equipment sets, structures, dismiss/recall/reform actions
+if "%COMMIT_MSG%"=="" set COMMIT_MSG=Implement all 24 PHB/WG/GMG features: death saves, grapple, mounts, quests, bounty, banking, siege, kaiju, procedural dungeons, legacy system, and more
 
 echo.
 echo Committing with message: %COMMIT_MSG%
