@@ -1,5 +1,7 @@
 extends Control
 
+const _WS = preload("res://autoload/world_systems.gd")
+
 var current_tab: int = 0
 var quests: Array = []
 var active_tasks: Dictionary = {}
@@ -13,6 +15,7 @@ var _craft_member_dropdown: OptionButton
 var _craft_type_dropdown:   OptionButton
 var _craft_active_handles:  Array = []
 var _craft_tasks_vbox:      VBoxContainer
+var _repair_vbox:           VBoxContainer
 var _craftable_items:       Array = []   # cached from engine
 
 # ── Magic tab refs ────────────────────────────────────────────────────────────
@@ -38,13 +41,14 @@ var _forage_tasks_vbox: VBoxContainer
 var _task_timer: float = 0.0
 
 # ── Dungeon Dive state ───────────────────────────────────────────────────────
-var _dd_type: int          = 0   # 0=Standard 1=Kaiju 2=Apex 3=Militia 4=Mob 5=Custom
+var _dd_type: int          = 0   # 0=Standard 1=Kaiju 2=Apex 3=Militia 4=Mob 5=Custom 6=Siege
 var _dd_enemy_level: int   = 3
 var _dd_kaiju_idx: int     = 0
 var _dd_apex_idx: int      = 0
 var _dd_militia_idx: int   = 0
 var _dd_mob_count: int     = 30
 var _dd_mob_level: int     = 3
+var _dd_siege_tier: int    = 1
 var _dd_terrain_style: int = 0
 var _dd_config_panel: VBoxContainer
 var _dd_type_btns: Array   = []
@@ -62,6 +66,11 @@ var _mc_ability_category_opt: OptionButton
 var _mc_ability_buttons: Array = []
 var _mc_ability_grid: GridContainer
 var _mc_saved_vbox: VBoxContainer
+
+# ── Quest Board tab refs ────────────────────────────────────────────────────
+var _quest_board_quests: Array = []  # available quests shown on board
+var _quest_active_vbox: VBoxContainer
+var _quest_board_vbox: VBoxContainer
 
 # ── Story tab refs ────────────────────────────────────────────────────────────
 var _story_sections_vbox: VBoxContainer  # rebuilt when badges change
@@ -748,7 +757,7 @@ func _ready() -> void:
 	tab_container.custom_minimum_size.y = 60
 	main_vbox.add_child(tab_container)
 
-	var tabs = ["Map", "Missions", "Story", "Dungeon", "Crafting", "Foraging", "Rituals", "Base", "Magic"]
+	var tabs = ["Map", "Missions", "Story", "Dungeon", "Crafting", "Foraging", "Rituals", "Base", "Magic", "Quests"]
 	for i in range(tabs.size()):
 		var tab_btn = RimvaleUtils.button(tabs[i], RimvaleColors.ACCENT, 50, 14)
 		tab_btn.pressed.connect(_on_tab_selected.bindv([i]))
@@ -772,16 +781,26 @@ func _ready() -> void:
 	_build_rituals_tab(_content_area)
 	_build_base_tab(_content_area)
 	_build_magic_world_tab(_content_area)
+	_build_quests_tab(_content_area)
 
-	# Show the correct tab — if returning from a tab-launched dungeon, go back there
-	var start_tab: int = 0
+	# Show the correct tab — if returning from a tab-launched dungeon, go back there;
+	# otherwise restore the last sub-tab the player was on.
+	var start_tab: int = GameState.world_sub_tab
 	if GameState.dungeon_source == "tab":
 		start_tab = GameState.dungeon_return_tab
 		GameState.dungeon_source = "explore"  # reset so next load starts at Map
 	_on_tab_selected(start_tab)
 
+	# Check if a story combat just finished and needs to be resolved
+	if GameState.quest_state.has("story_combat_pending_result"):
+		var victory: bool = bool(GameState.quest_state["story_combat_pending_result"])
+		GameState.quest_state.erase("story_combat_pending_result")
+		# Deferred so the UI is fully built before we try to update it
+		_on_story_combat_resolved.call_deferred(victory)
+
 func _on_tab_selected(idx: int) -> void:
 	current_tab = idx
+	GameState.world_sub_tab = idx
 	for child in _content_area.get_children():
 		child.visible = false
 	if idx < _content_area.get_child_count():
@@ -932,6 +951,10 @@ func _build_story_tab(parent: Control) -> void:
 	_story_sections_vbox.add_theme_constant_override("separation", 8)
 	vbox.add_child(_story_sections_vbox)
 	_rebuild_story_sections()
+
+	# ── Divine Ascension Section ──────────────────────────────────────────────
+	vbox.add_child(RimvaleUtils.spacer(4))
+	_build_ascension_section(vbox)
 
 func _update_story_badge_lbl() -> void:
 	if _story_badge_lbl == null:
@@ -1108,6 +1131,130 @@ func _build_story_mission_row(m_data: Array) -> Control:
 	right_vbox.add_child(play_btn)
 
 	return row
+
+func _build_ascension_section(parent: Control) -> void:
+	var ascension_card = PanelContainer.new()
+	ascension_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var card_style = StyleBoxFlat.new()
+	card_style.bg_color = Color(0.12, 0.08, 0.16, 1.0)
+	card_style.content_margin_left = 10; card_style.content_margin_right = 10
+	card_style.content_margin_top = 8; card_style.content_margin_bottom = 8
+	ascension_card.add_theme_stylebox_override("panel", card_style)
+	parent.add_child(ascension_card)
+
+	var cvbox = VBoxContainer.new()
+	cvbox.add_theme_constant_override("separation", 8)
+	ascension_card.add_child(cvbox)
+
+	# Header
+	var hdr = HBoxContainer.new()
+	hdr.add_theme_constant_override("separation", 6)
+	cvbox.add_child(hdr)
+	hdr.add_child(RimvaleUtils.label("✦", 16, Color(0.8, 0.4, 1.0)))
+	hdr.add_child(RimvaleUtils.label("Divine Ascension", 14, RimvaleColors.TEXT_WHITE))
+
+	cvbox.add_child(RimvaleUtils.separator())
+
+	if GameState.ascension_path.is_empty():
+		# Path selection view
+		cvbox.add_child(RimvaleUtils.label(
+			"Choose a path to divine ascension. Your choice will shape your destiny.",
+			11, RimvaleColors.TEXT_DIM))
+		cvbox.add_child(RimvaleUtils.spacer(4))
+
+		var paths: Dictionary = _WS.ASCENSION_PATHS
+		for path_name in ["Unity", "Chaos", "Void"]:
+			if not paths.has(path_name): continue
+			var path_data: Dictionary = paths[path_name]
+			var path_card = PanelContainer.new()
+			path_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var path_style = StyleBoxFlat.new()
+			path_style.bg_color = Color(0.08, 0.08, 0.12, 1.0)
+			path_style.content_margin_left = 8; path_style.content_margin_right = 8
+			path_style.content_margin_top = 6; path_style.content_margin_bottom = 6
+			path_card.add_theme_stylebox_override("panel", path_style)
+			cvbox.add_child(path_card)
+
+			var path_vbox = VBoxContainer.new()
+			path_vbox.add_theme_constant_override("separation", 4)
+			path_card.add_child(path_vbox)
+
+			path_vbox.add_child(RimvaleUtils.label(
+				path_name, 12, RimvaleColors.ACCENT))
+			var desc_lbl = RimvaleUtils.label(
+				str(path_data.get("desc", "")), 10, RimvaleColors.TEXT_GRAY)
+			desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			path_vbox.add_child(desc_lbl)
+
+			var choose_btn = RimvaleUtils.button(
+				"Choose " + path_name, RimvaleColors.ACCENT, 40, 11)
+			var cap_path: String = path_name
+			choose_btn.pressed.connect(func():
+				GameState.ascension_path = cap_path
+				GameState.save_game()
+				_rebuild_story_sections()  # Triggers UI refresh
+			)
+			path_vbox.add_child(choose_btn)
+	else:
+		# Active path view
+		cvbox.add_child(RimvaleUtils.label(
+			"Path: " + GameState.ascension_path, 12, RimvaleColors.GOLD))
+		cvbox.add_child(RimvaleUtils.spacer(2))
+
+		var paths: Dictionary = _WS.ASCENSION_PATHS
+		var path_data: Dictionary = paths.get(GameState.ascension_path, {})
+		var milestones: Array = path_data.get("milestones", [])
+		var tasks: Array = path_data.get("tasks", [])
+
+		# Milestone progress
+		if not milestones.is_empty():
+			cvbox.add_child(RimvaleUtils.label("Milestones:", 11, RimvaleColors.TEXT_WHITE))
+			for i in range(milestones.size()):
+				var milestone: String = str(milestones[i])
+				var completed: bool = i < GameState.ascension_progress
+				var color: Color = RimvaleColors.GOLD if completed else RimvaleColors.TEXT_DIM
+				var icon: String = "✓" if completed else "○"
+				cvbox.add_child(RimvaleUtils.label(
+					icon + " " + milestone, 10, color))
+
+		cvbox.add_child(RimvaleUtils.spacer(2))
+
+		# Progress bar
+		var progress_bar = ProgressBar.new()
+		progress_bar.custom_minimum_size = Vector2(0, 24)
+		progress_bar.value = minf(float(GameState.ascension_progress) / maxf(1.0, float(milestones.size())), 1.0) * 100.0
+		var bar_style = StyleBoxFlat.new()
+		bar_style.bg_color = Color(0.2, 0.2, 0.25)
+		progress_bar.add_theme_stylebox_override("background", bar_style)
+		var fill_style = StyleBoxFlat.new()
+		fill_style.bg_color = Color(0.8, 0.4, 1.0)
+		progress_bar.add_theme_stylebox_override("fill", fill_style)
+		progress_bar.show_percentage = true
+		cvbox.add_child(progress_bar)
+
+		# Tasks
+		if not tasks.is_empty():
+			cvbox.add_child(RimvaleUtils.spacer(2))
+			cvbox.add_child(RimvaleUtils.label("Tasks for current milestone:", 11, RimvaleColors.TEXT_WHITE))
+			for task in tasks:
+				var task_str: String = str(task)
+				cvbox.add_child(RimvaleUtils.label("• " + task_str, 10, RimvaleColors.TEXT_GRAY))
+
+		# Advance button
+		if GameState.ascension_progress < milestones.size():
+			cvbox.add_child(RimvaleUtils.spacer(2))
+			var advance_btn = RimvaleUtils.button(
+				"Advance to Next Milestone", RimvaleColors.GOLD, 40, 12)
+			advance_btn.pressed.connect(func():
+				var milestone: String = GameState.advance_ascension()
+				if not milestone.is_empty():
+					_rebuild_story_sections()  # Refresh UI
+			)
+			cvbox.add_child(advance_btn)
+		else:
+			cvbox.add_child(RimvaleUtils.spacer(2))
+			cvbox.add_child(RimvaleUtils.label(
+				"Ascension Complete! You have become a god.", 12, RimvaleColors.GOLD))
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STORY MISSION SYSTEM — Contact Dialogue + Quest Execution + Combat
@@ -2127,6 +2274,49 @@ func _dd_rebuild_config() -> void:
 				mopt.item_selected.connect(func(idx: int) -> void:
 					_dd_custom_monster_idx = idx)
 
+		6: # Siege Warfare
+			var info = RimvaleUtils.label(
+				"Assault a fortified position. Break through walls defended by organized forces.",
+				11, RimvaleColors.TEXT_GRAY)
+			info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_dd_config_panel.add_child(info)
+
+			# Siege tier selector
+			var trow = HBoxContainer.new()
+			trow.add_theme_constant_override("separation", 8)
+			var tlbl = RimvaleUtils.label("Siege Tier: %d" % _dd_siege_tier, 13, RimvaleColors.TEXT_WHITE)
+			tlbl.custom_minimum_size = Vector2(150, 0)
+			trow.add_child(tlbl)
+			var tslider = HSlider.new()
+			tslider.min_value = 1
+			tslider.max_value = 5
+			tslider.step = 1
+			tslider.value = _dd_siege_tier
+			tslider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			tslider.value_changed.connect(func(v: float) -> void:
+				_dd_siege_tier = int(v)
+				tlbl.text = "Siege Tier: %d" % _dd_siege_tier)
+			trow.add_child(tslider)
+			_dd_config_panel.add_child(trow)
+
+			# Tier info display
+			var tier_desc = RimvaleUtils.label(_dd_siege_tier_desc(_dd_siege_tier), 11, RimvaleColors.TEXT_GRAY)
+			tier_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_dd_config_panel.add_child(tier_desc)
+			tslider.value_changed.connect(func(v: float) -> void:
+				tier_desc.text = _dd_siege_tier_desc(int(v)))
+
+func _dd_siege_tier_desc(tier: int) -> String:
+	var idx: int = clampi(tier - 1, 0, 4)
+	if idx < 0 or idx >= _WS.SIEGE_TIERS.size():
+		return ""
+	var s: Dictionary = _WS.SIEGE_TIERS[idx]
+	var wall_hp: int = int(s.get("wall_hp", 50))
+	var defenders: String = str(s.get("defenders", "unknown"))
+	var duration: Array = s.get("duration_days", [1, 3])
+	return "%s\nWall HP: %d | Defenders: %s | Duration: %d-%d days" % [
+		s.get("name", ""), wall_hp, defenders, duration[0], duration[1]]
+
 func _dd_mob_size_label(count: int) -> String:
 	if count <= 20:
 		return "Small mob (≤20) — +5 ft movement"
@@ -2182,6 +2372,8 @@ func _dd_launch() -> void:
 			var monster: Dictionary = GameState.custom_monsters[idx]
 			if RimvaleAPI.engine.has_method("start_custom_monster_dungeon"):
 				RimvaleAPI.engine.start_custom_monster_dungeon(handles, monster, _dd_terrain_style)
+		6: # Siege
+			RimvaleAPI.engine.start_siege_dungeon(handles, _dd_siege_tier, _dd_terrain_style)
 	# Spawn recruited allies into the dungeon as friendly entities
 	if GameState.recruited_allies.size() > 0:
 		RimvaleAPI.engine.spawn_allies(GameState.recruited_allies)
@@ -2603,6 +2795,98 @@ func _build_crafting_tab(parent: Control) -> void:
 	vbox.add_child(tasks_scroll)
 
 	_refresh_crafting_tasks()
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# ── Repair Equipment ─────────────────────────────────────────────────────
+	vbox.add_child(RimvaleUtils.label("Repair Equipment", 16, RimvaleColors.ACCENT))
+	var repair_scroll = ScrollContainer.new()
+	repair_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	repair_scroll.custom_minimum_size = Vector2(0, 160)
+	_repair_vbox = VBoxContainer.new()
+	_repair_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_repair_vbox.add_theme_constant_override("separation", 4)
+	repair_scroll.add_child(_repair_vbox)
+	vbox.add_child(repair_scroll)
+	_refresh_repair_list()
+
+func _refresh_repair_list() -> void:
+	if _repair_vbox == null: return
+	for child in _repair_vbox.get_children():
+		child.queue_free()
+
+	var _e = RimvaleAPI.engine
+	var found_any: bool = false
+	var handles: Array = GameState.get_active_handles()
+	for h in handles:
+		var cname: String = str(_e.get_character_name(h))
+		for slot in ["weapon", "armor", "shield"]:
+			var cur_hp: int = _e._get_equip_hp(_e._chars[h], slot)
+			var max_hp: int = _e._get_equip_max_hp(_e._chars[h], slot)
+			var item_name: String = str(_e._chars[h].get(slot, "None"))
+			if item_name == "None" or item_name == "": continue
+			if cur_hp >= max_hp: continue
+			found_any = true
+			var row = HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			var info_lbl := Label.new()
+			var status: String = "DESTROYED" if cur_hp <= -max_hp else ("BROKEN" if cur_hp <= 0 else "Damaged")
+			var repair_cost: int = maxi(1, (max_hp - cur_hp) * 2)
+			info_lbl.text = "%s  %s [%s] %d/%d HP — %d GP" % [cname, item_name, status, maxi(0, cur_hp), max_hp, repair_cost]
+			info_lbl.add_theme_font_size_override("font_size", 11)
+			info_lbl.add_theme_color_override("font_color", Color(1.0, 0.6, 0.3) if cur_hp <= 0 else Color(0.9, 0.85, 0.7))
+			info_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(info_lbl)
+			var repair_btn := Button.new()
+			repair_btn.text = "Repair"
+			repair_btn.add_theme_font_size_override("font_size", 12)
+			repair_btn.custom_minimum_size = Vector2(70, 0)
+			repair_btn.disabled = GameState.gold < repair_cost
+			var cap_h: int = h; var cap_slot: String = slot
+			repair_btn.pressed.connect(func():
+				var result: String = _e.repair_equipment(cap_h, cap_slot)
+				_refresh_repair_list())
+			row.add_child(repair_btn)
+			_repair_vbox.add_child(row)
+
+	# ── Damaged stash items ──────────────────────────────────────────────────
+	for iname in GameState.stash_hp.keys():
+		var hp_arr: Array = GameState.stash_hp[iname]
+		var max_hp: int = _e._weapon_max_hp(iname)
+		if max_hp <= 0: max_hp = _e._armor_max_hp(iname)
+		if max_hp <= 0: continue
+		for copy_i in range(hp_arr.size()):
+			var shp: int = int(hp_arr[copy_i])
+			if shp < 0 or shp >= max_hp: continue  # -1 = full, or already full
+			found_any = true
+			var row2 = HBoxContainer.new()
+			row2.add_theme_constant_override("separation", 8)
+			var info2 := Label.new()
+			var st2: String = "BROKEN" if shp <= 0 else "Damaged"
+			var rc2: int = maxi(1, (max_hp - shp) * 2)
+			info2.text = "Stash  %s [%s] %d/%d HP — %d GP" % [iname, st2, maxi(0, shp), max_hp, rc2]
+			info2.add_theme_font_size_override("font_size", 11)
+			info2.add_theme_color_override("font_color", Color(1.0, 0.6, 0.3) if shp <= 0 else Color(0.9, 0.85, 0.7))
+			info2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row2.add_child(info2)
+			var rb2 := Button.new()
+			rb2.text = "Repair"
+			rb2.add_theme_font_size_override("font_size", 12)
+			rb2.custom_minimum_size = Vector2(70, 0)
+			rb2.disabled = GameState.gold < rc2
+			var cap_iname: String = iname
+			rb2.pressed.connect(func():
+				_e.repair_stash_item(cap_iname)
+				_refresh_repair_list())
+			row2.add_child(rb2)
+			_repair_vbox.add_child(row2)
+
+	if not found_any:
+		var lbl := Label.new()
+		lbl.text = "All equipment is in good condition."
+		lbl.add_theme_font_size_override("font_size", 11)
+		lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 0.5))
+		_repair_vbox.add_child(lbl)
 
 func _build_foraging_tab(parent: Control) -> void:
 	var forage_panel = Control.new()
@@ -3512,6 +3796,7 @@ func _on_begin_ritual() -> void:
 		"Ritual '%s' started (DC %d Arcane check). Use 'Make Arcane Check' when ready." % [spell_name, 10 + sp_cost],
 		true)
 	_refresh_ritual_ui()
+	GameState.save_game()   # persist new ritual task immediately
 
 func _ritual_make_check(task_id: String) -> void:
 	var task: Dictionary = {}
@@ -3564,12 +3849,14 @@ func _ritual_make_check(task_id: String) -> void:
 			"✗ Failed. Rolled %d vs DC %d — %s. The ritual remains in progress; try again." % [total, dc, detail],
 			false)
 	_refresh_ritual_ui()
+	GameState.save_game()   # persist ritual state change immediately
 
 func _ritual_abandon(task_id: String) -> void:
 	for i in range(GameState.ritual_tasks.size()):
 		if str(GameState.ritual_tasks[i]["id"]) == task_id:
 			GameState.ritual_tasks.remove_at(i)
 			_refresh_ritual_ui()
+			GameState.save_game()   # persist removal immediately
 			return
 
 func _ritual_dispel(ritual_id: String) -> void:
@@ -3577,6 +3864,7 @@ func _ritual_dispel(ritual_id: String) -> void:
 		if str(GameState.active_rituals[i]["id"]) == ritual_id:
 			GameState.active_rituals.remove_at(i)
 			_refresh_ritual_ui()
+			GameState.save_game()   # persist removal immediately
 			return
 
 func _show_ritual_result(msg: String, success: bool) -> void:
@@ -4355,6 +4643,98 @@ func _populate_base_tab(vbox: VBoxContainer) -> void:
 					_populate_base_tab(cap_vbox_k)
 			)
 			kvbox.add_child(kbtn)
+
+	# ══════════════════════════════════════════════════════════════════════════
+	#  LEGACY & DYNASTY SECTION
+	# ══════════════════════════════════════════════════════════════════════════
+	vbox.add_child(RimvaleUtils.separator())
+	vbox.add_child(RimvaleUtils.label("LEGACY & DYNASTY", 18, Color(0.75, 0.55, 0.90)))
+	var legacy_desc := RimvaleUtils.label(
+		"Track your family line, inherited bonuses, and legendary items passed down through generations.",
+		12, RimvaleColors.TEXT_GRAY)
+	legacy_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(legacy_desc)
+
+	# Family Tree Display
+	var family_card := PanelContainer.new()
+	family_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var family_sb := StyleBoxFlat.new()
+	family_sb.bg_color = Color(0.10, 0.08, 0.15)
+	family_sb.border_color = Color(0.75, 0.55, 0.90, 0.45)
+	family_sb.set_border_width_all(1)
+	family_sb.set_corner_radius_all(6)
+	family_sb.set_content_margin_all(12)
+	family_card.add_theme_stylebox_override("panel", family_sb)
+	vbox.add_child(family_card)
+
+	var family_vbox := VBoxContainer.new()
+	family_vbox.add_theme_constant_override("separation", 8)
+	family_card.add_child(family_vbox)
+
+	var gen_count: int = int(GameState.legacy_data.get("generations", 0))
+	family_vbox.add_child(RimvaleUtils.label("Generations: %d" % gen_count, 14, Color(0.75, 0.55, 0.90)))
+
+	var traits_array: Array = GameState.legacy_data.get("bloodline_traits", [])
+	if traits_array.size() > 0:
+		var trait_txt: String = "Bloodline Traits: " + ", ".join(traits_array)
+		var trait_lbl := RimvaleUtils.label(trait_txt, 12, RimvaleColors.TEXT_WHITE)
+		trait_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		family_vbox.add_child(trait_lbl)
+
+	var heirlooms_array: Array = GameState.legacy_data.get("heirlooms", [])
+	if heirlooms_array.size() > 0:
+		var heir_txt: String = "Heirlooms: " + ", ".join(heirlooms_array)
+		var heir_lbl := RimvaleUtils.label(heir_txt, 12, RimvaleColors.GOLD)
+		heir_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		family_vbox.add_child(heir_lbl)
+
+	var achievements_array: Array = GameState.legacy_data.get("family_achievements", [])
+	if achievements_array.size() > 0:
+		family_vbox.add_child(RimvaleUtils.label("Family Achievements:", 12, RimvaleColors.HP_GREEN))
+		for achievement in achievements_array:
+			var ach_lbl := RimvaleUtils.label("  • " + str(achievement), 11, RimvaleColors.TEXT_GRAY)
+			ach_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			family_vbox.add_child(ach_lbl)
+
+	# Retire Hero section (if a character is selected and level 10+)
+	if GameState.selected_hero_handle >= 0 and GameState.selected_hero_handle in GameState.collection:
+		var char_dict = RimvaleAPI.engine.get_char_dict(GameState.selected_hero_handle)
+		if char_dict != null and int(char_dict.get("level", 1)) >= 10:
+			vbox.add_child(RimvaleUtils.spacer(12))
+			var retire_card := PanelContainer.new()
+			retire_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var retire_sb := StyleBoxFlat.new()
+			retire_sb.bg_color = Color(0.15, 0.10, 0.10)
+			retire_sb.border_color = Color(0.90, 0.30, 0.20, 0.45)
+			retire_sb.set_border_width_all(1)
+			retire_sb.set_corner_radius_all(6)
+			retire_sb.set_content_margin_all(12)
+			retire_card.add_theme_stylebox_override("panel", retire_sb)
+			vbox.add_child(retire_card)
+
+			var retire_vbox := VBoxContainer.new()
+			retire_vbox.add_theme_constant_override("separation", 8)
+			retire_card.add_child(retire_vbox)
+
+			var hero_name: String = RimvaleAPI.engine.get_character_name(GameState.selected_hero_handle)
+			var hero_level: int = int(char_dict.get("level", 1))
+			retire_vbox.add_child(RimvaleUtils.label(
+				"Retire %s (Level %d)" % [hero_name, hero_level], 14, Color(0.90, 0.30, 0.20)))
+
+			var retire_desc := RimvaleUtils.label(
+				"Archive this legendary hero and create an heir inheriting bonuses, items, and divine echoes.",
+				11, RimvaleColors.TEXT_GRAY)
+			retire_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			retire_vbox.add_child(retire_desc)
+
+			var retire_btn = RimvaleUtils.button("Retire Hero & Create Heir", Color(0.90, 0.30, 0.20), 40, 13)
+			var cap_handle: int = GameState.selected_hero_handle
+			var cap_vbox_ret: VBoxContainer = vbox
+			retire_btn.pressed.connect(func():
+				var result: Dictionary = GameState.retire_hero(cap_handle)
+				_populate_base_tab(cap_vbox_ret)
+			)
+			retire_vbox.add_child(retire_btn)
 
 	vbox.add_child(RimvaleUtils.spacer(24))
 
@@ -6036,3 +6416,256 @@ func _overworld_start_acf_mission(region_id: String, mid: String, title: String,
 	)
 	add_child(dialog)
 	dialog.popup_centered(Vector2(520, 420))
+
+# ── Quest Board Tab ────────────────────────────────────────────────────────────
+
+func _build_quests_tab(parent: Control) -> void:
+	var tab_panel = RimvaleUtils.card(RimvaleColors.BG_DARK, RimvaleColors.DIVIDER, 0, 0)
+	tab_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	parent.add_child(tab_panel)
+
+	var vbox = VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 8)
+	tab_panel.add_child(vbox)
+
+	# Header
+	var header_hbox = HBoxContainer.new()
+	header_hbox.add_theme_constant_override("separation", 8)
+	vbox.add_child(header_hbox)
+
+	var region_name: String = _get_region_display_name(GameState.current_region)
+	header_hbox.add_child(RimvaleUtils.label(
+		"⚔️  Quest Board — %s" % region_name, 18, RimvaleColors.ACCENT))
+
+	var spacer = Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_hbox.add_child(spacer)
+
+	var generate_btn = RimvaleUtils.button("Generate New Quest", RimvaleColors.ACCENT, 50, 13)
+	generate_btn.pressed.connect(_on_generate_quest)
+	header_hbox.add_child(generate_btn)
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# Main content in two columns
+	var content_hbox = HBoxContainer.new()
+	content_hbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content_hbox.add_theme_constant_override("separation", 12)
+	vbox.add_child(content_hbox)
+
+	# Left column: Available quests
+	var left_vbox = VBoxContainer.new()
+	left_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_vbox.add_theme_constant_override("separation", 8)
+	content_hbox.add_child(left_vbox)
+
+	left_vbox.add_child(RimvaleUtils.label("Available Quests", 14, RimvaleColors.TEXT_WHITE))
+
+	_quest_board_vbox = VBoxContainer.new()
+	_quest_board_vbox.add_theme_constant_override("separation", 6)
+	var quest_scroll = ScrollContainer.new()
+	quest_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	quest_scroll.add_child(_quest_board_vbox)
+	left_vbox.add_child(quest_scroll)
+
+	# Right column: Active quests
+	var right_vbox = VBoxContainer.new()
+	right_vbox.custom_minimum_size.x = 300
+	right_vbox.add_theme_constant_override("separation", 8)
+	content_hbox.add_child(right_vbox)
+
+	right_vbox.add_child(RimvaleUtils.label("Active Quests (%d/3)" % GameState.active_quests.size(), 14, RimvaleColors.TEXT_WHITE))
+
+	_quest_active_vbox = VBoxContainer.new()
+	_quest_active_vbox.add_theme_constant_override("separation", 6)
+	var active_scroll = ScrollContainer.new()
+	active_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	active_scroll.add_child(_quest_active_vbox)
+	right_vbox.add_child(active_scroll)
+
+	# Initial refresh
+	_refresh_quest_board()
+
+func _refresh_quest_board() -> void:
+	# Clear and rebuild available quests
+	for child in _quest_board_vbox.get_children():
+		child.queue_free()
+
+	if _quest_board_quests.is_empty():
+		_quest_board_vbox.add_child(RimvaleUtils.label(
+			"No quests available. Generate new ones.", 11, RimvaleColors.TEXT_GRAY))
+		return
+
+	for quest in _quest_board_quests:
+		var card = RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.DIVIDER, 6, 6)
+		var cvbox = VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 4)
+		card.add_child(cvbox)
+
+		# Quest title and type
+		var title_hbox = HBoxContainer.new()
+		title_hbox.add_theme_constant_override("separation", 6)
+		cvbox.add_child(title_hbox)
+
+		var qtype: String = str(quest.get("type", "Standard"))
+		title_hbox.add_child(RimvaleUtils.chip(qtype, true, 10))
+		title_hbox.add_child(RimvaleUtils.label(str(quest.get("title", "Untitled")), 12, RimvaleColors.TEXT_WHITE))
+
+		# Description
+		var desc = RimvaleUtils.label(str(quest.get("description", "")), 9, RimvaleColors.TEXT_GRAY)
+		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		cvbox.add_child(desc)
+
+		# Location
+		cvbox.add_child(RimvaleUtils.label(
+			"📍 %s" % str(quest.get("location", "Unknown")), 9, RimvaleColors.TEXT_LIGHT))
+
+		# Difficulty and rewards row
+		var info_hbox = HBoxContainer.new()
+		info_hbox.add_theme_constant_override("separation", 8)
+		cvbox.add_child(info_hbox)
+
+		var difficulty: String = str(quest.get("difficulty", "Normal"))
+		var diff_color: Color = RimvaleColors.TEXT_LIGHT
+		match difficulty:
+			"Easy": diff_color = Color(0.5, 1.0, 0.5)
+			"Hard": diff_color = Color(1.0, 0.7, 0.5)
+			"Dangerous": diff_color = Color(1.0, 0.3, 0.3)
+		info_hbox.add_child(RimvaleUtils.label(difficulty, 9, diff_color))
+
+		info_hbox.add_child(RimvaleUtils.label(
+			"%d gold | %d xp" % [int(quest.get("reward_gold", 0)), int(quest.get("reward_xp", 0))],
+			9, RimvaleColors.GOLD))
+
+		# Objectives list
+		var objectives: Array = quest.get("objectives", [])
+		if not objectives.is_empty():
+			cvbox.add_child(RimvaleUtils.label("Objectives:", 9, RimvaleColors.TEXT_LIGHT))
+			for obj in objectives:
+				cvbox.add_child(RimvaleUtils.label("  • %s" % str(obj), 8, RimvaleColors.TEXT_GRAY))
+
+		# Accept button (disabled if 3 active quests)
+		var accept_btn = RimvaleUtils.button("Accept Quest", RimvaleColors.ACCENT, 28, 10)
+		accept_btn.disabled = GameState.active_quests.size() >= 3
+		var quest_copy = quest.duplicate()
+		accept_btn.pressed.connect(func():
+			_on_accept_quest(quest_copy)
+		)
+		cvbox.add_child(accept_btn)
+		_quest_board_vbox.add_child(card)
+
+	_refresh_active_quests()
+
+func _refresh_active_quests() -> void:
+	# Clear and rebuild active quests
+	for child in _quest_active_vbox.get_children():
+		child.queue_free()
+
+	if GameState.active_quests.is_empty():
+		_quest_active_vbox.add_child(RimvaleUtils.label(
+			"No active quests.", 11, RimvaleColors.TEXT_GRAY))
+		return
+
+	for i in range(GameState.active_quests.size()):
+		var quest = GameState.active_quests[i]
+		var card = RimvaleUtils.card(RimvaleColors.BG_CARD_DARK, RimvaleColors.DIVIDER, 6, 6)
+		var cvbox = VBoxContainer.new()
+		cvbox.add_theme_constant_override("separation", 3)
+		card.add_child(cvbox)
+
+		cvbox.add_child(RimvaleUtils.label(str(quest.get("title", "Untitled")), 11, RimvaleColors.ACCENT))
+
+		# Objectives with checkboxes
+		var objectives: Array = quest.get("objectives", [])
+		var completed_count: int = int(quest.get("completed_objectives", 0))
+
+		for j in range(objectives.size()):
+			var is_completed: bool = j < completed_count
+			var obj_text: String = ("✓ " if is_completed else "○ ") + str(objectives[j])
+			var obj_color: Color = RimvaleColors.TEXT_GRAY if is_completed else RimvaleColors.TEXT_LIGHT
+			cvbox.add_child(RimvaleUtils.label(obj_text, 8, obj_color))
+
+		var progress_text: String = "%d/%d objectives" % [completed_count, objectives.size()]
+		cvbox.add_child(RimvaleUtils.label(progress_text, 9, RimvaleColors.TEXT_GRAY))
+
+		# Complete button (enabled when all objectives done)
+		var complete_btn = RimvaleUtils.button("Complete", RimvaleColors.ACCENT, 20, 9)
+		complete_btn.disabled = completed_count < objectives.size()
+		complete_btn.pressed.connect(func():
+			_on_complete_quest(i)
+		)
+		cvbox.add_child(complete_btn)
+		_quest_active_vbox.add_child(card)
+
+func _generate_fallback_quests() -> Array:
+	# Fallback quest generation when WorldSystems is not available
+	var quest_types = ["Bounty", "Delivery", "Escort", "Investigation", "Exploration"]
+	var locations = ["Marketplace", "Forest", "Ruins", "Castle", "Underground"]
+	var difficulties = ["Easy", "Normal", "Hard", "Dangerous"]
+
+	var quests: Array = []
+	for i in range(3):
+		var qtype = quest_types[randi() % quest_types.size()]
+		var location = locations[randi() % locations.size()]
+		var difficulty = difficulties[randi() % difficulties.size()]
+		var gold_reward = (i + 1) * 50
+		var xp_reward = (i + 1) * 100
+
+		quests.append({
+			"id": "quest_%d_%d" % [GameState.game_day, i],
+			"type": qtype,
+			"title": "%s in %s" % [qtype, location],
+			"description": "A quest awaits you in the %s." % location,
+			"location": location,
+			"difficulty": difficulty,
+			"reward_gold": gold_reward,
+			"reward_xp": xp_reward,
+			"objectives": ["Travel to %s" % location, "Complete the task", "Return to quest board"],
+		})
+	return quests
+
+func _on_accept_quest(quest: Dictionary) -> void:
+	if GameState.active_quests.size() >= 3:
+		return
+
+	var quest_with_state = quest.duplicate()
+	quest_with_state["completed_objectives"] = 0
+	quest_with_state["accepted_on_day"] = GameState.game_day
+	GameState.active_quests.append(quest_with_state)
+
+	# Remove from board
+	_quest_board_quests.erase(quest)
+	GameState.save_game()
+	_refresh_quest_board()
+
+func _on_complete_quest(idx: int) -> void:
+	if idx < 0 or idx >= GameState.active_quests.size():
+		return
+
+	var quest = GameState.active_quests[idx]
+	var gold_reward: int = int(quest.get("reward_gold", 0))
+	var xp_reward: int = int(quest.get("reward_xp", 0))
+
+	GameState.earn_gold(gold_reward)
+	GameState.player_xp += xp_reward
+	GameState.check_level_up()
+
+	var qid: String = str(quest.get("id", quest.get("title", "")))
+	if qid != "" and qid not in GameState.completed_quest_ids:
+		GameState.completed_quest_ids.append(qid)
+
+	GameState.active_quests.remove_at(idx)
+	GameState.save_game()
+	_refresh_quest_board()
+
+func _get_region_display_name(region_id: String) -> String:
+	# Simple region name display helper
+	match region_id:
+		"plains": return "Plains"
+		"forest": return "Forest"
+		"mountain": return "Mountain"
+		"swamp": return "Swamp"
+		"desert": return "Desert"
+		"coast": return "Coast"
+		_: return region_id.capitalize()

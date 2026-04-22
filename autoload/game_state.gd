@@ -4,6 +4,8 @@
 
 extends Node
 
+const _WS = preload("res://autoload/world_systems.gd")
+
 # ── Player / Summoner ─────────────────────────────────────────────────────────
 var player_name: String = "Agent"
 var player_level: int = 1
@@ -39,6 +41,7 @@ var game_day: int = 1
 ## Advance the game clock by a number of days. Checks for aging effects.
 func advance_days(days: int) -> Array:
 	game_day += days
+	propagate_reputation()  # Spread reputation events to neighboring regions
 	var deaths: Array = []  # names of characters who died of old age
 	var e = Engine.get_singleton("RimvaleFallbackEngine") if Engine.has_singleton("RimvaleFallbackEngine") else get_node_or_null("/root/RimvaleFallbackEngine")
 	if e == null: return deaths
@@ -53,6 +56,7 @@ var director_message: String = "Welcome back, Agent. Your units await orders."
 
 # ── Navigation ────────────────────────────────────────────────────────────────
 var current_tab: int = 0   # 0=Units 1=World 2=Shop 3=Codex 4=Profile
+var world_sub_tab: int = 0 # Sub-tab within World scene (0=Map 1=Missions 2=Story ...)
 
 # ── Crafting / Foraging ───────────────────────────────────────────────────────
 class CraftingTask:
@@ -133,6 +137,8 @@ var story_shown_contacts: Array = []
 var current_region: String = "plains"
 ## Currently-focused sub-region (name from _LINEAGE_REGIONS), or "" for region-view.
 var current_subregion: String = ""
+## Current hour of day for region exploration (0-23, starts at 6AM)
+var explore_current_hour: int = 6
 ## Saved explore position so player returns to same tile after dungeon
 var explore_return_pos: Vector2i = Vector2i(-1, -1)
 var explore_return_active: bool = false
@@ -156,6 +162,201 @@ var recruited_npc_names: Array = []
 var npc_trust: Dictionary = {}
 ## Active NPC quests: { "npc_name": "quest_desc" } — cleared on completion
 var npc_active_quests: Dictionary = {}
+## Faction reputation: { "faction_name": int } — range -100 to +100
+var faction_reputation: Dictionary = {}
+## Intel gathered from social checks: Array of intel string entries
+var gathered_intel: Array = []
+## Social consequence flags: { "key": true } — lasting effects from social failures
+var social_consequences: Dictionary = {}
+
+# ── Quest Board System ──────────────────────────────────────────────────────────
+## Active quests the player has accepted from quest boards
+var active_quests: Array = []
+## Completed quest IDs to prevent re-offering
+var completed_quest_ids: Array = []
+
+# ── Bounty System ────────────────────────────────────────────────────────────────
+## Per-region bounty in gold pieces: { "region_name": int }
+var bounty_per_region: Dictionary = {}
+
+## Add bounty in a region. Handles escalation.
+func add_bounty(region: String, amount: int) -> void:
+	bounty_per_region[region] = int(bounty_per_region.get(region, 0)) + amount
+
+## Get bounty rank label for a region
+func get_bounty_rank(region: String) -> String:
+	var b: int = int(bounty_per_region.get(region, 0))
+	if b >= 5001: return "Infamous"
+	elif b >= 1001: return "Severe"
+	elif b >= 501: return "Dangerous"
+	elif b >= 51: return "Notable"
+	elif b >= 10: return "Minor"
+	else: return "Clean"
+
+## Pay off bounty. Returns true if paid.
+func pay_bounty(region: String, multiplier: float = 1.0) -> bool:
+	var b: int = int(bounty_per_region.get(region, 0))
+	var cost: int = int(float(b) * multiplier)
+	if gold >= cost:
+		gold -= cost
+		bounty_per_region[region] = 0
+		return true
+	return false
+
+# ── Reputation Spread ────────────────────────────────────────────────────────
+## Reputation events: Array of { "type": String, "magnitude": int, "region": String, "day": int, "spread": bool }
+var reputation_events: Array = []
+
+## Region adjacency map for reputation spread
+const REGION_ADJACENCY: Dictionary = {
+	"plains": ["frost", "forest", "city", "throne"],
+	"frost": ["plains", "underground"],
+	"forest": ["plains", "underground", "islands"],
+	"underground": ["frost", "forest", "city"],
+	"city": ["plains", "underground", "arena", "throne"],
+	"astral": ["city", "islands"],
+	"arena": ["city", "throne"],
+	"throne": ["plains", "city", "arena"],
+	"islands": ["forest", "astral"],
+	"titan": ["astral", "arena"],
+}
+
+## Add a reputation event that will spread over time
+func add_reputation_event(event_type: String, magnitude: int, region: String) -> void:
+	reputation_events.append({"type": event_type, "magnitude": magnitude, "region": region, "day": game_day, "spread": false})
+
+## Propagate reputation events to neighboring regions based on age
+func propagate_reputation() -> void:
+	var new_events: Array = []
+	for event in reputation_events:
+		var age: int = game_day - int(event.get("day", game_day))
+		if age >= 7 and not bool(event.get("spread", false)):
+			event["spread"] = true
+			var region: String = str(event.get("region", ""))
+			var neighbors: Array = REGION_ADJACENCY.get(region, [])
+			for neighbor in neighbors:
+				var spread_mag: int = maxi(1, int(event["magnitude"]) / 2)
+				new_events.append({"type": str(event["type"]), "magnitude": spread_mag, "region": neighbor, "day": game_day, "spread": true})
+	reputation_events.append_array(new_events)
+
+## Get total reputation for a specific region
+func get_region_reputation(region: String) -> int:
+	var total: int = 0
+	for event in reputation_events:
+		if str(event.get("region", "")) == region:
+			total += int(event.get("magnitude", 0))
+	return total
+
+# ── Banking System ───────────────────────────────────────────────────────────
+## Bank balance (separate from carried gold)
+var bank_balance: int = 0
+## Vault seals purchased for cross-region access: Array of "regionA::regionB" strings
+var vault_seals: Array = []
+## Legacy vault balance (earns interest)
+var legacy_vault: int = 0
+
+func bank_deposit(amount: int) -> bool:
+	if gold >= amount:
+		gold -= amount
+		bank_balance += amount
+		return true
+	return false
+
+func bank_withdraw(amount: int) -> bool:
+	if bank_balance >= amount:
+		bank_balance -= amount
+		gold += amount
+		return true
+	return false
+
+# ── Divine Ascension ─────────────────────────────────────────────────────────
+## Chosen ascension path: "" (none), "Unity", "Chaos", "Void"
+var ascension_path: String = ""
+## Ascension progress: 0-100
+var ascension_progress: int = 0
+## Ascension milestones reached: Array of milestone names
+var ascension_milestones: Array = []
+
+## Advance to the next ascension milestone
+func advance_ascension() -> String:
+	if ascension_path.is_empty(): return ""
+	var paths: Dictionary = _WS.ASCENSION_PATHS
+	if not paths.has(ascension_path): return ""
+	var milestones: Array = paths[ascension_path]["milestones"]
+	if ascension_progress >= milestones.size(): return ""
+	var milestone: String = str(milestones[ascension_progress])
+	ascension_progress += 1
+	ascension_milestones.append(milestone)
+	save_game()
+	return milestone
+
+# ── Civic Rites ──────────────────────────────────────────────────────────────
+## Spirit Points per settlement: { "settlement_name": int }
+var settlement_sp: Dictionary = {}
+
+# ── Bulk Trading ─────────────────────────────────────────────────────────────
+## Trade inventory (bulk goods): { "item_name": int_quantity }
+var trade_inventory: Dictionary = {}
+## Trade reputation: higher = better deals
+var trade_reputation: int = 0
+
+# ── Legacy & Dynasty ─────────────────────────────────────────────────────────
+## Legacy data persists across character deaths/retirements
+var legacy_data: Dictionary = {
+	"bloodline_traits": [],
+	"heirlooms": [],
+	"divine_echoes": [],
+	"family_achievements": [],
+	"generations": 0,
+}
+
+## Retire a hero and create an heir with inherited bonuses
+func retire_hero(handle: int) -> Dictionary:
+	var hero_name: String = RimvaleAPI.engine.get_character_name(handle)
+	legacy_data["generations"] = int(legacy_data.get("generations", 0)) + 1
+	var achievements: Array = legacy_data.get("family_achievements", [])
+	achievements.append("%s retired at generation %d" % [hero_name, legacy_data["generations"]])
+	legacy_data["family_achievements"] = achievements
+	save_game()
+	return {"parent_name": hero_name, "generation": legacy_data["generations"]}
+
+## Add an heirloom item to the legacy
+func add_heirloom(item_name: String) -> void:
+	var heirlooms: Array = legacy_data.get("heirlooms", [])
+	if item_name not in heirlooms:
+		heirlooms.append(item_name)
+		legacy_data["heirlooms"] = heirlooms
+		save_game()
+
+## Add a bloodline trait to the legacy
+func add_bloodline_trait(trait_name: String) -> void:
+	var traits: Array = legacy_data.get("bloodline_traits", [])
+	if trait_name not in traits:
+		traits.append(trait_name)
+		legacy_data["bloodline_traits"] = traits
+		save_game()
+
+# ── Adversary Leveling ───────────────────────────────────────────────────────
+## Recurring adversaries: Array of { "name", "base_level", "encounters_survived", "bonus_abilities": [] }
+var recurring_adversaries: Array = []
+
+## Modify faction reputation by delta, clamped to -100..+100
+func change_faction_rep(faction_name: String, delta: int) -> int:
+	var current: int = int(faction_reputation.get(faction_name, 0))
+	var new_val: int = clampi(current + delta, -100, 100)
+	faction_reputation[faction_name] = new_val
+	return new_val
+
+## Get faction reputation tier label
+func get_faction_tier(faction_name: String) -> String:
+	var rep: int = int(faction_reputation.get(faction_name, 0))
+	if rep >= 75: return "Revered"
+	elif rep >= 50: return "Honored"
+	elif rep >= 25: return "Friendly"
+	elif rep >= -10: return "Neutral"
+	elif rep >= -25: return "Unfriendly"
+	elif rep >= -50: return "Hostile"
+	else: return "Hated"
 
 # ── Base Building ─────────────────────────────────────────────────────────────
 ## Base tier (1-5). Determines max facilities and defender cap.
@@ -432,13 +633,30 @@ const MAX_SHORT_RESTS: int = 3
 
 # ── Player stash (shared item storage) ───────────────────────────────────────
 var stash: Array = []   # Array of item name Strings
+var stash_hp: Dictionary = {}  # item_name -> Array[int] of HP values per copy (-1 = full HP)
 
-func add_to_stash(item_name: String) -> void:
-	if item_name not in stash:
-		stash.append(item_name)
+func add_to_stash(item_name: String, hp: int = -1) -> void:
+	stash.append(item_name)
+	if not stash_hp.has(item_name):
+		stash_hp[item_name] = []
+	stash_hp[item_name].append(hp)
 
-func remove_from_stash(item_name: String) -> void:
+func remove_from_stash(item_name: String) -> int:
+	## Removes one copy; returns its stored HP (-1 means full).
+	var hp_val: int = -1
+	if stash_hp.has(item_name) and not stash_hp[item_name].is_empty():
+		hp_val = int(stash_hp[item_name].pop_front())
+		if stash_hp[item_name].is_empty():
+			stash_hp.erase(item_name)
 	stash.erase(item_name)
+	return hp_val
+
+func get_stash_item_hp(item_name: String, idx: int = 0) -> int:
+	## Get HP of a specific copy (-1 = full HP). idx = which copy (0-based).
+	if not stash_hp.has(item_name): return -1
+	var arr: Array = stash_hp[item_name]
+	if idx < 0 or idx >= arr.size(): return -1
+	return int(arr[idx])
 
 # ── Overworld helpers ────────────────────────────────────────────────────────
 func travel_to_region(region_id: String) -> void:
@@ -704,6 +922,7 @@ func wipe_all() -> void:
 	story_shown_contacts.clear()
 	current_region = "plains"
 	current_subregion = ""
+	explore_current_hour = 6
 	visited_regions.clear()
 	visited_subregions.clear()
 	cleared_acf_locations.clear()
@@ -712,6 +931,11 @@ func wipe_all() -> void:
 	recruited_npc_names.clear()
 	npc_trust.clear()
 	npc_active_quests.clear()
+	faction_reputation.clear()
+	gathered_intel.clear()
+	social_consequences.clear()
+	active_quests.clear()
+	completed_quest_ids.clear()
 	base_tier = 1
 	base_supplies = 50
 	base_defense = 10
@@ -774,6 +998,12 @@ func save_game() -> bool:
 			"armor":         str(cd.get("armor",   "None")),
 			"shield":        str(cd.get("shield",  "None")),
 			"light":         str(cd.get("light",   "None")),
+			"weapon_hp":     int(cd.get("weapon_hp", 0)),
+			"armor_hp":      int(cd.get("armor_hp",  0)),
+			"shield_hp":     int(cd.get("shield_hp", 0)),
+			"weapon_destroyed": bool(cd.get("weapon_destroyed", false)),
+			"armor_destroyed":  bool(cd.get("armor_destroyed",  false)),
+			"shield_destroyed": bool(cd.get("shield_destroyed", false)),
 			"alignment":     str(cd.get("alignment", "Unity")),
 			"domain":        str(cd.get("domain",  "Physical")),
 			"societal_role": str(cd.get("societal_role", "")),
@@ -844,6 +1074,7 @@ func save_game() -> bool:
 		"story_shown_contacts":      story_shown_contacts,
 		"current_region":            current_region,
 		"current_subregion":         current_subregion,
+		"explore_current_hour":      explore_current_hour,
 		"visited_regions":           visited_regions,
 		"visited_subregions":        visited_subregions,
 		"cleared_acf_locations":     cleared_acf_locations,
@@ -851,6 +1082,24 @@ func save_game() -> bool:
 		"recruited_npc_names":       recruited_npc_names,
 		"npc_trust":                 npc_trust,
 		"npc_active_quests":         npc_active_quests,
+		"faction_reputation":        faction_reputation,
+		"gathered_intel":            gathered_intel,
+		"social_consequences":       social_consequences,
+		"active_quests":             active_quests,
+		"completed_quest_ids":       completed_quest_ids,
+		"bounty_per_region":         bounty_per_region,
+		"reputation_events":         reputation_events,
+		"bank_balance":              bank_balance,
+		"vault_seals":               vault_seals,
+		"legacy_vault":              legacy_vault,
+		"ascension_path":            ascension_path,
+		"ascension_progress":        ascension_progress,
+		"ascension_milestones":      ascension_milestones,
+		"settlement_sp":             settlement_sp,
+		"trade_inventory":           trade_inventory,
+		"trade_reputation":          trade_reputation,
+		"legacy_data":               legacy_data,
+		"recurring_adversaries":     recurring_adversaries,
 		"base_tier":                 base_tier,
 		"base_supplies":             base_supplies,
 		"base_defense":              base_defense,
@@ -860,13 +1109,13 @@ func save_game() -> bool:
 		"recruited_allies":          recruited_allies,
 		"custom_monsters":           custom_monsters,
 		"stash":                     stash,
+		"stash_hp":                  stash_hp,
 		"team_indices":              team_indices,
 		"characters":                chars_data,
 		"crafting_tasks":            craft_data,
 		"forage_tasks":              forage_data,
 		"ritual_tasks":              ritual_task_data,
 		"active_rituals":            active_ritual_data,
-		"completed_quest_ids":       quest_state.get("completed_quest_ids", []),
 		"last_login_date":           last_login_date,
 	}
 
@@ -928,6 +1177,7 @@ func load_game() -> bool:
 	story_shown_contacts     = Array(data.get("story_shown_contacts",     []))
 	current_region           = str(data.get("current_region", "plains"))
 	current_subregion        = str(data.get("current_subregion", ""))
+	explore_current_hour     = int(data.get("explore_current_hour", 6))
 	visited_regions          = Array(data.get("visited_regions", []))
 	visited_subregions       = Array(data.get("visited_subregions", []))
 	cleared_acf_locations    = Array(data.get("cleared_acf_locations", []))
@@ -935,6 +1185,24 @@ func load_game() -> bool:
 	recruited_npc_names      = Array(data.get("recruited_npc_names", []))
 	npc_trust                = Dictionary(data.get("npc_trust", {}))
 	npc_active_quests        = Dictionary(data.get("npc_active_quests", {}))
+	faction_reputation       = Dictionary(data.get("faction_reputation", {}))
+	gathered_intel           = Array(data.get("gathered_intel", []))
+	social_consequences      = Dictionary(data.get("social_consequences", {}))
+	active_quests            = Array(data.get("active_quests", []))
+	completed_quest_ids      = Array(data.get("completed_quest_ids", []))
+	bounty_per_region        = Dictionary(data.get("bounty_per_region", {}))
+	reputation_events        = Array(data.get("reputation_events", []))
+	bank_balance             = int(data.get("bank_balance", 0))
+	vault_seals              = Array(data.get("vault_seals", []))
+	legacy_vault             = int(data.get("legacy_vault", 0))
+	ascension_path           = str(data.get("ascension_path", ""))
+	ascension_progress       = int(data.get("ascension_progress", 0))
+	ascension_milestones     = Array(data.get("ascension_milestones", []))
+	settlement_sp            = Dictionary(data.get("settlement_sp", {}))
+	trade_inventory          = Dictionary(data.get("trade_inventory", {}))
+	trade_reputation         = int(data.get("trade_reputation", 0))
+	legacy_data              = data.get("legacy_data", {"bloodline_traits":[],"heirlooms":[],"divine_echoes":[],"family_achievements":[],"generations":0}) as Dictionary
+	recurring_adversaries    = Array(data.get("recurring_adversaries", []))
 	base_tier                = int(data.get("base_tier", 1))
 	base_supplies            = int(data.get("base_supplies", 50))
 	base_defense             = int(data.get("base_defense", 10))
@@ -944,6 +1212,7 @@ func load_game() -> bool:
 	recruited_allies         = Array(data.get("recruited_allies", []))
 	custom_monsters          = Array(data.get("custom_monsters", []))
 	stash                    = Array(data.get("stash",                    []))
+	stash_hp                 = data.get("stash_hp", {}) as Dictionary
 	last_login_date          = str(data.get("last_login_date", ""))
 
 	# Restore quest state
@@ -1051,6 +1320,11 @@ func load_game() -> bool:
 		if armor  != "" and armor  != "null" and armor  != "None": e.equip_item(h, armor)
 		if shield != "" and shield != "null" and shield != "None": e.equip_item(h, shield)
 		if light_ != "" and light_ != "null" and light_ != "None": e.equip_item(h, light_)
+		# Restore equipment durability HP (overwrite the max-HP defaults set by equip_item)
+		e.restore_equip_durability(h,
+			int(cd.get("weapon_hp", 0)), int(cd.get("armor_hp", 0)), int(cd.get("shield_hp", 0)),
+			bool(cd.get("weapon_destroyed", false)), bool(cd.get("armor_destroyed", false)),
+			bool(cd.get("shield_destroyed", false)))
 		add_to_collection(h)
 		handle_list.append(h)
 

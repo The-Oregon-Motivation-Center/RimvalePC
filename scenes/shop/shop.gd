@@ -3,6 +3,8 @@
 
 extends Control
 
+const _WS = preload("res://autoload/world_systems.gd")
+
 var _e
 var _content_area: Control
 var _gold_label: Label
@@ -35,6 +37,17 @@ func _ready() -> void:
 	var title_lbl = RimvaleUtils.label("🛒  Market", 22, RimvaleColors.ACCENT)
 	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hrow.add_child(title_lbl)
+
+	# Show current region's government type and effect
+	var current_region: String = GameState.current_region
+	var gov_type: String = _WS.REGION_GOVERNMENTS.get(current_region, "unknown")
+	var gov_data: Dictionary = _WS.GOVERNMENT_TYPES.get(gov_type, {})
+	var gov_name: String = gov_data.get("name", gov_type)
+	var gov_info: String = "%s (+%.0f%% prices)" % [gov_name, (gov_data.get("price_mod", 1.0) - 1.0) * 100]
+	var gov_pill: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_CARD_DARK, RimvaleColors.ACCENT, 12, 8)
+	var gov_lbl: Label = RimvaleUtils.label(gov_info, 12, RimvaleColors.TEXT_GRAY)
+	gov_pill.add_child(gov_lbl)
+	hrow.add_child(gov_pill)
 
 	var gold_pill: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_CARD_DARK, RimvaleColors.GOLD, 16, 10)
 	_gold_label = RimvaleUtils.label("💰  %d gold" % GameState.gold, 15, RimvaleColors.GOLD)
@@ -119,22 +132,69 @@ func _switch_tab(idx: int) -> void:
 
 ## Returns the item's price from the registry.  Falls back to a hash-based
 ## estimate only when the item is not in the registry (e.g. quest rewards).
-func _get_item_price(item_name: String, _category: String) -> int:
+## Applies regional price modifiers and government tax modifiers.
+func _get_item_price(item_name: String, category: String) -> int:
 	var details: PackedStringArray = _e.get_registry_item_details(item_name)
+	var registry_price: int = 0
 	if details.size() >= 4:
-		var registry_price: int = int(details[3])
-		if registry_price > 0:
-			return registry_price
-	# Fallback for unknown items — should rarely trigger
-	var h: int = 0
-	for c in item_name:
-		h = (h * 31 + c.unicode_at(0)) & 0x7FFFFFFF
-	return 10 + (h % 141)
+		registry_price = int(details[3])
+		if registry_price <= 0:
+			# Fallback for unknown items — should rarely trigger
+			var h: int = 0
+			for c in item_name:
+				h = (h * 31 + c.unicode_at(0)) & 0x7FFFFFFF
+			registry_price = 10 + (h % 141)
+	else:
+		# Fallback for unknown items — should rarely trigger
+		var h: int = 0
+		for c in item_name:
+			h = (h * 31 + c.unicode_at(0)) & 0x7FFFFFFF
+		registry_price = 10 + (h % 141)
 
-## Sell price is 50 % of buy price (PHB: sell-to-director rate), floored at 5 g.
-func _get_sell_price(item_name: String) -> int:
+	# Apply regional price modifier based on category
+	var current_region: String = GameState.current_region
+	var regional_mods: Dictionary = _WS.REGIONAL_PRICE_MODIFIERS.get(current_region, {})
+	var category_key: String = _map_category_to_modifier_key(category)
+	var regional_mod: float = regional_mods.get(category_key, 1.0)
+
+	# Apply government tax/price modifier
+	var gov_type: String = _WS.REGION_GOVERNMENTS.get(current_region, "monarchy")
+	var gov_data: Dictionary = _WS.GOVERNMENT_TYPES.get(gov_type, {})
+	var gov_mod: float = gov_data.get("price_mod", 1.0)
+
+	# Calculate final price with both modifiers
+	var final_price: float = float(registry_price) * regional_mod * gov_mod
+	return maxi(1, int(final_price))
+
+## Map shop categories to regional price modifier keys
+func _map_category_to_modifier_key(category: String) -> String:
+	match category:
+		"Weapons":    return "weapons"
+		"Armor":      return "armor"
+		"Consumable": return "potions"
+		"Magic":      return "luxury"
+		"Misc":       return "food"
+		_:            return "food"
+
+## Sell price is 50% of buy price, reduced by durability loss.
+## Broken items sell for 10% of base. Damaged items scale linearly between 10%-100%.
+func _get_sell_price(item_name: String, hp_override: int = -1) -> int:
 	var cat: String = _item_category(item_name)
-	return maxi(5, int(_get_item_price(item_name, cat) * 0.50))
+	var base_sell: int = maxi(5, int(_get_item_price(item_name, cat) * 0.50))
+	# Check durability — hp_override of -1 means full HP
+	if hp_override == -1:
+		return base_sell
+	var max_hp: int = 0
+	if cat == "Weapons":
+		max_hp = _e._weapon_max_hp(item_name)
+	elif cat == "Armor":
+		max_hp = _e._armor_max_hp(item_name)
+	if max_hp <= 0:
+		return base_sell
+	# Scale: full HP = 100%, 0 HP (broken) = 10%, linearly between
+	var hp_ratio: float = clampf(float(maxi(0, hp_override)) / float(max_hp), 0.0, 1.0)
+	var dur_mult: float = 0.10 + hp_ratio * 0.90  # 10% at 0 HP, 100% at full
+	return maxi(1, int(base_sell * dur_mult))
 
 ## Determine category — first consults the item registry, then falls back to keywords.
 func _item_category(item_name: String) -> String:
@@ -301,15 +361,26 @@ func _build_sell_list() -> void:
 		any_items = true
 		_items_list.add_child(RimvaleUtils.label("📥  STASH", 12, RimvaleColors.ACCENT))
 		var stash_copy: Array = GameState.stash.duplicate()
+		# Build an index counter per item name so we can look up the right HP copy
+		var _hp_idx: Dictionary = {}
 		for item_name in stash_copy:
 			var iname: String = str(item_name)
-			var sell_price: int = _get_sell_price(iname)
+			var copy_idx: int = int(_hp_idx.get(iname, 0))
+			_hp_idx[iname] = copy_idx + 1
+			var item_hp: int = GameState.get_stash_item_hp(iname, copy_idx)
+			var sell_price: int = _get_sell_price(iname, item_hp)
 			var cat_: String = _item_category(iname)
+			# Build display name with durability info
+			var display_name: String = iname
+			var max_hp: int = _e._weapon_max_hp(iname) if cat_ == "Weapons" else _e._armor_max_hp(iname)
+			if max_hp > 0 and item_hp >= 0:
+				display_name += "  [%d/%d HP]" % [maxi(0, item_hp), max_hp]
+			var cap_sell: int = sell_price
 			var card_p: PanelContainer = _build_item_card(
-				iname, cat_, sell_price, "Sell", RimvaleColors.SUCCESS,
+				display_name, cat_, sell_price, "Sell", RimvaleColors.SUCCESS,
 				func():
-					GameState.stash.erase(iname)
-					GameState.earn_gold(sell_price)
+					GameState.remove_from_stash(iname)
+					GameState.earn_gold(cap_sell)
 					GameState.save_game()
 					_update_gold()
 					_refresh_list()

@@ -1182,9 +1182,15 @@ func _build_spell_card(spell_name: String, domain_idx: int, domain_name: String,
 				OS.alert("Not enough SP!", "Spell")
 		)
 		btn_row.add_child(cast_btn)
-		var forget_btn = RimvaleUtils.button("Forget", RimvaleColors.DANGER, 30, 12)
-		forget_btn.pressed.connect(func(): _e.forget_spell(_handle, sn_cap); _render_section())
-		btn_row.add_child(forget_btn)
+		# Don't allow forgetting ritual spells — they persist until dispelled
+		var is_ritual_spell: bool = false
+		for r in GameState.active_rituals:
+			if str(r.get("spell_name", "")) == sn_cap:
+				is_ritual_spell = true; break
+		if not is_ritual_spell:
+			var forget_btn = RimvaleUtils.button("Forget", RimvaleColors.DANGER, 30, 12)
+			forget_btn.pressed.connect(func(): _e.forget_spell(_handle, sn_cap); _render_section())
+			btn_row.add_child(forget_btn)
 	elif can_learn:
 		var learn_btn = RimvaleUtils.button("Learn", Color(0.13, 0.59, 0.95), 34, 12)
 		learn_btn.pressed.connect(func(): _e.learn_spell(_handle, sn_cap); _render_section())
@@ -1679,11 +1685,13 @@ func _build_equipment(parent: VBoxContainer) -> void:
 	var weapon: String = str(_e.get_equipped_weapon(_handle))
 	var armor: String = str(_e.get_equipped_armor(_handle))
 	var shield: String = str(_e.get_equipped_shield(_handle))
+	var light: String = str(_e.get_equipped_light_source(_handle))
 
 	var slot_data = [
 		["⚔ Weapon", weapon, 0],
 		["🛡 Armor", armor, 1],
-		["🔰 Shield", shield, 2]
+		["🔰 Shield", shield, 2],
+		["🔥 Light", light, 3]
 	]
 	for sd in slot_data:
 		var slot_label: String = sd[0]
@@ -1710,6 +1718,19 @@ func _build_equipment(parent: VBoxContainer) -> void:
 		svbox.add_child(RimvaleUtils.label(
 			item_name if not item_is_empty else "None",
 			12, RimvaleColors.TEXT_WHITE if not item_is_empty else RimvaleColors.TEXT_DIM))
+
+		# Durability bar for weapon/armor/shield
+		if not item_is_empty and slot_idx <= 2:
+			var dur_slot: String = ["weapon", "armor", "shield"][slot_idx]
+			if _e._chars.has(_handle):
+				var _cc: Dictionary = _e._chars[_handle]
+				var dhp: int = _e._get_equip_hp(_cc, dur_slot)
+				var dmhp: int = _e._get_equip_max_hp(_cc, dur_slot)
+				if dmhp > 0:
+					var dur_col: Color = Color(0.3, 0.8, 0.3) if dhp > dmhp / 2 else (Color(0.9, 0.7, 0.2) if dhp > 0 else Color(0.9, 0.2, 0.2))
+					var dur_text: String = "%d/%d HP" % [maxi(0, dhp), dmhp]
+					if dhp <= 0: dur_text += " (BROKEN)"
+					svbox.add_child(RimvaleUtils.label(dur_text, 10, dur_col))
 
 		if not item_is_empty:
 			var si_cap: int = slot_idx

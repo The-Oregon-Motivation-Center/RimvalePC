@@ -51,6 +51,10 @@ var _stash_list_vbox: VBoxContainer
 var _stash_header:    Label
 var _btn_stash:       Button   # header shortcut button
 
+# UI — equipment overlay (in-dungeon equip management)
+var _equip_overlay:      Control
+var _equip_slots_vbox:   VBoxContainer
+
 # UI — custom spell dialog (full PHB spell builder)
 var _spell_overlay:        Control
 var _spell_inner:          VBoxContainer   # rebuilt each time domain/effect changes
@@ -69,6 +73,8 @@ var _sb_damage_type:   int = 3   # default Force
 var _sb_is_healing:    bool = false
 var _sb_is_saving_throw: bool = false
 var _sb_is_teleport:   bool = false
+var _sb_tp_range:      int = 5         # teleport max distance in tiles (when teleport enabled)
+var _sb_tp_range_row:  HBoxContainer   # teleport range slider row (shown/hidden)
 var _sb_is_combustion: bool = false
 var _sb_conditions:    Array = []
 var _sb_preview_lbl:   Label
@@ -196,7 +202,8 @@ var _sc_domain: int = 0; var _sc_effect_idx: int = 0; var _sc_duration_idx: int 
 var _sc_range_idx: int = 0; var _sc_targets: int = 1; var _sc_area_idx: int = 0
 var _sc_die_count: int = 0; var _sc_die_idx: int = 1; var _sc_damage_type: int = 3
 var _sc_is_healing: bool = false; var _sc_is_saving_throw: bool = false
-var _sc_is_teleport: bool = false; var _sc_conditions: Array = []; var _sc_name: String = ""
+var _sc_is_teleport: bool = false; var _sc_tp_range: int = 5; var _sc_tp_range_row: HBoxContainer
+var _sc_conditions: Array = []; var _sc_name: String = ""
 var _sc_cost_lbl: Label; var _sc_breakdown_lbl: Label; var _sc_desc_lbl: Label
 var _sc_die_btns: Array = []
 
@@ -287,6 +294,7 @@ var _badge_hp:         Label
 var _badge_ap:         Label
 var _badge_sp:         Label
 var _badge_weapon:     Label
+var _badge_light:      Label
 var _badge_conditions: HBoxContainer   # holds colored condition chip Labels
 var _badge_matrices:   Label
 var _actions_area:     Control
@@ -329,6 +337,7 @@ func _ready() -> void:
 	_build_ui()
 	_build_banner()
 	_build_stash_dialog()
+	_build_equip_overlay()
 	_build_victory_modal()
 	_build_custom_spell_dialog()
 	_build_terrain_selector_dialog()
@@ -675,23 +684,43 @@ func _populate_stash_list() -> void:
 		_stash_list_vbox.add_child(empty_lbl)
 		return
 
-	# Group by name for display
-	var seen: Dictionary = {}
-	for item_name in items:
-		var key: String = str(item_name)
-		seen[key] = int(seen.get(key, 0)) + 1
+	# Show each item individually (to display per-copy durability)
+	var _hp_counter: Dictionary = {}  # track which copy index per item name
+	for item_raw in items:
+		var item_name: String = str(item_raw)
+		var copy_idx: int = int(_hp_counter.get(item_name, 0))
+		_hp_counter[item_name] = copy_idx + 1
+		var item_hp: int = GameState.get_stash_item_hp(item_name, copy_idx)
 
-	for item_name in seen.keys():
-		var count: int = int(seen[item_name])
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
 
+		var display_text: String = item_name
+		# Add durability info for weapons/armor/shields
+		var max_hp: int = _e._weapon_max_hp(item_name)
+		if max_hp <= 0: max_hp = _e._armor_max_hp(item_name)
+		if max_hp > 0 and item_hp >= 0:
+			display_text += "  [%d/%d HP]" % [maxi(0, item_hp), max_hp]
 		var name_lbl := Label.new()
-		name_lbl.text = item_name if count == 1 else "%s ×%d" % [item_name, count]
+		name_lbl.text = display_text
 		name_lbl.add_theme_font_size_override("font_size", 13)
-		name_lbl.add_theme_color_override("font_color", Color(0.90, 0.85, 0.72))
+		var lbl_color: Color = Color(0.90, 0.85, 0.72)
+		if max_hp > 0 and item_hp >= 0 and item_hp <= 0:
+			lbl_color = Color(1.0, 0.5, 0.3)  # orange for broken
+		name_lbl.add_theme_color_override("font_color", lbl_color)
 		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(name_lbl)
+
+		# "Equip" button — equips on selected character (weapons/armor/shields/lights)
+		var cap_equip: String = item_name
+		if _is_equipable_stash_item(item_name):
+			var equip_btn := Button.new()
+			equip_btn.text = "Equip"
+			equip_btn.add_theme_font_size_override("font_size", 12)
+			equip_btn.custom_minimum_size = Vector2(56, 0)
+			equip_btn.pressed.connect(func():
+				_on_stash_equip_item(cap_equip))
+			row.add_child(equip_btn)
 
 		# "Take" button — moves one copy to the selected character (if any)
 		var take_btn := Button.new()
@@ -717,6 +746,245 @@ func _populate_stash_list() -> void:
 		var row_bg := PanelContainer.new()
 		row_bg.add_child(row)
 		_stash_list_vbox.add_child(row_bg)
+
+func _build_equip_overlay() -> void:
+	_equip_overlay = ColorRect.new()
+	(_equip_overlay as ColorRect).color = Color(0.0, 0.0, 0.0, 0.68)
+	_equip_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_equip_overlay.visible = false
+	add_child(_equip_overlay)
+
+	var panel := ColorRect.new()
+	panel.color = Color(0.10, 0.09, 0.07)
+	panel.custom_minimum_size = Vector2(420, 380)
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical   = Control.GROW_DIRECTION_BOTH
+	_equip_overlay.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 8)
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for s in ["left","right","top","bottom"]:
+		margin.add_theme_constant_override("margin_" + s, 14)
+	margin.add_child(vbox)
+	panel.add_child(margin)
+
+	var title := Label.new()
+	title.text = "⚔  Equipment"
+	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_color_override("font_color", Color(0.95, 0.80, 0.40))
+	vbox.add_child(title)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_equip_slots_vbox = VBoxContainer.new()
+	_equip_slots_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_equip_slots_vbox.add_theme_constant_override("separation", 6)
+	scroll.add_child(_equip_slots_vbox)
+	vbox.add_child(scroll)
+
+	var close_btn := Button.new()
+	close_btn.text = "Close"
+	close_btn.add_theme_font_size_override("font_size", 13)
+	close_btn.custom_minimum_size = Vector2(80, 36)
+	close_btn.pressed.connect(func(): _equip_overlay.visible = false)
+	vbox.add_child(close_btn)
+
+func _on_open_equip_overlay() -> void:
+	if _selected_id == "":
+		_add_log("[color=orange]Select a character first.[/color]")
+		return
+	var ent: Dictionary = _get_entity(_selected_id)
+	if ent.is_empty() or not bool(ent.get("is_player", false)):
+		_add_log("[color=orange]Select a player character.[/color]")
+		return
+	_populate_equip_overlay(ent)
+	_equip_overlay.visible = true
+
+func _populate_equip_overlay(ent: Dictionary) -> void:
+	for child in _equip_slots_vbox.get_children():
+		child.queue_free()
+	var handle: int = int(ent.get("handle", -1))
+	if handle < 0 or not _e._chars.has(handle): return
+	var c: Dictionary = _e._chars[handle]
+	var char_name: String = str(ent["name"])
+
+	# Current equipment display with durability
+	var slots: Array = [
+		["⚔ Weapon", "weapon", str(c.get("weapon", "None"))],
+		["🛡 Armor", "armor", str(c.get("armor", "None"))],
+		["🔰 Shield", "shield", str(c.get("shield", "None"))],
+		["🔥 Light", "light", str(c.get("light", "None"))],
+	]
+	for slot_data in slots:
+		var label_prefix: String = slot_data[0]
+		var slot_key: String = slot_data[1]
+		var item_name: String = slot_data[2]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		var lbl := Label.new()
+		if item_name == "None" or item_name == "":
+			lbl.text = "%s: (empty)" % label_prefix
+			lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		else:
+			var dur_str: String = ""
+			if slot_key in ["weapon", "armor", "shield"]:
+				var cur_hp: int = _e._get_equip_hp(c, slot_key)
+				var max_hp: int = _e._get_equip_max_hp(c, slot_key)
+				if max_hp > 0:
+					dur_str = "  [%d/%d HP]" % [maxi(0, cur_hp), max_hp]
+					if cur_hp <= 0:
+						dur_str += " BROKEN"
+			lbl.text = "%s: %s%s" % [label_prefix, item_name, dur_str]
+			lbl.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7))
+		lbl.add_theme_font_size_override("font_size", 12)
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(lbl)
+
+		# Unequip button
+		if item_name != "None" and item_name != "":
+			var unequip_btn := Button.new()
+			unequip_btn.text = "Unequip"
+			unequip_btn.add_theme_font_size_override("font_size", 11)
+			unequip_btn.custom_minimum_size = Vector2(70, 0)
+			var cap_slot: String = slot_key; var cap_item: String = item_name
+			unequip_btn.pressed.connect(func():
+				_on_unequip_slot(handle, cap_slot, cap_item)
+				_populate_equip_overlay(ent))
+			row.add_child(unequip_btn)
+		_equip_slots_vbox.add_child(row)
+
+	# Separator + available items from stash
+	_equip_slots_vbox.add_child(RimvaleUtils.separator())
+	var stash_title := Label.new()
+	stash_title.text = "Equip from Stash:"
+	stash_title.add_theme_font_size_override("font_size", 13)
+	stash_title.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+	_equip_slots_vbox.add_child(stash_title)
+
+	var stash_items: PackedStringArray = _e.get_stash_items()
+	var equipable_items: Array = []
+	var _eq_hp_idx: Dictionary = {}
+	for item in stash_items:
+		var s: String = str(item)
+		if not _is_equipable_stash_item(s): continue
+		var cidx: int = int(_eq_hp_idx.get(s, 0))
+		_eq_hp_idx[s] = cidx + 1
+		var ihp: int = GameState.get_stash_item_hp(s, cidx)
+		equipable_items.append([s, ihp])
+
+	if equipable_items.is_empty():
+		var none_lbl := Label.new()
+		none_lbl.text = "No equipable items in stash."
+		none_lbl.add_theme_font_size_override("font_size", 11)
+		none_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
+		_equip_slots_vbox.add_child(none_lbl)
+	else:
+		for eq_entry in equipable_items:
+			var iname: String = eq_entry[0]
+			var ihp: int = eq_entry[1]
+			var irow := HBoxContainer.new()
+			irow.add_theme_constant_override("separation", 6)
+			var display: String = iname
+			var imhp: int = _e._weapon_max_hp(iname)
+			if imhp <= 0: imhp = _e._armor_max_hp(iname)
+			if imhp > 0 and ihp >= 0:
+				display += "  [%d/%d HP]" % [maxi(0, ihp), imhp]
+			var ilbl := Label.new()
+			ilbl.text = display
+			ilbl.add_theme_font_size_override("font_size", 12)
+			ilbl.add_theme_color_override("font_color", Color(0.8, 0.9, 0.75) if ihp != 0 else Color(1.0, 0.5, 0.3))
+			ilbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			irow.add_child(ilbl)
+			var eq_btn := Button.new()
+			eq_btn.text = "Equip"
+			eq_btn.add_theme_font_size_override("font_size", 11)
+			eq_btn.custom_minimum_size = Vector2(60, 0)
+			var cap_iname: String = iname
+			eq_btn.pressed.connect(func():
+				_on_stash_equip_item(cap_iname)
+				_populate_equip_overlay(ent))
+			irow.add_child(eq_btn)
+			_equip_slots_vbox.add_child(irow)
+
+func _on_unequip_slot(handle: int, slot: String, item_name: String) -> void:
+	if not _e._chars.has(handle): return
+	var c: Dictionary = _e._chars[handle]
+	# Save current durability HP before unequipping
+	var cur_hp: int = -1  # -1 = full
+	if slot in ["weapon", "armor", "shield"]:
+		cur_hp = _e._get_equip_hp(c, slot)
+	# Move item back to stash with its durability
+	_e.add_to_stash(item_name, cur_hp)
+	# Clear the slot
+	if slot == "light":
+		c["light"] = "None"
+	else:
+		c[slot] = "None"
+		if slot == "weapon":
+			c["equipped_weapon"] = "None"
+		if slot in ["armor", "shield"]:
+			c["ac"] = _e._compute_ac(handle)
+	# Sync entity
+	var ent: Dictionary = _get_entity(_selected_id)
+	if not ent.is_empty():
+		ent["equipped_weapon"] = str(c.get("weapon", "None"))
+		ent["equipped_light"] = str(c.get("light", "None"))
+		ent["ac"] = int(c.get("ac", 10))
+	_add_log("[color=gold]%s unequips %s (returned to stash).[/color]" % [
+		str(_e.get_character_name(handle)), item_name])
+	_refresh()
+
+func _is_equipable_stash_item(item_name: String) -> bool:
+	# Check if item is a weapon, armor, shield, or light source
+	var details: PackedStringArray = _e._format_item_details(item_name)
+	if details.size() >= 5:
+		var ui_type: String = str(details[4])
+		if ui_type in ["Weapon", "Armor", "Shield", "Light"]:
+			return true
+	# Fallback: check exact name lists on engine
+	if item_name in _e._WEAPON_EXACT: return true
+	if _e._ARMOR_EXACT.has(item_name): return true
+	if item_name in _e._LIGHT_EXACT: return true
+	return false
+
+func _on_stash_equip_item(item_name: String) -> void:
+	if _selected_id == "":
+		_add_log("[color=orange]Select a character first to equip the item.[/color]")
+		return
+	var ent: Dictionary = _get_entity(_selected_id)
+	if ent.is_empty() or not bool(ent.get("is_player", false)):
+		_add_log("[color=orange]Select a player character to equip the item.[/color]")
+		return
+	var handle: int = int(ent.get("handle", -1))
+	if handle < 0:
+		_add_log("[color=orange]No valid character handle.[/color]")
+		return
+	# Remove from stash (returns stored HP), equip on character
+	var stored_hp: int = _e.remove_from_stash(item_name)
+	_e.equip_item(handle, item_name)
+	# Apply stored durability HP if not full
+	if stored_hp >= 0 and _e._chars.has(handle):
+		var c: Dictionary = _e._chars[handle]
+		# Determine which slot was equipped
+		if str(c.get("weapon", "")) == item_name:
+			c["weapon_hp"] = stored_hp
+		elif str(c.get("armor", "")) == item_name:
+			c["armor_hp"] = stored_hp
+		elif str(c.get("shield", "")) == item_name:
+			c["shield_hp"] = stored_hp
+	# Sync entity equipped_weapon / equipped_light if relevant
+	if _e._chars.has(handle):
+		var c: Dictionary = _e._chars[handle]
+		ent["equipped_weapon"] = str(c.get("weapon", "None"))
+		ent["equipped_light"] = str(c.get("light", "None"))
+		ent["ac"] = int(c.get("ac", 10))
+	_add_log("[color=gold]%s equips %s from the stash.[/color]" % [str(ent["name"]), item_name])
+	_populate_stash_list()
+	_refresh()
 
 func _on_stash_take_item(item_name: String) -> void:
 	# Move item to selected player (if a player is selected)
@@ -841,6 +1109,11 @@ func _show_outcome_modal(result: String) -> void:
 	if result == "victory":
 		_modal_title.text = "✦ VICTORY ✦"
 		_modal_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.20))
+		# Slow pulsing glow on the victory title
+		var tween := create_tween()
+		tween.set_loops()
+		tween.tween_property(_modal_title, "modulate", Color(1.0, 1.0, 1.0, 0.55), 1.4).set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
+		tween.tween_property(_modal_title, "modulate", Color(1.0, 1.0, 1.0, 1.0), 1.4).set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
 
 		var data: Dictionary = _e.get_dungeon_outcome_data()
 		var xp: int   = int(data.get("xp",   0))
@@ -851,9 +1124,8 @@ func _show_outcome_modal(result: String) -> void:
 			var s: String = str(it)
 			if not s.contains("Gold Coin"):
 				item_lines.append(s)
-				# Auto-add non-gold loot to stash
-				_e.add_to_stash(s)
-				GameState.add_to_stash(s)
+				# Auto-add non-gold loot to stash with randomized durability
+				_e.add_to_stash_with_random_hp(s)
 
 		# ── Award rewards to GameState ──────────────────────────────────────────
 		# complete_dungeon_quest awards the dungeon drops + any linked quest bonus
@@ -895,6 +1167,9 @@ func _show_outcome_modal(result: String) -> void:
 # ── Custom Spell Dialog (Full PHB Spell Builder) ─────────────────────────────
 
 func _sb_calc_cost() -> int:
+	# Teleport spells: cost is based on max distance (pre-paid)
+	if _sb_is_teleport:
+		return maxi(1, (_sb_tp_range + 1) / 2)
 	var type_cost: int   = 1 if _sb_is_saving_throw else 0
 	var sides_mod: int   = SB_DIE_SIDES_MOD[_sb_die_idx] if _sb_die_idx < SB_DIE_SIDES_MOD.size() else 0
 	var dice_cost: int   = _sb_die_count * (1 + sides_mod)
@@ -965,6 +1240,10 @@ func _sb_update_preview() -> void:
 			lines.append("Area (x%d): applied" % area_mult)
 		if _sb_is_combustion:
 			lines.append("Combustion: damage scales with SP spent")
+		if _sb_is_teleport:
+			lines.clear()
+			lines.append("Teleport Distance: %d tiles (%dft)" % [_sb_tp_range, _sb_tp_range * 5])
+			lines.append("Cost: (%d + 1) / 2 = %d SP (pre-paid)" % [_sb_tp_range, maxi(1, (_sb_tp_range + 1) / 2)])
 		_sb_breakdown_lbl.text = "\n".join(lines)
 
 	if is_instance_valid(_sb_desc_lbl):
@@ -981,7 +1260,7 @@ func _sb_gen_description() -> String:
 	var save_desc: String = ". Targets may roll a saving throw to resist." if _sb_is_saving_throw else "."
 
 	if _sb_is_teleport:
-		return "Instantly teleport to a selected location. SP cost scales with distance: 10ft=1SP, 20ft=2SP, 30ft=4SP."
+		return "Teleport a target up to %d tiles (%dft). SP pre-paid at creation; costs only AP to cast." % [_sb_tp_range, _sb_tp_range * 5]
 
 	if _sb_is_combustion:
 		return "Using the %s domain, you cause a violent combustion targeting %s %s%s. Damage dice scale dynamically with total SP spent (half SP on the scaling table). Lasts %s%s" % [
@@ -1224,8 +1503,40 @@ func _sb_populate_inner() -> void:
 	var tp_chk := CheckBox.new(); tp_chk.text = "Teleport"
 	tp_chk.button_pressed = _sb_is_teleport
 	tp_chk.add_theme_font_size_override("font_size", 12)
-	tp_chk.toggled.connect(func(b: bool): _sb_is_teleport = b; _sb_update_preview())
+	tp_chk.toggled.connect(func(b: bool):
+		_sb_is_teleport = b
+		if _sb_tp_range_row != null: _sb_tp_range_row.visible = b
+		_sb_update_preview()
+	)
 	flag_row2.add_child(tp_chk)
+
+	# Teleport distance slider (visible only when teleport is checked)
+	_sb_tp_range_row = HBoxContainer.new()
+	_sb_tp_range_row.add_theme_constant_override("separation", 8)
+	_sb_tp_range_row.visible = _sb_is_teleport
+	var sb_tp_lbl := Label.new()
+	sb_tp_lbl.text = "Teleport Distance (tiles):"
+	sb_tp_lbl.add_theme_font_size_override("font_size", 12)
+	_sb_tp_range_row.add_child(sb_tp_lbl)
+	var sb_tp_val := Label.new()
+	sb_tp_val.text = str(_sb_tp_range)
+	sb_tp_val.add_theme_font_size_override("font_size", 13)
+	sb_tp_val.add_theme_color_override("font_color", Color(0.40, 0.80, 1.0))
+	sb_tp_val.custom_minimum_size = Vector2(30, 0)
+	_sb_tp_range_row.add_child(sb_tp_val)
+	var sb_tp_slider := HSlider.new()
+	sb_tp_slider.min_value = 1; sb_tp_slider.max_value = 20; sb_tp_slider.step = 1
+	sb_tp_slider.value = _sb_tp_range
+	sb_tp_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sb_tp_slider.custom_minimum_size = Vector2(120, 0)
+	sb_tp_slider.value_changed.connect(func(v: float):
+		_sb_tp_range = int(v)
+		sb_tp_val.text = str(_sb_tp_range)
+		_sb_update_preview()
+	)
+	_sb_tp_range_row.add_child(sb_tp_slider)
+	inner.add_child(_sb_tp_range_row)
+
 	var comb_chk := CheckBox.new(); comb_chk.text = "Combustion (dynamic dmg)"
 	comb_chk.button_pressed = _sb_is_combustion
 	comb_chk.add_theme_font_size_override("font_size", 12)
@@ -1373,6 +1684,7 @@ func _on_open_custom_spell() -> void:
 	_sb_is_healing = false
 	_sb_is_saving_throw = false
 	_sb_is_teleport = false
+	_sb_tp_range = 5
 	_sb_is_combustion = false
 	_sb_conditions.clear()
 	_sb_populate_inner()
@@ -1397,7 +1709,7 @@ func _on_learn_custom_spell() -> void:
 		_sb_die_count, die_sides, _sb_damage_type,
 		_sb_is_healing, dur_rounds, _sb_targets,
 		_sb_area_idx, cond_csv, _sb_is_teleport,
-		_sb_is_combustion
+		_sb_is_combustion, -1, _sb_tp_range if _sb_is_teleport else 0
 	)
 	_add_log("[color=violet]✨ %s learned by all players! (SP Cost: %d)[/color]" % [spell_name, final_cost])
 	_spell_overlay.visible = false
@@ -1979,7 +2291,7 @@ func _build_right_panel() -> Control:
 	turn_row.add_child(_btn_end_phase)
 
 	# Victory: "End Dungeon" button (hidden until all enemies are defeated)
-	_btn_end_dungeon = _colored_btn("✦ End Dungeon — Claim Victory ✦", Color(0.75, 0.65, 0.05))
+	_btn_end_dungeon = _colored_btn("✦ End Dungeon - Claim Victory ✦", Color(0.75, 0.65, 0.05))
 	_btn_end_dungeon.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_btn_end_dungeon.custom_minimum_size = Vector2(0, 44)
 	_btn_end_dungeon.visible = false
@@ -2084,6 +2396,12 @@ func _build_bottom_bar() -> Control:
 	_badge_weapon.add_theme_color_override("font_color", Color(0.72, 0.68, 0.52))
 	_badge_weapon.clip_text = true
 	badge_hbox.add_child(_badge_weapon)
+
+	_badge_light = Label.new()
+	_badge_light.add_theme_font_size_override("font_size", 11)
+	_badge_light.add_theme_color_override("font_color", Color(0.90, 0.72, 0.20))
+	_badge_light.clip_text = true
+	badge_hbox.add_child(_badge_light)
 
 	# ── Conditions / matrices row ─────────────────────────────────────────────
 	var status_margin := MarginContainer.new()
@@ -2211,6 +2529,11 @@ func _build_bottom_bar() -> Control:
 	btn_items.pressed.connect(_on_open_stash)
 	util_row.add_child(btn_items)
 
+	var btn_equip := _colored_btn("⚔ Equip", Color(0.28, 0.22, 0.42))
+	btn_equip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_equip.pressed.connect(_on_open_equip_overlay)
+	util_row.add_child(btn_equip)
+
 	_btn_next_unit = _colored_btn("▶ Next", Color(0.48, 0.40, 0.05))
 	_btn_next_unit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_btn_next_unit.pressed.connect(_on_next_unit)
@@ -2222,7 +2545,7 @@ func _build_bottom_bar() -> Control:
 	util_row.add_child(_btn_end_phase)
 
 	# Victory: "End Dungeon" button (hidden until all enemies defeated)
-	_btn_end_dungeon = _colored_btn("✦ End Dungeon — Claim Victory ✦", Color(0.75, 0.65, 0.05))
+	_btn_end_dungeon = _colored_btn("✦ End Dungeon - Claim Victory ✦", Color(0.75, 0.65, 0.05))
 	_btn_end_dungeon.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_btn_end_dungeon.custom_minimum_size = Vector2(0, 44)
 	_btn_end_dungeon.visible = false
@@ -4048,10 +4371,27 @@ func _on_move_confirm() -> void:
 	if _pending_move.is_empty() or _selected_id == "": return
 	var tx: int = int(_pending_move["x"])
 	var ty: int = int(_pending_move["y"])
+	var ent: Dictionary = _get_entity(_selected_id)
+	var old_x: int = int(ent.get("x", -1))
+	var old_y: int = int(ent.get("y", -1))
 	_pending_move = {}
 	var ok: bool = _e.move_dungeon_player(_selected_id, tx, ty)
 	if ok:
 		_add_log("→ Moved to (%d, %d)" % [tx, ty])
+		# Handle grapple movement: move the grappler to our old position
+		var has_grapple_half_speed: bool = bool(ent.get("grapple_half_speed", false))
+		if has_grapple_half_speed and old_x >= 0 and old_y >= 0:
+			# Find the entity grappling this unit and move them
+			for other_ent in _entities:
+				if str(other_ent.get("grappled_by", "")) == _selected_id:
+					var other_id: String = str(other_ent.get("id", ""))
+					_e.move_dungeon_player(other_id, old_x, old_y)
+					_add_log("   [Grapple] Moved with %s" % str(other_ent.get("name", "Unknown")))
+					break
+		# Handle prone: deduct movement cost if first move while prone
+		var has_prone: bool = "prone" in ent.get("conditions", [])
+		if has_prone and old_x >= 0 and old_y >= 0:
+			_add_log("   [Prone] Standing up costs half movement")
 		_refresh()
 		_select_entity(_selected_id)
 		_check_victory_defeat()
@@ -4155,6 +4495,181 @@ func _populate_action_columns() -> void:
 	for action in abil_actions:
 		_col_abil_vbox.add_child(_action_btn(action))
 
+	# ── PHB Special Actions (Stabilize, Grapple, Shove, Break Free) ───────────
+	var phb_sep := Label.new()
+	phb_sep.text = "— combat —"
+	phb_sep.add_theme_font_size_override("font_size", 9)
+	phb_sep.add_theme_color_override("font_color", Color(0.50, 0.50, 0.48))
+	phb_sep.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_col_abil_vbox.add_child(phb_sep)
+
+	# Stabilize button — visible if there's an adjacent dying ally
+	var dying_ally_id: String = _find_adjacent_dying_ally(_selected_id)
+	if dying_ally_id != "":
+		var stab_btn := Button.new()
+		stab_btn.text = "First Aid"
+		stab_btn.custom_minimum_size = Vector2(0, 34)
+		stab_btn.add_theme_font_size_override("font_size", 11)
+		stab_btn.add_theme_color_override("font_color", Color(0.85, 0.70, 0.20))
+		stab_btn.tooltip_text = "Stabilize an adjacent dying ally"
+		var stab_style := StyleBoxFlat.new()
+		stab_style.bg_color = Color(0.28, 0.24, 0.08)
+		stab_style.border_width_left = 2
+		stab_style.border_width_right = 2
+		stab_style.border_width_top = 2
+		stab_style.border_width_bottom = 2
+		stab_style.border_color = Color(0.75, 0.58, 0.12)
+		stab_style.set_corner_radius_all(3)
+		stab_btn.add_theme_stylebox_override("normal", stab_style)
+		var stab_hover: StyleBoxFlat = stab_style.duplicate()
+		stab_hover.bg_color = stab_style.bg_color.lightened(0.18)
+		stab_btn.add_theme_stylebox_override("hover", stab_hover)
+		stab_btn.pressed.connect(func(): _e.dung_stabilize(_selected_id, dying_ally_id); _refresh(); _update_entity_card())
+		_col_abil_vbox.add_child(stab_btn)
+
+	# Break Free button — visible if grappled
+	var has_grapple: bool = "grappled" in ent.get("conditions", [])
+	if has_grapple:
+		var break_btn := Button.new()
+		break_btn.text = "Break Free"
+		break_btn.custom_minimum_size = Vector2(0, 34)
+		break_btn.add_theme_font_size_override("font_size", 11)
+		break_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.40))
+		break_btn.tooltip_text = "Attempt to break free from grapple (Athletics check)"
+		var break_style := StyleBoxFlat.new()
+		break_style.bg_color = Color(0.45, 0.10, 0.10)
+		break_style.border_width_left = 2
+		break_style.border_width_right = 2
+		break_style.border_width_top = 2
+		break_style.border_width_bottom = 2
+		break_style.border_color = Color(0.75, 0.20, 0.20)
+		break_style.set_corner_radius_all(3)
+		break_btn.add_theme_stylebox_override("normal", break_style)
+		var break_hover: StyleBoxFlat = break_style.duplicate()
+		break_hover.bg_color = break_style.bg_color.lightened(0.18)
+		break_btn.add_theme_stylebox_override("hover", break_hover)
+		break_btn.pressed.connect(func(): _e.break_grapple(_selected_id); _refresh(); _update_entity_card())
+		_col_abil_vbox.add_child(break_btn)
+
+	# Mount/Dismount — visible when player has a mount or is mounted
+	var handle: int = int(ent.get("handle", -1))
+	var mount_data: Dictionary = {} if handle < 0 else _e.get_mount_data(handle)
+	var is_mounted: bool = bool(ent.get("is_mounted", false))
+	var has_mount: bool = not mount_data.is_empty()
+
+	if has_mount and not is_mounted:
+		# Mount button: costs 2 AP
+		var mount_btn := Button.new()
+		mount_btn.text = "Mount\n2AP"
+		mount_btn.custom_minimum_size = Vector2(0, 34)
+		mount_btn.add_theme_font_size_override("font_size", 11)
+		mount_btn.add_theme_color_override("font_color", Color(0.85, 0.70, 0.20))
+		var mount_name: String = str(mount_data.get("mount_name", "Mount"))
+		mount_btn.tooltip_text = "Mount your %s (2 AP)" % mount_name
+
+		# Check if player can afford 2 AP
+		var ap_left: int = int(ent.get("max_ap", 10)) - int(ent.get("ap_spent", 0))
+		mount_btn.disabled = ap_left < 2
+
+		var mount_style := StyleBoxFlat.new()
+		mount_style.bg_color = Color(0.18, 0.28, 0.18)
+		mount_style.border_width_left = 2
+		mount_style.border_width_right = 2
+		mount_style.border_width_top = 2
+		mount_style.border_width_bottom = 2
+		mount_style.border_color = Color(0.45, 0.75, 0.45)
+		mount_style.set_corner_radius_all(3)
+		mount_btn.add_theme_stylebox_override("normal", mount_style)
+		var mount_hover: StyleBoxFlat = mount_style.duplicate()
+		mount_hover.bg_color = mount_style.bg_color.lightened(0.18)
+		mount_btn.add_theme_stylebox_override("hover", mount_hover)
+		mount_btn.pressed.connect(func():
+			ent["is_mounted"] = true
+			if "ap_spent" in ent:
+				ent["ap_spent"] = int(ent["ap_spent"]) + 2
+			_refresh()
+			_update_entity_card()
+		)
+		_col_abil_vbox.add_child(mount_btn)
+	elif is_mounted:
+		# Dismount button: costs 1 AP
+		var dismount_btn := Button.new()
+		dismount_btn.text = "Dismount\n1AP"
+		dismount_btn.custom_minimum_size = Vector2(0, 34)
+		dismount_btn.add_theme_font_size_override("font_size", 11)
+		dismount_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.40))
+		dismount_btn.tooltip_text = "Dismount from your mount (1 AP)"
+
+		# Check if player can afford 1 AP
+		var ap_left: int = int(ent.get("max_ap", 10)) - int(ent.get("ap_spent", 0))
+		dismount_btn.disabled = ap_left < 1
+
+		var dismount_style := StyleBoxFlat.new()
+		dismount_style.bg_color = Color(0.28, 0.18, 0.10)
+		dismount_style.border_width_left = 2
+		dismount_style.border_width_right = 2
+		dismount_style.border_width_top = 2
+		dismount_style.border_width_bottom = 2
+		dismount_style.border_color = Color(0.75, 0.58, 0.12)
+		dismount_style.set_corner_radius_all(3)
+		dismount_btn.add_theme_stylebox_override("normal", dismount_style)
+		var dismount_hover: StyleBoxFlat = dismount_style.duplicate()
+		dismount_hover.bg_color = dismount_style.bg_color.lightened(0.18)
+		dismount_btn.add_theme_stylebox_override("hover", dismount_hover)
+		dismount_btn.pressed.connect(func():
+			ent["is_mounted"] = false
+			if "ap_spent" in ent:
+				ent["ap_spent"] = int(ent["ap_spent"]) + 1
+			_refresh()
+			_update_entity_card()
+		)
+		_col_abil_vbox.add_child(dismount_btn)
+
+	# Grapple & Shove — visible when adjacent to enemy
+	var can_grapple_shove: bool = _has_adjacent_enemy(_selected_id)
+	if can_grapple_shove:
+		var grapple_btn := Button.new()
+		grapple_btn.text = "Grapple"
+		grapple_btn.custom_minimum_size = Vector2(0, 34)
+		grapple_btn.add_theme_font_size_override("font_size", 11)
+		grapple_btn.add_theme_color_override("font_color", Color(0.85, 0.70, 0.20))
+		grapple_btn.tooltip_text = "Attempt to grapple an adjacent enemy"
+		var grapple_style := StyleBoxFlat.new()
+		grapple_style.bg_color = Color(0.28, 0.20, 0.06)
+		grapple_style.border_width_left = 2
+		grapple_style.border_width_right = 2
+		grapple_style.border_width_top = 2
+		grapple_style.border_width_bottom = 2
+		grapple_style.border_color = Color(0.75, 0.58, 0.12)
+		grapple_style.set_corner_radius_all(3)
+		grapple_btn.add_theme_stylebox_override("normal", grapple_style)
+		var grapple_hover: StyleBoxFlat = grapple_style.duplicate()
+		grapple_hover.bg_color = grapple_style.bg_color.lightened(0.18)
+		grapple_btn.add_theme_stylebox_override("hover", grapple_hover)
+		grapple_btn.pressed.connect(func(): _e.dung_grapple(_selected_id); _refresh(); _update_entity_card())
+		_col_abil_vbox.add_child(grapple_btn)
+
+		var shove_btn := Button.new()
+		shove_btn.text = "Shove"
+		shove_btn.custom_minimum_size = Vector2(0, 34)
+		shove_btn.add_theme_font_size_override("font_size", 11)
+		shove_btn.add_theme_color_override("font_color", Color(0.85, 0.70, 0.20))
+		shove_btn.tooltip_text = "Shove an adjacent enemy (Push or Prone)"
+		var shove_style := StyleBoxFlat.new()
+		shove_style.bg_color = Color(0.28, 0.20, 0.06)
+		shove_style.border_width_left = 2
+		shove_style.border_width_right = 2
+		shove_style.border_width_top = 2
+		shove_style.border_width_bottom = 2
+		shove_style.border_color = Color(0.75, 0.58, 0.12)
+		shove_style.set_corner_radius_all(3)
+		shove_btn.add_theme_stylebox_override("normal", shove_style)
+		var shove_hover: StyleBoxFlat = shove_style.duplicate()
+		shove_hover.bg_color = shove_style.bg_color.lightened(0.18)
+		shove_btn.add_theme_stylebox_override("hover", shove_hover)
+		shove_btn.pressed.connect(func(): _show_shove_options(_selected_id))
+		_col_abil_vbox.add_child(shove_btn)
+
 func _action_btn(action: Dictionary) -> Button:
 	var ap_cost: int = int(action.get("ap_cost", 0))
 	var sp_cost: int = int(action.get("sp_cost", 0))
@@ -4184,18 +4699,11 @@ func _action_btn(action: Dictionary) -> Button:
 
 	# Check if entity can afford it
 	var ent: Dictionary = _get_entity(_selected_id)
-	var ap_spent: int = 0
-	var sp_spent: int = 0
+	var ap_left: int = 0
+	var sp_left: int = 0
 	if not ent.is_empty():
-		ap_spent = int(ent.get("ap_spent", 0))
-		sp_spent = int(ent.get("sp_spent", 0))
-	var max_ap: int = 0
-	var max_sp: int = 0
-	if not ent.is_empty():
-		max_ap = int(ent.get("max_ap", 10))
-		max_sp = int(ent.get("max_sp", 6))
-	var ap_left: int = max_ap - ap_spent
-	var sp_left: int = max_sp - sp_spent
+		ap_left = int(ent.get("max_ap", 10)) - int(ent.get("ap_spent", 0))
+		sp_left = int(ent.get("sp", 0))   # current SP (decremented by engine on cast)
 	var can_afford: bool = (ap_left >= ap_cost) and (sp_left >= sp_cost)
 	btn.disabled = not can_afford
 
@@ -4431,6 +4939,18 @@ func _on_next_unit() -> void:
 		_btn_next_unit.disabled = true
 	else:
 		_select_entity(next_id)
+		# Check if the selected unit is dying and auto-run death save
+		var ent: Dictionary = _get_entity(next_id)
+		if not ent.is_empty() and bool(ent.get("is_dying", false)):
+			_run_death_save_for_unit(next_id)
+
+func _run_death_save_for_unit(unit_id: String) -> void:
+	var result: Dictionary = _e._do_death_save(unit_id)
+	if not result.is_empty():
+		var msg: String = str(result.get("message", "Death save rolled"))
+		_add_log("[color=#ff6666]" + msg + "[/color]")
+		_refresh()
+		_update_entity_card()
 
 func _on_end_phase() -> void:
 	_cancel_pending_action()
@@ -4561,6 +5081,7 @@ func _update_entity_card() -> void:
 		_badge_ap.text         = "◈ –/–"
 		_badge_sp.text         = "✦ –/–"
 		_badge_weapon.text     = ""
+		_badge_light.text      = ""
 		for c in _badge_conditions.get_children(): c.queue_free()
 		_badge_matrices.text   = ""
 		return
@@ -4569,20 +5090,53 @@ func _update_entity_card() -> void:
 
 	var hp: int     = int(ent["hp"])
 	var max_hp: int = int(ent["max_hp"])
-	_badge_hp.text  = "♥ %d/%d" % [hp, max_hp]
+	var is_dying: bool = bool(ent.get("is_dying", false))
+	var is_mounted: bool = bool(ent.get("is_mounted", false))
+	var handle: int = int(ent.get("handle", -1))
+	var mount_data: Dictionary = {} if handle < 0 else _e.get_mount_data(handle)
+
+	if is_dying:
+		_badge_hp.text = "[color=#ff4444]DYING[/color]"
+		# Show death save tracker
+		var saves: int = int(ent.get("death_saves", 0))
+		var fails: int = int(ent.get("death_fails", 0))
+		_badge_hp.text += "\nSaves: %d/3  Fails: %d/3" % [saves, fails]
+	else:
+		_badge_hp.text  = "♥ %d/%d" % [hp, max_hp]
+		# Show mount HP if mounted
+		if is_mounted and not mount_data.is_empty():
+			var mount_hp: int = int(mount_data.get("mount_hp", 0))
+			var mount_max_hp: int = int(mount_data.get("mount_max_hp", 0))
+			var mount_name: String = str(mount_data.get("mount_name", "Mount"))
+			_badge_hp.text += "\n🐎 %s: %d/%d" % [mount_name, mount_hp, mount_max_hp]
+			# If mount HP reaches 0, auto-dismount
+			if mount_hp <= 0:
+				ent["is_mounted"] = false
+				_badge_hp.text += " [AUTO-DISMOUNT]"
 
 	var ap_spent: int = int(ent.get("ap_spent", 0))
 	var max_ap: int   = int(ent.get("max_ap", 10))
 	var ap_left: int  = max_ap - ap_spent
 	_badge_ap.text    = "◈ %d/%d" % [ap_left, max_ap]
 
-	var sp_spent: int = int(ent.get("sp_spent", 0))
+	var cur_sp: int   = int(ent.get("sp", 0))
 	var max_sp: int   = int(ent.get("max_sp", 6))
-	var sp_left: int  = max_sp - sp_spent
-	_badge_sp.text    = "✦ %d/%d" % [sp_left, max_sp]
+	_badge_sp.text    = "✦ %d/%d" % [cur_sp, max_sp]
 
 	var weapon_name: String = str(ent.get("equipped_weapon", "Unarmed"))
-	_badge_weapon.text = "⚔ " + weapon_name
+	handle = int(ent.get("handle", -1))
+	var wpn_dur: String = ""
+	if handle >= 0 and _e._chars.has(handle) and weapon_name != "Unarmed" and weapon_name != "None":
+		var c: Dictionary = _e._chars[handle]
+		var whp: int = _e._get_equip_hp(c, "weapon")
+		var wmhp: int = _e._get_equip_max_hp(c, "weapon")
+		if wmhp > 0:
+			wpn_dur = " [%d/%d]" % [maxi(0, whp), wmhp]
+			if whp <= 0: wpn_dur += " BROKEN"
+	_badge_weapon.text = "⚔ " + weapon_name + wpn_dur
+
+	var light_name: String = str(ent.get("equipped_light", "None"))
+	_badge_light.text = "" if light_name == "None" else "🔥 " + light_name
 
 	# ── Condition chips ─────────────────────────────────────────────────────────
 	for old_chip in _badge_conditions.get_children():
@@ -4592,6 +5146,13 @@ func _update_entity_card() -> void:
 	const COND_HARMFUL: Array    = ["bleeding", "stunned", "slowed", "restrained", "blinded",
 									"prone", "paralyzed", "poisoned", "grappled", "burning",
 									"frozen", "silenced", "cursed", "weakened", "frightened"]
+
+	# Add DYING/DEAD chips if applicable
+	if bool(ent.get("is_dead", false)):
+		_add_condition_chip("DEAD", Color(0.55, 0.55, 0.55))
+	elif bool(ent.get("is_dying", false)):
+		_add_condition_chip("DYING", Color(0.85, 0.24, 0.20))
+
 	for cname in conds:
 		var cs: String = str(cname).to_lower()
 		var chip_col: Color
@@ -4601,23 +5162,7 @@ func _update_entity_card() -> void:
 			chip_col = Color(0.85, 0.24, 0.20)   # red
 		else:
 			chip_col = Color(0.60, 0.50, 0.15)   # amber/neutral
-		var chip_lbl := Label.new()
-		chip_lbl.text = cs
-		chip_lbl.add_theme_font_size_override("font_size", 10)
-		chip_lbl.add_theme_color_override("font_color", chip_col)
-		var chip_bg := StyleBoxFlat.new()
-		chip_bg.bg_color    = Color(chip_col, 0.18)
-		chip_bg.border_color = Color(chip_col, 0.55)
-		chip_bg.set_border_width_all(1)
-		chip_bg.set_corner_radius_all(4)
-		chip_bg.content_margin_left   = 5
-		chip_bg.content_margin_right  = 5
-		chip_bg.content_margin_top    = 2
-		chip_bg.content_margin_bottom = 2
-		var chip_panel := PanelContainer.new()
-		chip_panel.add_theme_stylebox_override("panel", chip_bg)
-		chip_panel.add_child(chip_lbl)
-		_badge_conditions.add_child(chip_panel)
+		_add_condition_chip(cs, chip_col)
 
 	var mats: Array = ent.get("matrices", [])
 	if mats.is_empty():
@@ -4632,6 +5177,25 @@ func _update_entity_card() -> void:
 			mat_parts.append("%s%s(%dr)" % ["⏸ " if sup else "✨ ", short_name, m_rnd])
 		_badge_matrices.text = "  ".join(mat_parts)
 
+func _add_condition_chip(text: String, color: Color) -> void:
+	var chip_lbl := Label.new()
+	chip_lbl.text = text
+	chip_lbl.add_theme_font_size_override("font_size", 10)
+	chip_lbl.add_theme_color_override("font_color", color)
+	var chip_bg := StyleBoxFlat.new()
+	chip_bg.bg_color    = Color(color, 0.18)
+	chip_bg.border_color = Color(color, 0.55)
+	chip_bg.set_border_width_all(1)
+	chip_bg.set_corner_radius_all(4)
+	chip_bg.content_margin_left   = 5
+	chip_bg.content_margin_right  = 5
+	chip_bg.content_margin_top    = 2
+	chip_bg.content_margin_bottom = 2
+	var chip_panel := PanelContainer.new()
+	chip_panel.add_theme_stylebox_override("panel", chip_bg)
+	chip_panel.add_child(chip_lbl)
+	_badge_conditions.add_child(chip_panel)
+
 func _set_bar(bar: ProgressBar, val_lbl: Label, current: int, maximum: int, txt: String) -> void:
 	val_lbl.text = txt
 	bar.max_value = float(maxi(1, maximum))
@@ -4645,6 +5209,7 @@ func _update_roster() -> void:
 		if not bool(ent["is_player"]): continue
 		var captured_id: String = str(ent["id"])
 		var is_dead:     bool   = bool(ent["is_dead"])
+		var is_dying:    bool   = bool(ent.get("is_dying", false))
 		var is_selected: bool   = (captured_id == _selected_id)
 
 		var chip := Button.new()
@@ -4656,6 +5221,8 @@ func _update_roster() -> void:
 		var style := StyleBoxFlat.new()
 		if is_dead:
 			style.bg_color = Color(0.22, 0.22, 0.26)
+		elif is_dying:
+			style.bg_color = Color(0.66, 0.22, 0.22)
 		elif is_selected:
 			style.bg_color = Color(0.22, 0.50, 0.82)
 		else:
@@ -4668,13 +5235,58 @@ func _update_roster() -> void:
 		# HP micro-badge below name via tooltip
 		var hp: int     = int(ent["hp"])
 		var max_hp: int = int(ent["max_hp"])
-		chip.tooltip_text = "HP %d/%d" % [hp, max_hp]
+		if is_dead:
+			chip.tooltip_text = "DEAD"
+		elif is_dying:
+			var saves: int = int(ent.get("death_saves", 0))
+			var fails: int = int(ent.get("death_fails", 0))
+			chip.tooltip_text = "DYING - Saves: %d/3  Fails: %d/3" % [saves, fails]
+		else:
+			chip.tooltip_text = "HP %d/%d" % [hp, max_hp]
 
 		_unit_tabs_hbox.add_child(chip)
 
 # ── Victory / Defeat ──────────────────────────────────────────────────────────
 func _check_victory_defeat() -> void:
 	_check_outcome()   # delegate to the new engine-backed system
+
+# ── PHB Combat Helpers ────────────────────────────────────────────────────────
+func _find_adjacent_dying_ally(unit_id: String) -> String:
+	var ent: Dictionary = _get_entity(unit_id)
+	if ent.is_empty(): return ""
+	var ux: int = int(ent.get("x", -1))
+	var uy: int = int(ent.get("y", -1))
+	if ux < 0 or uy < 0: return ""
+	# Check all 4 adjacent tiles for dying allies
+	var adjacent: Array = [[ux+1, uy], [ux-1, uy], [ux, uy+1], [ux, uy-1]]
+	for adj in adjacent:
+		var adj_ent: Dictionary = _entity_at(adj[0], adj[1])
+		if not adj_ent.is_empty() and bool(adj_ent.get("is_dying", false)):
+			return str(adj_ent.get("id", ""))
+	return ""
+
+func _has_adjacent_enemy(unit_id: String) -> bool:
+	var ent: Dictionary = _get_entity(unit_id)
+	if ent.is_empty(): return false
+	var is_player: bool = bool(ent.get("is_player", false))
+	var ux: int = int(ent.get("x", -1))
+	var uy: int = int(ent.get("y", -1))
+	if ux < 0 or uy < 0: return false
+	# Check all 4 adjacent tiles for enemies/allies depending on unit type
+	var adjacent: Array = [[ux+1, uy], [ux-1, uy], [ux, uy+1], [ux, uy-1]]
+	for adj in adjacent:
+		var adj_ent: Dictionary = _entity_at(adj[0], adj[1])
+		if not adj_ent.is_empty() and not bool(adj_ent.get("is_dead", false)):
+			var adj_is_player: bool = bool(adj_ent.get("is_player", false))
+			if is_player and not adj_is_player: return true
+			elif not is_player and adj_is_player: return true
+	return false
+
+func _show_shove_options(unit_id: String) -> void:
+	# For now, just call the default shove (can be expanded to show push vs prone menu)
+	_e.dung_shove(_selected_id)
+	_refresh()
+	_update_entity_card()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 func _get_entity(id: String) -> Dictionary:
@@ -4686,6 +5298,69 @@ func _entity_at(tx: int, ty: int) -> Dictionary:
 	for ent in _entities:
 		if int(ent["x"]) == tx and int(ent["y"]) == ty: return ent
 	return {}
+
+## Apply mounted speed override to entity's speed
+func _apply_mounted_speed(ent: Dictionary) -> int:
+	var is_mounted: bool = bool(ent.get("is_mounted", false))
+	if not is_mounted:
+		return int(ent.get("speed", 30))
+
+	var handle: int = int(ent.get("handle", -1))
+	if handle < 0:
+		return int(ent.get("speed", 30))
+
+	var mount_data: Dictionary = _e.get_mount_data(handle)
+	if mount_data.is_empty():
+		return int(ent.get("speed", 30))
+
+	var mount_speed: int = int(mount_data.get("mount_speed", 0))
+	return mount_speed if mount_speed > 0 else int(ent.get("speed", 30))
+
+## Handle mount taking damage (50% chance instead of rider)
+func _apply_mount_damage(ent: Dictionary, damage: int) -> int:
+	var is_mounted: bool = bool(ent.get("is_mounted", false))
+	if not is_mounted or randf() > 0.5:  # 50% chance mount takes damage
+		return damage  # rider takes damage
+
+	var handle: int = int(ent.get("handle", -1))
+	if handle < 0:
+		return damage
+
+	var mount_data: Dictionary = _e.get_mount_data(handle)
+	if mount_data.is_empty():
+		return damage
+
+	# Apply damage to mount instead
+	var mount_hp: int = int(mount_data.get("mount_hp", 0))
+	mount_hp = maxi(0, mount_hp - damage)
+	mount_data["mount_hp"] = mount_hp
+	_add_log("Mount takes %d damage! (%d/%d HP)" % [damage, mount_hp, mount_data.get("mount_max_hp", 0)])
+
+	# If mount HP reaches 0, auto-dismount
+	if mount_hp <= 0:
+		ent["is_mounted"] = false
+		_add_log("Mount is defeated! Rider is dismounted.")
+
+	return 0  # rider takes no damage
+
+## Get mounted combat AC bonus (saddle-dependent)
+func _get_mounted_ac_bonus(ent: Dictionary) -> int:
+	var is_mounted: bool = bool(ent.get("is_mounted", false))
+	if not is_mounted:
+		return 0
+
+	var handle: int = int(ent.get("handle", -1))
+	if handle < 0:
+		return 0
+
+	var mount_data: Dictionary = _e.get_mount_data(handle)
+	if mount_data.is_empty():
+		return 0
+
+	var saddle: String = str(mount_data.get("saddle", "None"))
+	if saddle == "Military Saddle":
+		return 1  # Military saddle gives +1 AC
+	return 0
 
 func _add_log(text: String) -> void:
 	_log_lines.append(text)
@@ -4758,6 +5433,9 @@ func _sc_is_construct_effect() -> bool:
 	return _sc_current_effect_name() == "Create Construct"
 
 func _sc_calc_cost() -> int:
+	# Teleport spells: cost is based on max distance (pre-paid)
+	if _sc_is_teleport:
+		return maxi(1, (_sc_tp_range + 1) / 2)
 	var effects: Array = SC_DOMAIN_EFFECTS[_sc_domain] if _sc_domain < SC_DOMAIN_EFFECTS.size() else []
 	var base: int = int(effects[_sc_effect_idx][1]) if _sc_effect_idx < effects.size() else 1
 	# Summon/Construct effects: base cost only — details add SP at cast time
@@ -4799,7 +5477,8 @@ func _sc_description() -> String:
 	if _sc_is_summon_effect():
 		return "Using the %s domain, conjure a summoned creature %s. Stats, feats, and abilities are chosen at cast time (1 SP per stat point, feat tier cost, ability AP+SP cost). Base cost %d SP. Lasts %s." % [dom, rng, _sc_calc_cost(), dur]
 	if _sc_is_teleport:
-		return "Teleport %s to a selected location. Cost scales with distance." % ("yourself" if _sc_range_idx == 0 else "a target %s" % rng)
+		return "Teleport %s up to %d tiles (%dft). SP pre-paid; costs only AP to cast." % [
+			("yourself" if _sc_range_idx == 0 else "a target %s" % rng), _sc_tp_range, _sc_tp_range * 5]
 	var act: String = "heals for" if _sc_is_healing else "deals"
 	var dice_d: String = " %dd%d" % [_sc_die_count, [4,6,8,10,12][_sc_die_idx]] if _sc_die_count > 0 else ""
 	var type_d: String = ""
@@ -4815,7 +5494,10 @@ func _sc_update_preview() -> void:
 		var effects: Array = SC_DOMAIN_EFFECTS[_sc_domain] if _sc_domain < SC_DOMAIN_EFFECTS.size() else []
 		var eff_name: String = effects[_sc_effect_idx][0] if _sc_effect_idx < effects.size() else "Unknown"
 		var base: int = int(effects[_sc_effect_idx][1]) if _sc_effect_idx < effects.size() else 1
-		if _sc_is_summon_effect():
+		if _sc_is_teleport:
+			_sc_breakdown_lbl.text = "Teleport Distance: %d tiles (%dft)\nCost: (%d + 1) / 2 = %d SP (pre-paid)" % [
+				_sc_tp_range, _sc_tp_range * 5, _sc_tp_range, maxi(1, (_sc_tp_range + 1) / 2)]
+		elif _sc_is_summon_effect():
 			_sc_breakdown_lbl.text = "Base Effect (%s): %d — additional SP for stats/feats/abilities at cast time" % [eff_name, base]
 		elif _sc_is_construct_effect():
 			_sc_breakdown_lbl.text = "Base Effect (%s): %d — construct size/equipment costs added at cast time" % [eff_name, base]
@@ -4830,6 +5512,7 @@ func _open_spell_crafter() -> void:
 		_sc_overlay = null
 
 	_sc_die_btns.clear()
+	_sc_tp_range_row = null
 	_sc_cost_lbl = null; _sc_breakdown_lbl = null; _sc_desc_lbl = null
 
 	# Full-screen overlay
@@ -5028,8 +5711,34 @@ func _open_spell_crafter() -> void:
 		vbox.add_child(fl_row)
 		var tp_chk = CheckBox.new(); tp_chk.text = "Teleportation"; tp_chk.button_pressed = _sc_is_teleport
 		tp_chk.add_theme_font_size_override("font_size", 12)
-		tp_chk.toggled.connect(func(b: bool): _sc_is_teleport = b; _sc_update_preview())
+		tp_chk.toggled.connect(func(b: bool):
+			_sc_is_teleport = b
+			if _sc_tp_range_row != null: _sc_tp_range_row.visible = b
+			_sc_update_preview()
+		)
 		vbox.add_child(tp_chk)
+
+		# Teleport distance slider (visible only when teleport is checked)
+		_sc_tp_range_row = HBoxContainer.new()
+		_sc_tp_range_row.add_theme_constant_override("separation", 8)
+		_sc_tp_range_row.visible = _sc_is_teleport
+		var sc_tp_lbl = RimvaleUtils.label("Teleport Distance (tiles):", 12, RimvaleColors.TEXT_WHITE)
+		_sc_tp_range_row.add_child(sc_tp_lbl)
+		var sc_tp_val = RimvaleUtils.label(str(_sc_tp_range), 13, Color(0.40, 0.80, 1.0))
+		sc_tp_val.custom_minimum_size = Vector2(30, 0)
+		_sc_tp_range_row.add_child(sc_tp_val)
+		var sc_tp_slider = HSlider.new()
+		sc_tp_slider.min_value = 1; sc_tp_slider.max_value = 20; sc_tp_slider.step = 1
+		sc_tp_slider.value = _sc_tp_range
+		sc_tp_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		sc_tp_slider.custom_minimum_size = Vector2(120, 0)
+		sc_tp_slider.value_changed.connect(func(v: float):
+			_sc_tp_range = int(v)
+			sc_tp_val.text = str(_sc_tp_range)
+			_sc_update_preview()
+		)
+		_sc_tp_range_row.add_child(sc_tp_slider)
+		vbox.add_child(_sc_tp_range_row)
 
 		vbox.add_child(RimvaleUtils.separator())
 
@@ -5126,13 +5835,14 @@ func _sc_register_spell() -> void:
 	if _selected_id != "":
 		var ent = _get_entity(_selected_id)
 		sc_handle = int(ent.get("handle", -2))
+	var sc_tp_range_val: int = _sc_tp_range if _sc_is_teleport else 0
 	_e.add_custom_spell(
 		sname, _sc_domain, cost, _sc_description(),
 		_sc_range_idx, (not _sc_is_saving_throw) and (not _sc_is_healing),
 		die_count, die_sides, _sc_damage_type,
 		_sc_is_healing, dur_rounds, targets,
 		area, cond_csv, _sc_is_teleport,
-		false, sc_handle, 0, is_summon, is_construct
+		false, sc_handle, sc_tp_range_val, is_summon, is_construct
 	)
 	var display_cost: int = 0 if _sc_is_teleport else cost
 	_add_log("[color=#bd66ff]%s registered and learned: %s (%d SP)[/color]" % [sname, _sc_description().left(60), display_cost])

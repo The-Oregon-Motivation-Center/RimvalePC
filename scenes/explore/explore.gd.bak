@@ -7,8 +7,6 @@
 
 extends Control
 
-const _WS = preload("res://autoload/world_systems.gd")
-
 # ── Tile type constants ─────────────────────────────────────────────────────
 const T_ROAD: int      = 0
 const T_GROUND: int    = 1
@@ -1249,169 +1247,6 @@ func _build_poi_exit_gate(wx: float, wz: float) -> void:
 #  PHASE 4 — PLAYER AND FOLLOWER 3D MODELS
 # ══════════════════════════════════════════════════════════════════════════════
 
-
-func _build_poi_ledger_house(wx: float, wz: float) -> void:
-	# Vault door (main visual)
-	var vault := MeshInstance3D.new()
-	var vm := BoxMesh.new()
-	vm.size = Vector3(0.5, 0.6, 0.08)
-	vault.mesh = vm
-	var vmat := StandardMaterial3D.new()
-	vmat.albedo_color = Color(0.60, 0.52, 0.32)
-	vmat.metallic = 0.3
-	vmat.roughness = 0.4
-	vault.material_override = vmat
-	vault.position = Vector3(wx, 0.3, wz)
-	_poi_root.add_child(vault)
-	# Vault lock
-	var lock := MeshInstance3D.new()
-	var lm := SphereMesh.new()
-	lm.radius = 0.06
-	lock.mesh = lm
-	var lmat := StandardMaterial3D.new()
-	lmat.albedo_color = Color(0.90, 0.82, 0.50)
-	lmat.metallic = 0.8
-	lock.material_override = lmat
-	lock.position = Vector3(wx, 0.30, wz - 0.045)
-	_poi_root.add_child(lock)
-	# Building body
-	var body := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.7, 0.4, 0.7)
-	body.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.50, 0.44, 0.32)
-	body.material_override = mat
-	body.position = Vector3(wx, 0.2, wz + 0.2)
-	_poi_root.add_child(body)
-	# Roof
-	var roof := MeshInstance3D.new()
-	var rm := BoxMesh.new()
-	rm.size = Vector3(0.75, 0.04, 0.75)
-	roof.mesh = rm
-	var rmat := StandardMaterial3D.new()
-	rmat.albedo_color = Color(0.45, 0.40, 0.28)
-	rmat.metallic = 0.2
-	roof.material_override = rmat
-	roof.position = Vector3(wx, 0.42, wz + 0.2)
-	_poi_root.add_child(roof)
-	# Gold glow accent
-	var glow := OmniLight3D.new()
-	glow.light_color = Color(0.90, 0.80, 0.40)
-	glow.light_energy = 0.3
-	glow.omni_range = 1.5
-	glow.position = Vector3(wx, 0.30, wz)
-	_poi_root.add_child(glow)
-
-func _build_poi_town_hall(wx: float, wz: float) -> void:
-	# Main hall body
-	var body := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.8, 0.5, 0.8)
-	body.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.50, 0.42, 0.30)
-	body.material_override = mat
-	body.position = Vector3(wx, 0.25, wz)
-	_poi_root.add_child(body)
-	# Pediment (roof peak)
-	var pediment := MeshInstance3D.new()
-	var pm := BoxMesh.new()
-	pm.size = Vector3(0.85, 0.08, 0.65)
-	pediment.mesh = pm
-	var pmat := StandardMaterial3D.new()
-	pmat.albedo_color = Color(0.55, 0.48, 0.32)
-	pediment.material_override = pmat
-	pediment.position = Vector3(wx, 0.55, wz)
-	_poi_root.add_child(pediment)
-	# Pillars (4 corners)
-	for px in [-0.3, 0.3]:
-		for pz in [-0.3, 0.3]:
-			var pillar := MeshInstance3D.new()
-			var pm2 := CylinderMesh.new()
-			pm2.top_radius = 0.06; pm2.bottom_radius = 0.08; pm2.height = 0.6
-			pillar.mesh = pm2
-			var pilmat := StandardMaterial3D.new()
-			pilmat.albedo_color = Color(0.70, 0.65, 0.50)
-			pilmat.roughness = 0.7
-			pillar.material_override = pilmat
-			pillar.position = Vector3(wx + px, 0.3, wz + pz)
-			_poi_root.add_child(pillar)
-	# Clock face
-	var clock := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = 0.12; cm.bottom_radius = 0.12; cm.height = 0.02
-	clock.mesh = cm
-	var cmat := StandardMaterial3D.new()
-	cmat.albedo_color = Color(0.95, 0.90, 0.70)
-	clock.material_override = cmat
-	clock.position = Vector3(wx, 0.58, wz - 0.4)
-	_poi_root.add_child(clock)
-
-func _build_poi_merchant_guild(wx: float, wz: float) -> void:
-	# Market stall structure
-	var frame := MeshInstance3D.new()
-	var fm := BoxMesh.new()
-	fm.size = Vector3(0.7, 0.35, 0.7)
-	frame.mesh = fm
-	var fmat := StandardMaterial3D.new()
-	fmat.albedo_color = Color(0.50, 0.40, 0.25)
-	frame.material_override = fmat
-	frame.position = Vector3(wx, 0.175, wz)
-	_poi_root.add_child(frame)
-	# Canopy roof
-	var canopy := MeshInstance3D.new()
-	var cm := BoxMesh.new()
-	cm.size = Vector3(0.85, 0.04, 0.75)
-	canopy.mesh = cm
-	var cmat := StandardMaterial3D.new()
-	cmat.albedo_color = Color(0.85, 0.50, 0.20)
-	cmat.roughness = 0.6
-	canopy.material_override = cmat
-	canopy.position = Vector3(wx, 0.42, wz)
-	_poi_root.add_child(canopy)
-	# Scales (balance)
-	var left_scale := MeshInstance3D.new()
-	var lsm := BoxMesh.new()
-	lsm.size = Vector3(0.15, 0.02, 0.15)
-	left_scale.mesh = lsm
-	var lmat := StandardMaterial3D.new()
-	lmat.albedo_color = Color(0.80, 0.75, 0.60)
-	left_scale.material_override = lmat
-	left_scale.position = Vector3(wx - 0.2, 0.35, wz)
-	_poi_root.add_child(left_scale)
-	var right_scale := MeshInstance3D.new()
-	var rsm := BoxMesh.new()
-	rsm.size = Vector3(0.15, 0.02, 0.15)
-	right_scale.mesh = rsm
-	var rmat := StandardMaterial3D.new()
-	rmat.albedo_color = Color(0.80, 0.75, 0.60)
-	right_scale.material_override = rmat
-	right_scale.position = Vector3(wx + 0.2, 0.35, wz)
-	_poi_root.add_child(right_scale)
-	# Balance beam
-	var beam := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.55, 0.03, 0.04)
-	beam.mesh = bm
-	var bmat := StandardMaterial3D.new()
-	bmat.albedo_color = Color(0.70, 0.65, 0.50)
-	bmat.roughness = 0.5
-	beam.material_override = bmat
-	beam.position = Vector3(wx, 0.36, wz)
-	_poi_root.add_child(beam)
-	# Center pivot
-	var pivot := MeshInstance3D.new()
-	var pm := SphereMesh.new()
-	pm.radius = 0.04
-	pivot.mesh = pm
-	var pmat := StandardMaterial3D.new()
-	pmat.albedo_color = Color(0.90, 0.82, 0.50)
-	pmat.metallic = 0.6
-	pivot.material_override = pmat
-	pivot.position = Vector3(wx, 0.37, wz)
-	_poi_root.add_child(pivot)
-
 func _build_3d_entities() -> void:
 	var handles: Array = GameState.get_active_handles()
 
@@ -2038,111 +1873,18 @@ func _trigger_encounter() -> void:
 	var base_level: int = maxi(1, GameState.player_level)
 	var enemy_level: int = clampi(base_level + randi_range(-1, 1), 1, 15)
 
-	# Environmental hazard check — terrain-specific
-	var hazard_chance: float = 0.15  # 15% chance per encounter
-	if randf() < hazard_chance:
-		var region_hazards: Array = []
-		for h in _WS.ENVIRONMENTAL_HAZARDS:
-			if GameState.current_region in h["regions"]:
-				region_hazards.append(h)
-		if not region_hazards.is_empty():
-			var hazard: Dictionary = region_hazards[randi() % region_hazards.size()]
-			_apply_environmental_hazard(hazard)
-			return  # Hazard application will continue to combat after showing message
-
 	# Bounty hunter encounter check
 	var region_bounty: int = int(GameState.bounty_per_region.get(GameState.current_region, 0))
 	if region_bounty > 0 and randf() < minf(0.5, float(region_bounty) / 500.0):
+		# Spawn a bounty hunter — higher bounty = tougher hunter
 		var hunter_rank: int = clampi(region_bounty / 100, 0, 3)
-		var level_mods: Array = [0, 1, 2, 3]
+		var level_mods = [0, 1, 2, 3]  # Fallback bounty hunter levels
 		var level_mod: int = level_mods[hunter_rank] if hunter_rank < level_mods.size() else 3
 		enemy_level = clampi(base_level + level_mod, 1, 20)
+		# Mark this as a bounty hunter encounter for post-combat processing
 		GameState.set_meta("bounty_encounter", true)
 
 	# Save player position so we return to this tile after dungeon
-	GameState.explore_return_pos = _player_pos
-	GameState.explore_return_active = true
-	GameState.dungeon_source = "explore"
-
-	RimvaleAPI.engine.start_dungeon(handles, enemy_level, 0, _terrain_style)
-	if GameState.recruited_allies.size() > 0:
-		RimvaleAPI.engine.spawn_allies(GameState.recruited_allies)
-
-	var main = get_tree().root.get_child(0)
-	if main and main.has_method("push_screen"):
-		main.push_screen("res://scenes/dungeon/dungeon.tscn")
-	else:
-		get_tree().change_scene_to_file("res://scenes/dungeon/dungeon.tscn")
-
-func _apply_environmental_hazard(hazard: Dictionary) -> void:
-	var handles: PackedInt64Array = GameState.get_active_handles()
-	if handles.is_empty():
-		return
-
-	var hazard_name: String = str(hazard.get("name", "Environmental Hazard"))
-	var save_stat: String = str(hazard.get("save", "VIT"))  # stat name like "VIT", "SPD", etc.
-	var dc: int = int(hazard.get("dc", 12))
-	var dmg_dice: Array = Array(hazard.get("dmg_dice", [1, 6]))  # [dice_count, die_sides]
-	var effect: String = str(hazard.get("effect", ""))
-
-	# Get the party lead (first handle in active team)
-	var lead_handle: int = int(handles[0])
-	var e = RimvaleAPI.engine
-	var lead_dict = e.get_char_dict(lead_handle)
-	if lead_dict == null:
-		return
-
-	# Map stat names to indices: STR=0, DEX=1, CON=2, INT=3, WIS=4, CHA=5
-	# For Rimvale: STR=0, DEX=1, CON=2, INT=3, WIS=4, CHA=5
-	# But task specifies: "use the save stat from hazard["save"], e.g., "VIT" → stats[3]"
-	# "VIT" likely refers to vitality/constitution, so map accordingly
-	var stat_map: Dictionary = {
-		"STR": 0, "DEX": 1, "CON": 2, "INT": 3, "WIS": 4, "CHA": 5,
-		"VIT": 2, "SPD": 1, "DIV": 4  # Alternative names
-	}
-	var stat_idx: int = stat_map.get(save_stat, 2)  # Default to CON/VIT
-	var stat_val: int = int(lead_dict.get("stats", [1, 1, 1, 1, 1])[stat_idx]) if stat_idx < len(lead_dict.get("stats", [])) else 1
-
-	# Roll save: d20 + stat modifier vs DC
-	var save_roll: int = randi_range(1, 20) + (stat_val - 10) / 2
-	var save_success: bool = save_roll >= dc
-
-	# Roll damage
-	var dice_count: int = int(dmg_dice[0]) if dmg_dice.size() > 0 else 1
-	var die_sides: int = int(dmg_dice[1]) if dmg_dice.size() > 1 else 6
-	var damage: int = 0
-	for i in range(dice_count):
-		damage += randi_range(1, die_sides)
-
-	# On success, halve damage
-	if save_success:
-		damage = damage / 2
-
-	# Apply damage to the party lead
-	if damage > 0:
-		var current_hp: int = e.get_character_hp(lead_handle)
-		var new_hp: int = maxi(0, current_hp - damage)
-		lead_dict["hp"] = new_hp
-
-	# Show the hazard message with callback to start dungeon
-	var msg: String = "[%s]\n" % hazard_name
-	msg += "A %s appears before you!\n" % effect
-	msg += "Your %s must make a DC %d save.\n" % [save_stat, dc]
-	msg += "Save roll: %d vs DC %d — %s\n" % [save_roll, dc, "SUCCESS" if save_success else "FAILURE"]
-	msg += "Damage taken: %d HP" % damage
-
-	var color: Color = RimvaleColors.DANGER if damage > 10 else RimvaleColors.ORANGE
-	_show_message(msg, color, _continue_encounter_after_hazard)
-
-func _continue_encounter_after_hazard() -> void:
-	# After hazard message, proceed to normal encounter
-	var handles: PackedInt64Array = GameState.get_active_handles()
-	if handles.is_empty():
-		return
-
-	var base_level: int = maxi(1, GameState.player_level)
-	var enemy_level: int = clampi(base_level + randi_range(-1, 1), 1, 15)
-
 	GameState.explore_return_pos = _player_pos
 	GameState.explore_return_active = true
 	GameState.dungeon_source = "explore"
@@ -2196,17 +1938,6 @@ func _show_location_info() -> void:
 	var desc := RimvaleUtils.label(_content.get("desc", "An explorable region of Rimvale."), 11, RimvaleColors.TEXT_GRAY)
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_vbox.add_child(desc)
-
-	# Government type and effects
-	var gov_type: String = str(_WS.REGION_GOVERNMENTS.get(GameState.current_region, "republic"))
-	var gov: Dictionary = _WS.GOVERNMENT_TYPES.get(gov_type, {})
-	var gov_name: String = str(gov.get("name", gov_type))
-	_info_vbox.add_child(RimvaleUtils.spacer(4))
-	_info_vbox.add_child(RimvaleUtils.label("⚔ %s" % gov_name, 12, RimvaleColors.ORANGE))
-	var gov_desc: String = str(gov.get("desc", "Government type unknown"))
-	var gd := RimvaleUtils.label(gov_desc, 10, RimvaleColors.TEXT_DIM)
-	gd.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_info_vbox.add_child(gd)
 
 	# Faction presence
 	var rk: String = WorldData.subregion_to_key(_subregion)
@@ -2295,19 +2026,6 @@ func _show_danger_info() -> void:
 	var pct_chance: int = mini(100, int(_encounter_rate * 100) + (_steps_since_encounter * 8))
 	_info_vbox.add_child(RimvaleUtils.label(
 		"Encounter risk: ~%d%%" % pct_chance, 11, RimvaleColors.TEXT_DIM))
-
-	# Terrain hazard damage info
-	var subregions: Dictionary = _WS.SUBREGIONS.get(GameState.current_region, {})
-	for sub_name in subregions.keys():
-		if sub_name == GameState.current_subregion:
-			var terrain_str: String = str(subregions[sub_name].get("terrain", ""))
-			var teff: Dictionary = _WS.TERRAIN_EFFECTS.get(terrain_str, {})
-			if teff.has("dot_dmg"):
-				_info_vbox.add_child(RimvaleUtils.separator())
-				_info_vbox.add_child(RimvaleUtils.label(
-					"Terrain hazard: %s (1d%d dmg/step)" % [terrain_str, int(teff.get("dot_dmg", 1))],
-					10, RimvaleColors.DANGER))
-			break
 
 func _show_market_info() -> void:
 	_clear_info()
@@ -2848,37 +2566,6 @@ func _show_bounty_panel() -> void:
 	_add_time_status(_info_vbox)
 	_info_vbox.add_child(RimvaleUtils.spacer(4))
 
-	# Show player's current bounty status
-	var region_bounty: int = int(GameState.bounty_per_region.get(GameState.current_region, 0))
-	var bounty_rank: String = GameState.get_bounty_rank(GameState.current_region)
-	var bounty_hbox = HBoxContainer.new()
-	bounty_hbox.add_theme_constant_override("separation", 12)
-	_info_vbox.add_child(bounty_hbox)
-
-	var bounty_label: String = "Bounty Status: %s" % bounty_rank
-	if region_bounty > 0:
-		bounty_label += " (%d gold)" % region_bounty
-	bounty_hbox.add_child(RimvaleUtils.label(bounty_label, 11, RimvaleColors.WARNING))
-
-	if region_bounty > 0:
-		var pay_btn = RimvaleUtils.button("Pay Bounty", RimvaleColors.WARNING, 24, 10)
-		var cost_label = RimvaleUtils.label("(costs %d gold)" % region_bounty, 9, RimvaleColors.TEXT_GRAY)
-		var pay_vbox = VBoxContainer.new()
-		pay_vbox.add_theme_constant_override("separation", 2)
-		pay_vbox.add_child(pay_btn)
-		pay_vbox.add_child(cost_label)
-		pay_btn.pressed.connect(func():
-			if GameState.pay_bounty(GameState.current_region):
-				GameState.save_game()
-				_show_message("Bounty paid! You are now Clean.", RimvaleColors.ACCENT, _show_bounty_panel)
-			else:
-				_show_message("Insufficient gold to pay bounty.", RimvaleColors.DANGER, _show_bounty_panel)
-		)
-		bounty_hbox.add_child(pay_vbox)
-
-	_info_vbox.add_child(RimvaleUtils.separator())
-	_info_vbox.add_child(RimvaleUtils.spacer(4))
-
 	var bounties: Array = _content.get("bounties", [
 		["Clear the Nest", 3, 100, "Creatures breeding in the shadows."],
 		["Gang Sweep", 3, 80, "Bandits harassing the locals."],
@@ -3014,270 +2701,6 @@ func _show_fountain_panel() -> void:
 	], _show_fountain_panel)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ── Ledger House (Banking) ──────────────────────────────────────────────────────
-
-func _show_ledger_house_panel() -> void:
-	_clear_info()
-	_info_vbox.add_child(RimvaleUtils.label("🏦  Ledger House", 16, RimvaleColors.GOLD))
-	var desc := RimvaleUtils.label("A secure vault for deposits. Interest accrues at 5% per game day.", 11, RimvaleColors.TEXT_GRAY)
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_info_vbox.add_child(desc)
-	_info_vbox.add_child(RimvaleUtils.separator())
-	_add_time_status(_info_vbox)
-	
-	var balance: int = GameState.bank_balance
-	_info_vbox.add_child(RimvaleUtils.label("Bank Balance: %d gold" % balance, 13, RimvaleColors.GOLD))
-	_info_vbox.add_child(RimvaleUtils.label("Interest Rate: 5%% per day", 11, RimvaleColors.TEXT_DIM))
-	
-	if GameState.vault_seals.size() > 0:
-		_info_vbox.add_child(RimvaleUtils.label("Vault Seals: %d" % GameState.vault_seals.size(), 11, RimvaleColors.ACCENT))
-	
-	_info_vbox.add_child(RimvaleUtils.separator())
-	
-	# Deposit controls
-	var deposit_label := RimvaleUtils.label("DEPOSIT", 12, RimvaleColors.ACCENT)
-	_info_vbox.add_child(deposit_label)
-	
-	var d100_btn := RimvaleUtils.button("Deposit 100g %s" % _time_cost_str(), RimvaleColors.GOLD, 44, 12)
-	d100_btn.pressed.connect(func():
-		if not _try_action(_show_ledger_house_panel): return
-		if GameState.gold >= 100:
-			GameState.gold -= 100
-			GameState.bank_deposit(100)
-			GameState.save_game()
-			_show_message("100 gold deposited. Interest accrues daily.", RimvaleColors.GOLD, _show_ledger_house_panel)
-		else:
-			_show_message("Not enough gold!", RimvaleColors.DANGER, _show_ledger_house_panel)
-	)
-	_info_vbox.add_child(d100_btn)
-	
-	var dall_btn := RimvaleUtils.button("Deposit All %s" % _time_cost_str(), RimvaleColors.GOLD, 44, 12)
-	dall_btn.pressed.connect(func():
-		if not _try_action(_show_ledger_house_panel): return
-		if GameState.gold > 0:
-			var amt: int = GameState.gold
-			GameState.gold = 0
-			GameState.bank_deposit(amt)
-			GameState.save_game()
-			_show_message("%d gold deposited." % amt, RimvaleColors.GOLD, _show_ledger_house_panel)
-		else:
-			_show_message("No gold to deposit.", RimvaleColors.TEXT_DIM, _show_ledger_house_panel)
-	)
-	_info_vbox.add_child(dall_btn)
-	
-	_info_vbox.add_child(RimvaleUtils.spacer(6))
-	
-	# Withdraw controls
-	var withdraw_label := RimvaleUtils.label("WITHDRAW", 12, RimvaleColors.ACCENT)
-	_info_vbox.add_child(withdraw_label)
-	
-	var w100_btn := RimvaleUtils.button("Withdraw 100g %s" % _time_cost_str(), RimvaleColors.GOLD, 44, 12)
-	w100_btn.pressed.connect(func():
-		if not _try_action(_show_ledger_house_panel): return
-		if GameState.bank_withdraw(100):
-			GameState.gold += 100
-			GameState.save_game()
-			_show_message("100 gold withdrawn.", RimvaleColors.GOLD, _show_ledger_house_panel)
-		else:
-			_show_message("Insufficient bank balance!", RimvaleColors.DANGER, _show_ledger_house_panel)
-	)
-	_info_vbox.add_child(w100_btn)
-	
-	var wall_btn := RimvaleUtils.button("Withdraw All %s" % _time_cost_str(), RimvaleColors.GOLD, 44, 12)
-	wall_btn.pressed.connect(func():
-		if not _try_action(_show_ledger_house_panel): return
-		if GameState.bank_balance > 0:
-			var amt: int = GameState.bank_balance
-			GameState.bank_withdraw(amt)
-			GameState.gold += amt
-			GameState.save_game()
-			_show_message("%d gold withdrawn." % amt, RimvaleColors.GOLD, _show_ledger_house_panel)
-		else:
-			_show_message("Bank is empty.", RimvaleColors.TEXT_DIM, _show_ledger_house_panel)
-	)
-	_info_vbox.add_child(wall_btn)
-	
-	_info_vbox.add_child(RimvaleUtils.spacer(6))
-	
-	# Vault seal upgrades
-	var seal_btn := RimvaleUtils.button("🔐 Buy Vault Seal (500g) %s" % _time_cost_str(), RimvaleColors.ACCENT, 44, 12)
-	seal_btn.pressed.connect(func():
-		if not _try_action(_show_ledger_house_panel): return
-		if GameState.gold >= 500:
-			GameState.gold -= 500
-			GameState.vault_seals.append({"region_pair": GameState.current_region})
-			GameState.save_game()
-			_show_message("Vault seal acquired! Cross-region banking now available.", RimvaleColors.ACCENT, _show_ledger_house_panel)
-		else:
-			_show_message("Not enough gold for seal upgrade.", RimvaleColors.DANGER, _show_ledger_house_panel)
-	)
-	_info_vbox.add_child(seal_btn)
-
-# ── Town Hall (Civic Rites) ─────────────────────────────────────────────────────
-
-func _show_town_hall_panel() -> void:
-	_clear_info()
-	_info_vbox.add_child(RimvaleUtils.label("🏛  Town Hall", 16, Color(0.70, 0.60, 0.90)))
-	var desc := RimvaleUtils.label("Center of civic governance. Perform rites to influence settlement development.", 11, RimvaleColors.TEXT_GRAY)
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_info_vbox.add_child(desc)
-	_info_vbox.add_child(RimvaleUtils.separator())
-	_add_time_status(_info_vbox)
-	
-	var sp: int = GameState.settlement_sp.get(GameState.current_region, 0)
-	_info_vbox.add_child(RimvaleUtils.label("Settlement Points: %d" % sp, 13, RimvaleColors.SP_PURPLE))
-	
-	if _WS.REGION_GOVERNMENTS.has(GameState.current_region):
-		var gov_type: String = str(_WS.REGION_GOVERNMENTS[GameState.current_region])
-		var gov_name: String = gov_type
-		if _WS.GOVERNMENT_TYPES.has(gov_type):
-			gov_name = str(_WS.GOVERNMENT_TYPES[gov_type].get("name", gov_type))
-		_info_vbox.add_child(RimvaleUtils.label("Government: %s" % gov_name, 11, RimvaleColors.TEXT_GRAY))
-	
-	_info_vbox.add_child(RimvaleUtils.separator())
-	_info_vbox.add_child(RimvaleUtils.label("AVAILABLE RITES", 12, RimvaleColors.ACCENT))
-	
-	if sp < 1:
-		_info_vbox.add_child(RimvaleUtils.label("(Earn settlement points to unlock civic rites)", 10, RimvaleColors.TEXT_DIM))
-	else:
-		for rite in _WS.CIVIC_RITES:
-			var rite_name: String = str(rite.get("name", "Unknown Rite"))
-			var sp_cost: int = int(rite.get("cost", 5))
-			if sp >= sp_cost:
-				var card := RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.DIVIDER, 6, 8)
-				var cvbox := VBoxContainer.new()
-				cvbox.add_theme_constant_override("separation", 4)
-				card.add_child(cvbox)
-				cvbox.add_child(RimvaleUtils.label(rite_name, 12, RimvaleColors.TEXT_WHITE))
-				var eff := RimvaleUtils.label(str(rite.get("description", "")), 10, RimvaleColors.TEXT_GRAY)
-				eff.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-				cvbox.add_child(eff)
-				
-				var row := HBoxContainer.new()
-				row.add_theme_constant_override("separation", 6)
-				row.add_child(RimvaleUtils.label("Cost: %d SP" % sp_cost, 10, RimvaleColors.SP_PURPLE))
-				var sp_ctrl := Control.new(); sp_ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				row.add_child(sp_ctrl)
-				
-				var perform_btn := RimvaleUtils.button("Perform %s" % _time_cost_str(), RimvaleColors.SP_PURPLE, 28, 11)
-				perform_btn.custom_minimum_size.x = 80
-				var cap_cost: int = sp_cost; var cap_rite: Dictionary = rite
-				perform_btn.pressed.connect(func():
-					if not _try_action(_show_town_hall_panel): return
-					var current_sp: int = GameState.settlement_sp.get(GameState.current_region, 0)
-					if current_sp >= cap_cost:
-						GameState.settlement_sp[GameState.current_region] = current_sp - cap_cost
-						GameState.save_game()
-						_show_message("Civic rite performed! Settlement influenced.", RimvaleColors.SP_PURPLE, _show_town_hall_panel)
-					else:
-						_show_message("Not enough settlement points!", RimvaleColors.DANGER, _show_town_hall_panel)
-				)
-				row.add_child(perform_btn)
-				cvbox.add_child(row)
-				_info_vbox.add_child(card)
-
-# ── Merchant Guild (Trading) ────────────────────────────────────────────────────
-
-func _show_merchant_guild_panel() -> void:
-	_clear_info()
-	_info_vbox.add_child(RimvaleUtils.label("⚖  Merchant Guild", 16, RimvaleColors.ORANGE))
-	var desc := RimvaleUtils.label("Trade goods and commodities. Prices vary by region and supply.", 11, RimvaleColors.TEXT_GRAY)
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_info_vbox.add_child(desc)
-	_info_vbox.add_child(RimvaleUtils.separator())
-	_add_time_status(_info_vbox)
-	_info_vbox.add_child(RimvaleUtils.label("Gold: %d" % GameState.gold, 13, RimvaleColors.GOLD))
-	
-	if not GameState.has_meta("trade_inventory"):
-		GameState.set_meta("trade_inventory", {})
-	var inv: Dictionary = GameState.get_meta("trade_inventory")
-	
-	_info_vbox.add_child(RimvaleUtils.separator())
-	_info_vbox.add_child(RimvaleUtils.label("TRADE GOODS", 12, RimvaleColors.ACCENT))
-	_info_vbox.add_child(RimvaleUtils.spacer(2))
-	
-	for good in _WS.TRADE_GOODS:
-		var good_name: String = str(good.get("name", "Good"))
-		var base_value: int = int(good.get("base_value", 100))
-		
-		# Calculate regional price modifier
-		var price_category: String = str(good.get("price_category", "standard"))
-		var price_mod: float = 1.0
-		if _WS.REGIONAL_PRICE_MODIFIERS.has(price_category):
-			var mod_dict: Dictionary = _WS.REGIONAL_PRICE_MODIFIERS[price_category]
-			if mod_dict.has(GameState.current_region):
-				price_mod = float(mod_dict[GameState.current_region])
-		
-		# Vary price with randomness (seeded per region)
-		var seed_val: int = hash(GameState.current_region + good_name) + GameState.day_counter
-		var rng := RandomNumberGenerator.new()
-		rng.seed = seed_val
-		var buy_price: int = maxi(1, int(float(base_value) * price_mod * (0.8 + rng.randf() * 0.4)))
-		var sell_price: int = maxi(1, int(float(base_value) * price_mod * 0.6))
-		
-		var quantity: int = inv.get(good_name, 0)
-		
-		var card := RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.DIVIDER, 6, 8)
-		var cvbox := VBoxContainer.new()
-		cvbox.add_theme_constant_override("separation", 4)
-		card.add_child(cvbox)
-		
-		var title_row := HBoxContainer.new()
-		title_row.add_theme_constant_override("separation", 4)
-		title_row.add_child(RimvaleUtils.label(good_name, 12, RimvaleColors.TEXT_WHITE))
-		if quantity > 0:
-			var qty_lbl := RimvaleUtils.label("(x%d)" % quantity, 10, RimvaleColors.TEXT_DIM)
-			title_row.add_child(qty_lbl)
-		cvbox.add_child(title_row)
-		
-		var prices_row := HBoxContainer.new()
-		prices_row.add_theme_constant_override("separation", 12)
-		prices_row.add_child(RimvaleUtils.label("Buy: %dg" % buy_price, 10, RimvaleColors.GOLD))
-		prices_row.add_child(RimvaleUtils.label("Sell: %dg" % sell_price, 10, RimvaleColors.ORANGE))
-		cvbox.add_child(prices_row)
-		
-		var buttons_row := HBoxContainer.new()
-		buttons_row.add_theme_constant_override("separation", 4)
-		
-		var buy_btn := RimvaleUtils.button("Buy", RimvaleColors.GOLD, 20, 10)
-		buy_btn.custom_minimum_size.x = 40
-		var cap_good := good_name; var cap_buy := buy_price
-		buy_btn.pressed.connect(func():
-			if not _try_action(_show_merchant_guild_panel): return
-			if GameState.gold >= cap_buy:
-				GameState.gold -= cap_buy
-				var current_inv: Dictionary = GameState.get_meta("trade_inventory")
-				current_inv[cap_good] = current_inv.get(cap_good, 0) + 1
-				GameState.save_game()
-				_show_merchant_guild_panel()
-			else:
-				_show_message("Not enough gold!", RimvaleColors.DANGER, _show_merchant_guild_panel)
-		)
-		buttons_row.add_child(buy_btn)
-		
-		var sell_btn := RimvaleUtils.button("Sell", RimvaleColors.ORANGE, 20, 10)
-		sell_btn.custom_minimum_size.x = 40
-		var cap_sell := sell_price
-		sell_btn.pressed.connect(func():
-			if not _try_action(_show_merchant_guild_panel): return
-			var current_inv: Dictionary = GameState.get_meta("trade_inventory")
-			if current_inv.get(cap_good, 0) > 0:
-				current_inv[cap_good] -= 1
-				# Apply government tax on selling
-				var gov_type_sell: String = str(_WS.REGION_GOVERNMENTS.get(GameState.current_region, "republic"))
-				var gov_sell: Dictionary = _WS.GOVERNMENT_TYPES.get(gov_type_sell, {})
-				var tax_rate: float = float(gov_sell.get("tax_rate", 0.08))
-				var gold_after_tax: int = int(float(cap_sell) * (1.0 - tax_rate))
-				GameState.gold += gold_after_tax
-				GameState.save_game()
-				_show_merchant_guild_panel()
-			else:
-				_show_message("None in inventory!", RimvaleColors.DANGER, _show_merchant_guild_panel)
-		)
-		buttons_row.add_child(sell_btn)
-		cvbox.add_child(buttons_row)
-		_info_vbox.add_child(card)
-
 #  RANDOM NPC ENCOUNTER & RECRUITMENT SYSTEM
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3324,37 +2747,6 @@ func _init_random_npcs() -> void:
 		var marker := _build_npc_marker(pos, npc_lineage)
 		_npc_markers[pos] = marker
 		placed += 1
-
-	# Place named NPCs for the current region
-	for npc_data in _WS.NAMED_NPCS:
-		if str(npc_data.get("region", "")) != GameState.current_region:
-			continue
-		# Skip if already recruited
-		if GameState.recruited_npc_names.has(str(npc_data.get("name", ""))):
-			continue
-		# Try to find a walkable spawn position
-		var named_attempts: int = 0
-		while named_attempts < 100:
-			named_attempts += 1
-			var tx: int = rng.randi_range(2, GRID_W - 3)
-			var ty: int = rng.randi_range(2, GRID_H - 3)
-			if not _is_walkable(tx, ty): continue
-			if _poi_map.has(Vector2i(tx, ty)): continue
-			if _hidden_cache_map.has(Vector2i(tx, ty)): continue
-			if _npc_positions.has(Vector2i(tx, ty)): continue
-			if abs(tx - spawn.x) + abs(ty - spawn.y) < 4: continue
-
-			var npc: Dictionary = npc_data.duplicate()
-			var pos := Vector2i(tx, ty)
-			npc["pos"] = pos
-			npc["is_named"] = true  # Mark as named NPC for special handling
-			_spawned_npcs.append(npc)
-			_npc_positions[pos] = npc
-
-			# Build 3D marker using lineage portrait (use Human default for named NPCs)
-			var marker := _build_npc_marker(pos, "Human")
-			_npc_markers[pos] = marker
-			break
 
 func _build_npc_marker(pos: Vector2i, lineage: String) -> Node3D:
 	var marker := Node3D.new()
@@ -3412,17 +2804,6 @@ func _show_npc_panel(npc: Dictionary) -> void:
 	var recruit_dc: int = int(npc.get("recruit_dc", 12))
 	var combat_class: String = str(npc.get("combat_class", "warrior"))
 	var trust: int = int(GameState.npc_trust.get(npc_name, 0))
-
-	# Special handling for named NPCs
-	var is_named: bool = bool(npc.get("is_named", false))
-	if is_named:
-		var npc_desc: String = str(npc.get("desc", ""))
-		var npc_dialogue: Array = npc.get("dialogue", [])
-		var npc_quest_hook: String = str(npc.get("quest_hook", ""))
-		backstory = npc_desc
-		personality = "Named Lore NPC"
-		recruit_quest = npc_quest_hook if not npc_quest_hook.is_empty() else npc_dialogue[0] if not npc_dialogue.is_empty() else "Seek knowledge."
-		recruit_dc = 10
 
 	# Header
 	_info_vbox.add_child(RimvaleUtils.label("👤 " + npc_name, 16, RimvaleColors.CYAN))
@@ -3920,13 +3301,6 @@ func _apply_social_reward(reward_str: String) -> void:
 			"lose_gold":
 				var loss: int = mini(int(val), GameState.gold)
 				GameState.gold -= loss
-				# Apply crime severity based on government type
-				var gov_type: String = str(_WS.REGION_GOVERNMENTS.get(GameState.current_region, "republic"))
-				var gov: Dictionary = _WS.GOVERNMENT_TYPES.get(gov_type, {})
-				var crime_sev: float = float(gov.get("crime_severity", 1.0))
-				if crime_sev > 0:
-					GameState.add_bounty(GameState.current_region, int(20 * crime_sev))
-					GameState.add_reputation_event("crime", -int(10 * crime_sev), GameState.current_region)
 			"rep":
 				# Format: "rep:FactionName:delta" — handled by split on ":"
 				# Already split on ":", so val contains "FactionName:delta"
