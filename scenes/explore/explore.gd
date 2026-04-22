@@ -116,6 +116,7 @@ var _cam_free: bool = false           # true when WASD has panned camera away fr
 var _player_node: Node3D
 var _follower_nodes: Array = []
 var _player_world_pos: Vector3 = Vector3.ZERO
+var _player_start_pos: Vector3 = Vector3.ZERO
 var _player_target_pos: Vector3 = Vector3.ZERO
 var _player_moving: bool = false
 var _player_facing: float = 0.0  # yaw radians
@@ -181,6 +182,7 @@ func _ready() -> void:
 
 	# Set initial camera target on player
 	_player_world_pos = _tile_to_world(_player_pos.x, _player_pos.y)
+	_player_start_pos = _player_world_pos
 	_player_target_pos = _player_world_pos
 	_cam_target = _player_world_pos
 	_update_camera_pos()
@@ -193,19 +195,25 @@ func _process(delta: float) -> void:
 
 	# Smooth player movement lerp
 	if _player_moving:
-		_move_lerp_t += delta * 5.0  # ~0.2s per tile
+		var spd: float = 8.0 if _auto_path_active else 5.0  # faster during auto-walk
+		_move_lerp_t += delta * spd
 		if _move_lerp_t >= 1.0:
-			_move_lerp_t = 1.0
+			var overflow: float = _move_lerp_t - 1.0
 			_player_moving = false
 			_player_world_pos = _player_target_pos
 			if _auto_path_active:
-				# Continue auto-walk unless an event stopped it
+				# Continue auto-walk — carry over timing overflow for seamless chaining
 				_auto_walk_next_step()
+				if _player_moving and overflow > 0.0:
+					_move_lerp_t = overflow  # seamless continuation
 			else:
 				# If a direction key is still held, immediately start the next move
 				_poll_held_direction()
 		else:
-			_player_world_pos = _player_world_pos.lerp(_player_target_pos, _move_lerp_t)
+			# Smooth-step ease for fluid motion (accelerate then decelerate)
+			var t: float = _move_lerp_t
+			var smooth_t: float = t * t * (3.0 - 2.0 * t)
+			_player_world_pos = _player_start_pos.lerp(_player_target_pos, smooth_t)
 		_update_player_3d_pos()
 		_update_follower_3d_positions()
 
@@ -2170,6 +2178,7 @@ func _try_move(dir: Vector2i) -> void:
 
 	# Start smooth 3D movement — snap camera back to party
 	_cam_free = false
+	_player_start_pos = _player_world_pos
 	_player_target_pos = _tile_to_world(new_pos.x, new_pos.y)
 	_player_moving = true
 	_move_lerp_t = 0.0

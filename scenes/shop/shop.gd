@@ -12,6 +12,7 @@ var _items_list: VBoxContainer
 var _current_tab: int = 0
 var _shop_items: Array = []  # Array of {name, type, price, category}
 var _active_filter: String = "All"
+var _shop_search: String = ""
 var _filter_chips: Dictionary = {}  # cat -> Button
 var _tab_btns: Array = []
 
@@ -94,6 +95,38 @@ func _ready() -> void:
 		chip.pressed.connect(func(): _filter_items(cat_cap))
 		chip_row.add_child(chip)
 		_filter_chips[cat] = chip
+
+	# ── Search box ──
+	var search_mgn = MarginContainer.new()
+	for s in ["left","right"]:
+		search_mgn.add_theme_constant_override("margin_" + s, 10)
+	search_mgn.add_theme_constant_override("margin_top", 8)
+	root.add_child(search_mgn)
+
+	var search_input = LineEdit.new()
+	search_input.placeholder_text = "Search items..."
+	search_input.text = _shop_search
+	search_input.clear_button_enabled = true
+	search_input.custom_minimum_size = Vector2(0, 36)
+	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search_input.add_theme_font_size_override("font_size", 14)
+	search_input.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
+	search_input.add_theme_color_override("font_placeholder_color", RimvaleColors.TEXT_DIM)
+	var search_sb = StyleBoxFlat.new()
+	search_sb.bg_color = Color(0.16, 0.14, 0.24, 1.0)
+	search_sb.border_color = Color(0.5, 0.5, 0.6, 0.4)
+	search_sb.set_border_width_all(1)
+	search_sb.set_corner_radius_all(6)
+	search_sb.set_content_margin_all(8)
+	search_input.add_theme_stylebox_override("normal", search_sb)
+	var search_sb_focus = search_sb.duplicate()
+	search_sb_focus.border_color = RimvaleColors.ACCENT
+	search_input.add_theme_stylebox_override("focus", search_sb_focus)
+	search_input.text_changed.connect(func(new_text: String):
+		_shop_search = new_text.to_lower()
+		_refresh_list()
+	)
+	search_mgn.add_child(search_input)
 
 	# ── Item scroll ──
 	var scroll_mgn = MarginContainer.new()
@@ -209,6 +242,9 @@ func _item_category(item_name: String) -> String:
 			"Armor":      return "Armor"
 			"Shield":     return "Armor"
 			"Consumable": return "Consumable"
+			"Magic":      return "Magic"
+			"Misc":       return "Misc"
+			_:            return "Misc"
 	var n: String = item_name.to_lower()
 	if "sword" in n or "axe" in n or "bow" in n or "dagger" in n or \
 	   "spear" in n or "staff" in n or "mace" in n or "blade" in n or \
@@ -249,13 +285,18 @@ func _load_shop_items() -> void:
 		var cat: String
 		if reg_rarity != "Mundane":
 			cat = "Magic"
-		else:
+		elif reg_type != "":
+			# Trust the registry type — don't fall through to keyword guessing
 			match reg_type:
 				"Weapon":     cat = "Weapons"
 				"Armor":      cat = "Armor"
 				"Shield":     cat = "Armor"
 				"Consumable": cat = "Consumable"
-				_:            cat = _item_category(iname)
+				"Magic":      cat = "Magic"
+				_:            cat = "Misc"  # Misc, Tool, Light, etc. all go to Misc
+		else:
+			# No registry data at all — keyword fallback as last resort
+			cat = _item_category(iname)
 		_shop_items.append({
 			"name":     iname,
 			"type":     cat,
@@ -272,6 +313,7 @@ func _refresh_list(filter: String = "") -> void:
 		_build_sell_list()
 
 ## Builds one item row as a card with icon, name, description, price, and action.
+## Left half: icon + item info.  Right half: price + buy/sell button (aligned at ~50%).
 func _build_item_card(item_name: String, category: String, price: int,
 		action_label: String, action_col: Color, on_action: Callable) -> PanelContainer:
 	var card_p: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_CARD_DARK, RimvaleColors.DIVIDER, 10, 10)
@@ -280,15 +322,22 @@ func _build_item_card(item_name: String, category: String, price: int,
 	row.add_theme_constant_override("separation", 12)
 	card_p.add_child(row)
 
-	# Category icon
-	row.add_child(RimvaleUtils.category_icon(category))
+	# ── Left half: icon + name/description ──
+	var left_col = HBoxContainer.new()
+	left_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_col.size_flags_stretch_ratio = 1.0
+	left_col.add_theme_constant_override("separation", 10)
+	row.add_child(left_col)
 
-	# Name + description + type column
+	# Category icon
+	left_col.add_child(RimvaleUtils.category_icon(category))
+
+	# Name + description + type
 	var info = VBoxContainer.new()
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	info.add_theme_constant_override("separation", 2)
-	row.add_child(info)
+	left_col.add_child(info)
 	var name_lbl: Label = RimvaleUtils.label(item_name, 15, RimvaleColors.TEXT_WHITE)
 	name_lbl.clip_text = true
 	info.add_child(name_lbl)
@@ -304,12 +353,15 @@ func _build_item_card(item_name: String, category: String, price: int,
 
 	info.add_child(RimvaleUtils.label(category, 11, RimvaleColors.TEXT_GRAY))
 
-	# Price pill + action on the right, vertically centered
-	var right_col = VBoxContainer.new()
-	right_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	right_col.add_theme_constant_override("separation", 4)
+	# ── Right half: price + action button ──
+	var right_col = HBoxContainer.new()
+	right_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_col.size_flags_stretch_ratio = 1.0
+	right_col.add_theme_constant_override("separation", 12)
+	right_col.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_child(right_col)
 
+	# Price pill
 	var price_pill: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_DARK, RimvaleColors.GOLD, 12, 8)
 	var price_lbl: Label = RimvaleUtils.label("%d g" % price, 14, RimvaleColors.GOLD)
 	price_pill.add_child(price_lbl)
@@ -317,7 +369,7 @@ func _build_item_card(item_name: String, category: String, price: int,
 
 	# Action button (Buy / Sell)
 	var action_btn: Button = RimvaleUtils.chip(action_label, true, 13)
-	action_btn.custom_minimum_size = Vector2(72, 36)
+	action_btn.custom_minimum_size = Vector2(90, 38)
 	var sb: StyleBoxFlat = action_btn.get_theme_stylebox("normal").duplicate()
 	sb.bg_color = action_col
 	sb.border_color = action_col
@@ -336,6 +388,8 @@ func _build_buy_list(filter: String) -> void:
 	var any_rows: bool = false
 	for item in _shop_items:
 		if filter != "All" and item["category"] != filter:
+			continue
+		if _shop_search != "" and _shop_search not in item["name"].to_lower():
 			continue
 		any_rows = true
 		var iname: String = item["name"]
@@ -365,6 +419,9 @@ func _build_sell_list() -> void:
 		var _hp_idx: Dictionary = {}
 		for item_name in stash_copy:
 			var iname: String = str(item_name)
+			if _shop_search != "" and _shop_search not in iname.to_lower():
+				_hp_idx[iname] = int(_hp_idx.get(iname, 0)) + 1
+				continue
 			var copy_idx: int = int(_hp_idx.get(iname, 0))
 			_hp_idx[iname] = copy_idx + 1
 			var item_hp: int = GameState.get_stash_item_hp(iname, copy_idx)
@@ -400,6 +457,8 @@ func _build_sell_list() -> void:
 			any_items = true
 			for item_name in items:
 				var iname: String = str(item_name)
+				if _shop_search != "" and _shop_search not in iname.to_lower():
+					continue
 				var sell_price: int = _get_sell_price(iname)
 				var cat_: String = _item_category(iname)
 				var card_p: PanelContainer = _build_item_card(
@@ -442,11 +501,9 @@ func _on_buy(item_name: String, price: int) -> void:
 	if not GameState.spend_gold(price):
 		_show_notice("Not enough gold! (need %dg, have %dg)" % [price, GameState.gold])
 		return
-	var active = GameState.get_active_handles()
-	if active.size() > 0:
-		_e.add_item_to_inventory(active[0], item_name)
+	GameState.add_to_stash(item_name)
 	_update_gold()
-	_show_notice("Bought: %s for %dg" % [item_name, price])
+	_show_notice("Bought: %s for %dg → Stash" % [item_name, price])
 
 func _update_gold() -> void:
 	_gold_label.text = "💰  %d gold" % GameState.gold

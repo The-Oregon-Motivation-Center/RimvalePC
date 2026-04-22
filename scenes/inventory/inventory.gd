@@ -11,6 +11,7 @@ var _handle: int = -1
 var _active_tab: int = 0       # 0=Inventory  1=Stash
 var _inv_filter: String = "All"
 var _stash_filter: String = "All"
+var _search_text: String = ""
 
 # ── Stored UI refs ────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ var _equipped_row: HBoxContainer
 var _item_list: VBoxContainer
 var _tab_btns: Array = []
 var _filter_hbox: HBoxContainer
+var _search_input: LineEdit
 
 # Shop dialog state (class-level so methods can reference each other)
 var _shop_dialog: AcceptDialog
@@ -129,6 +131,39 @@ func _build_ui() -> void:
 	filter_mgn.add_child(_filter_hbox)
 	_rebuild_filter_chips()
 
+	# ── Search box ──
+	var search_mgn = MarginContainer.new()
+	for s in ["left", "right"]:
+		search_mgn.add_theme_constant_override("margin_" + s, 12)
+	search_mgn.add_theme_constant_override("margin_top", 4)
+	search_mgn.add_theme_constant_override("margin_bottom", 4)
+	root.add_child(search_mgn)
+
+	_search_input = LineEdit.new()
+	_search_input.placeholder_text = "Search items..."
+	_search_input.clear_button_enabled = true
+	_search_input.custom_minimum_size = Vector2(0, 36)
+	_search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_search_input.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_search_input.add_theme_font_size_override("font_size", 14)
+	_search_input.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
+	_search_input.add_theme_color_override("font_placeholder_color", RimvaleColors.TEXT_DIM)
+	var search_sb = StyleBoxFlat.new()
+	search_sb.bg_color = Color(0.16, 0.14, 0.24, 1.0)
+	search_sb.border_color = Color(0.5, 0.5, 0.6, 0.4)
+	search_sb.set_border_width_all(1)
+	search_sb.set_corner_radius_all(6)
+	search_sb.set_content_margin_all(8)
+	_search_input.add_theme_stylebox_override("normal", search_sb)
+	var search_sb_focus = search_sb.duplicate()
+	search_sb_focus.border_color = RimvaleColors.ACCENT
+	_search_input.add_theme_stylebox_override("focus", search_sb_focus)
+	_search_input.text_changed.connect(func(new_text: String):
+		_search_text = new_text.to_lower()
+		_rebuild_items()
+	)
+	search_mgn.add_child(_search_input)
+
 	# ── Item list ──
 	var scroll = ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -226,7 +261,7 @@ func _rebuild_filter_chips() -> void:
 	for c in _filter_hbox.get_children():
 		c.queue_free()
 	var active_filter: String = _inv_filter if _active_tab == 0 else _stash_filter
-	for cat in ["All", "Weapons", "Armor", "Magic", "Misc"]:
+	for cat in ["All", "Weapons", "Armor", "Consumable", "Magic", "Misc"]:
 		var cat_cap: String = cat
 		var cc: Color = RimvaleColors.ACCENT if cat == active_filter else RimvaleColors.TEXT_GRAY
 		var chip = RimvaleUtils.button(cat, cc, 30, 12)
@@ -288,9 +323,14 @@ func _build_inventory_items() -> void:
 			"Weapons": show = item_type == "Weapon" and not is_magical
 			"Armor":   show = (item_type == "Armor" or item_type == "Shield") and not is_magical
 			"Magic":   show = is_magical
-			"Misc":    show = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and not is_magical
+			"Consumable": show = item_type == "Consumable" and not is_magical
+			"Misc":    show = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and item_type != "Consumable" and not is_magical
 
 		if not show:
+			continue
+
+		# Search filter
+		if _search_text != "" and _search_text not in item_name.to_lower():
 			continue
 
 		if is_magical:
@@ -442,9 +482,14 @@ func _build_stash_items() -> void:
 			"Weapons": show = item_type == "Weapon" and not is_magical
 			"Armor":   show = (item_type == "Armor" or item_type == "Shield") and not is_magical
 			"Magic":   show = is_magical
-			"Misc":    show = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and not is_magical
+			"Consumable": show = item_type == "Consumable" and not is_magical
+			"Misc":    show = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and item_type != "Consumable" and not is_magical
 
 		if not show:
+			continue
+
+		# Search filter
+		if _search_text != "" and _search_text not in item_name.to_lower():
 			continue
 
 		any_shown = true
@@ -584,7 +629,7 @@ func _shop_rebuild_buy() -> void:
 	cat_row.add_theme_constant_override("separation", 6)
 	cat_scroll.add_child(cat_row)
 
-	for cat_n in ["Weapons", "Armor", "Magic", "Misc"]:
+	for cat_n in ["Weapons", "Armor", "Consumable", "Magic", "Misc"]:
 		var cn_cap: String = cat_n
 		var cc: Color = RimvaleColors.ACCENT if cat_n == _shop_buy_cat else RimvaleColors.TEXT_GRAY
 		var chip = RimvaleUtils.button(cat_n, cc, 30, 11)
@@ -625,10 +670,11 @@ func _shop_rebuild_buy() -> void:
 
 		var cat_ok: bool = false
 		match _shop_buy_cat:
-			"Weapons": cat_ok = itype == "Weapon" and not imagical
-			"Armor":   cat_ok = (itype == "Armor" or itype == "Shield") and not imagical
-			"Magic":   cat_ok = imagical
-			"Misc":    cat_ok = itype != "Weapon" and itype != "Armor" and itype != "Shield" and not imagical
+			"Weapons":    cat_ok = itype == "Weapon" and not imagical
+			"Armor":      cat_ok = (itype == "Armor" or itype == "Shield") and not imagical
+			"Consumable": cat_ok = itype == "Consumable" and not imagical
+			"Magic":      cat_ok = imagical
+			"Misc":       cat_ok = itype != "Weapon" and itype != "Armor" and itype != "Shield" and itype != "Consumable" and not imagical
 		if not cat_ok:
 			continue
 

@@ -827,6 +827,21 @@ func _build_missions_tab(parent: Control) -> void:
 	vbox.anchor_bottom = 1.0
 	missions_panel.add_child(vbox)
 
+	# Short rest button
+	var mission_rest_row = HBoxContainer.new()
+	mission_rest_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(mission_rest_row)
+	var mission_rest_spacer = Control.new()
+	mission_rest_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mission_rest_row.add_child(mission_rest_spacer)
+	var mission_rest_btn = RimvaleUtils.button(
+		"Short Rest (%d/%d)" % [GameState.short_rests_used, GameState.MAX_SHORT_RESTS],
+		RimvaleColors.CYAN, 38, 12)
+	mission_rest_btn.pressed.connect(func():
+		_do_tab_short_rest(mission_rest_btn)
+	)
+	mission_rest_row.add_child(mission_rest_btn)
+
 	# Region filter buttons
 	var regions = RimvaleAPI.engine.get_all_regions()
 	var region_scroll = ScrollContainer.new()
@@ -939,6 +954,21 @@ func _build_story_tab(parent: Control) -> void:
 
 	_update_story_badge_lbl()
 
+	# Short rest button
+	var story_rest_row = HBoxContainer.new()
+	story_rest_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(story_rest_row)
+	var story_rest_spacer = Control.new()
+	story_rest_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	story_rest_row.add_child(story_rest_spacer)
+	var story_rest_btn = RimvaleUtils.button(
+		"Short Rest (%d/%d)" % [GameState.short_rests_used, GameState.MAX_SHORT_RESTS],
+		RimvaleColors.CYAN, 38, 12)
+	story_rest_btn.pressed.connect(func():
+		_do_tab_short_rest(story_rest_btn)
+	)
+	story_rest_row.add_child(story_rest_btn)
+
 	vbox.add_child(RimvaleUtils.spacer(2))
 
 	# ── Training Section ──────────────────────────────────────────────────────
@@ -978,6 +1008,31 @@ func _rebuild_story_sections() -> void:
 	for sec in STORY_SECTIONS:
 		_story_sections_vbox.add_child(_build_story_section_card(
 			sec[1], sec[0], sec[4], sec[3]))
+
+func _do_tab_short_rest(btn: Button) -> void:
+	## Perform a short rest from a mission/story tab and update the button label.
+	if GameState.do_short_rest():
+		btn.text = "Short Rest (%d/%d)" % [GameState.short_rests_used, GameState.MAX_SHORT_RESTS]
+		_show_world_toast("Short rest taken — team partially restored. (%d/%d)" % [
+			GameState.short_rests_used, GameState.MAX_SHORT_RESTS])
+	else:
+		_show_world_toast("All 3 short rests used! Take a long rest first.")
+
+func _show_world_toast(msg: String) -> void:
+	var toast: PanelContainer = RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.ACCENT, 12, 14)
+	var lbl: Label = RimvaleUtils.label(msg, 14, RimvaleColors.TEXT_WHITE)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast.add_child(lbl)
+	toast.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	toast.offset_bottom = -60
+	toast.offset_top = -110
+	toast.offset_left = 40
+	toast.offset_right = -40
+	add_child(toast)
+	get_tree().create_timer(2.5).timeout.connect(func():
+		if is_instance_valid(toast):
+			toast.queue_free()
+	)
 
 func _build_story_section_card(
 		section_title: String, section_id: String,
@@ -1539,11 +1594,26 @@ func _build_quest_execution_overlay() -> void:
 	_story_exec_action_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	content.add_child(_story_exec_action_vbox)
 
-	# ── Abort button ──
+	# ── Bottom row: Short Rest + Abort ──
+	var bottom_row = HBoxContainer.new()
+	bottom_row.add_theme_constant_override("separation", 8)
+	bottom_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_child(bottom_row)
+
+	var exec_rest_btn = RimvaleUtils.button(
+		"Short Rest (%d/%d)" % [GameState.short_rests_used, GameState.MAX_SHORT_RESTS],
+		RimvaleColors.CYAN, 28, 11)
+	exec_rest_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	exec_rest_btn.pressed.connect(func():
+		_do_tab_short_rest(exec_rest_btn)
+		_refresh_team_status()
+	)
+	bottom_row.add_child(exec_rest_btn)
+
 	var abort_btn = RimvaleUtils.button("Abort Mission", Color(0.80, 0.20, 0.20), 28, 11)
 	abort_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	abort_btn.pressed.connect(_on_story_abort)
-	content.add_child(abort_btn)
+	bottom_row.add_child(abort_btn)
 
 	_refresh_quest_ui()
 

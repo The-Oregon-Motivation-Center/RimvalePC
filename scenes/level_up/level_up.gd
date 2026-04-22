@@ -49,6 +49,7 @@ var _feat_learned_only: bool = false
 var _inv_filter: String = "All"
 var _stash_filter: String = "All"
 var _inv_tab: int = 0
+var _equip_search: String = ""
 
 # Magic sub-tab (0=Spellbook  1=Spell Builder)
 var _magic_tab: int = 0
@@ -1768,7 +1769,7 @@ func _build_equipment(parent: VBoxContainer) -> void:
 	filter_scroll.add_child(chip_row)
 
 	var active_filter: String = _inv_filter if _inv_tab == 0 else _stash_filter
-	for cat in ["All", "Weapons", "Armor", "Magic", "Misc"]:
+	for cat in ["All", "Weapons", "Armor", "Consumable", "Magic", "Misc"]:
 		var cat_name: String = cat
 		var cc: Color = RimvaleColors.ACCENT if cat == active_filter else RimvaleColors.TEXT_GRAY
 		var chip = RimvaleUtils.button(cat, cc, 30, 12)
@@ -1778,6 +1779,39 @@ func _build_equipment(parent: VBoxContainer) -> void:
 			_render_section()
 		)
 		chip_row.add_child(chip)
+
+	# Search box
+	var search_input = LineEdit.new()
+	search_input.name = "EquipSearchInput"
+	search_input.placeholder_text = "Search items..."
+	search_input.text = _equip_search
+	search_input.clear_button_enabled = true
+	search_input.custom_minimum_size = Vector2(0, 36)
+	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search_input.add_theme_font_size_override("font_size", 14)
+	search_input.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
+	search_input.add_theme_color_override("font_placeholder_color", RimvaleColors.TEXT_DIM)
+	var sb = StyleBoxFlat.new()
+	sb.bg_color = Color(0.16, 0.14, 0.24, 1.0)
+	sb.border_color = Color(0.5, 0.5, 0.6, 0.4)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(8)
+	search_input.add_theme_stylebox_override("normal", sb)
+	var sb_focus = sb.duplicate()
+	sb_focus.border_color = RimvaleColors.ACCENT
+	search_input.add_theme_stylebox_override("focus", sb_focus)
+	search_input.text_changed.connect(func(new_text: String):
+		_equip_search = new_text.to_lower()
+		_render_section()
+		# Re-grab focus on the new search input after rebuild
+		await get_tree().process_frame
+		var new_search := _find_search_input()
+		if new_search != null:
+			new_search.grab_focus()
+			new_search.caret_column = new_search.text.length()
+	)
+	parent.add_child(search_input)
 
 	# Items
 	if _inv_tab == 0:
@@ -1803,12 +1837,17 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 		# Category filter
 		var pass_filter: bool = _inv_filter == "All"
 		match _inv_filter:
-			"Weapons": pass_filter = item_type == "Weapon" and not is_magical
-			"Armor":   pass_filter = (item_type == "Armor" or item_type == "Shield") and not is_magical
-			"Magic":   pass_filter = is_magical
-			"Misc":    pass_filter = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and not is_magical
+			"Weapons":    pass_filter = item_type == "Weapon" and not is_magical
+			"Armor":      pass_filter = (item_type == "Armor" or item_type == "Shield") and not is_magical
+			"Consumable": pass_filter = item_type == "Consumable" and not is_magical
+			"Magic":      pass_filter = is_magical
+			"Misc":       pass_filter = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and item_type != "Consumable" and not is_magical
 
 		if not pass_filter:
+			continue
+
+		# Search filter
+		if _equip_search != "" and _equip_search not in item_name.to_lower():
 			continue
 
 		var rarity_col: Color = _rarity_color(rarity)
@@ -1863,12 +1902,17 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 
 		var pass_filter: bool = _stash_filter == "All"
 		match _stash_filter:
-			"Weapons": pass_filter = item_type == "Weapon" and not is_magical
-			"Armor":   pass_filter = (item_type == "Armor" or item_type == "Shield") and not is_magical
-			"Magic":   pass_filter = is_magical
-			"Misc":    pass_filter = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and not is_magical
+			"Weapons":    pass_filter = item_type == "Weapon" and not is_magical
+			"Armor":      pass_filter = (item_type == "Armor" or item_type == "Shield") and not is_magical
+			"Consumable": pass_filter = item_type == "Consumable" and not is_magical
+			"Magic":      pass_filter = is_magical
+			"Misc":       pass_filter = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and item_type != "Consumable" and not is_magical
 
 		if not pass_filter:
+			continue
+
+		# Search filter
+		if _equip_search != "" and _equip_search not in item_name.to_lower():
 			continue
 
 		var row = HBoxContainer.new()
@@ -1886,7 +1930,7 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 		var in_cap: String = item_name
 		var take_btn = RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 34, 12)
 		take_btn.pressed.connect(func():
-			GameState.stash.erase(in_cap)
+			GameState.remove_from_stash(in_cap)
 			_e.add_item_to_inventory(_handle, in_cap)
 			_render_section()
 		)
@@ -2032,6 +2076,15 @@ func _get_domain() -> String:
 		if _e.get_character_feat_tier(_handle, DOMAIN_FEAT_NAMES[i]) > 0:
 			return DOMAIN_NAMES[i]
 	return ""
+
+func _find_search_input() -> LineEdit:
+	# Walk the rebuilt content tree to find the search LineEdit by name.
+	var nodes := _content_area.get_children()
+	for node in nodes:
+		var found = node.find_child("EquipSearchInput", true, false)
+		if found != null and found is LineEdit:
+			return found as LineEdit
+	return null
 
 func _rarity_color(rarity: String) -> Color:
 	match rarity:
