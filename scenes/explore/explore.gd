@@ -255,6 +255,9 @@ func _generate_map() -> void:
 			var tile: int = CHAR_TILE.get(ch, T_GROUND)
 			_set_tile(xi, y, tile)
 
+	# Cap danger tiles at 15% of total map area
+	_cap_danger_tiles(0.05)
+
 	var pois: Array = _map_data.get("pois", [])
 	for p in pois:
 		_place_poi(int(p[0]), int(p[1]), int(p[2]), str(p[3]))
@@ -278,6 +281,9 @@ func _generate_map() -> void:
 			if t == T_GROUND or t == T_DANGER:
 				_set_tile(nx, ny, T_ROAD)
 
+	# Ensure all walkable areas and POIs are reachable from the player spawn
+	_ensure_connectivity()
+
 # ── Tile helpers ────────────────────────────────────────────────────────────
 
 func _set_tile(x: int, y: int, t: int) -> void:
@@ -292,6 +298,136 @@ func _get_tile(x: int, y: int) -> int:
 func _is_walkable(x: int, y: int) -> bool:
 	var t: int = _get_tile(x, y)
 	return t != T_WALL and t != T_WALL_RICH and t != T_WALL_POOR and t != T_WATER
+
+## Cap danger (red) tiles to a maximum fraction of total map tiles.
+## Excess danger tiles furthest from the player spawn are converted to ground.
+func _cap_danger_tiles(max_fraction: float) -> void:
+	var total_tiles: int = GRID_W * GRID_H
+	var max_danger: int = int(float(total_tiles) * max_fraction)
+
+	# Collect all danger tile positions
+	var danger_tiles: Array = []
+	for y in range(GRID_H):
+		for x in range(GRID_W):
+			if _get_tile(x, y) == T_DANGER:
+				danger_tiles.append(Vector2i(x, y))
+
+	if danger_tiles.size() <= max_danger:
+		return
+
+	# Sort by distance from player spawn (furthest first) so we remove
+	# the most remote danger tiles first, keeping ones near the player
+	var px: float = float(_player_pos.x)
+	var py: float = float(_player_pos.y)
+	danger_tiles.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var da: float = (float(a.x) - px) * (float(a.x) - px) + (float(a.y) - py) * (float(a.y) - py)
+		var db: float = (float(b.x) - px) * (float(b.x) - px) + (float(b.y) - py) * (float(b.y) - py)
+		return da > db  # furthest first
+	)
+
+	# Convert excess danger tiles to ground
+	var to_remove: int = danger_tiles.size() - max_danger
+	for i in range(to_remove):
+		var pos: Vector2i = danger_tiles[i]
+		_set_tile(pos.x, pos.y, T_GROUND)
+
+## Flood-fill from player spawn, then carve roads to any unreachable walkable tiles / POIs.
+func _ensure_connectivity() -> void:
+	# 1. Flood-fill reachable set from player spawn
+	var reachable: Array = []  # flat bool array
+	reachable.resize(GRID_W * GRID_H)
+	reachable.fill(false)
+
+	var queue: Array = [_player_pos]
+	reachable[_player_pos.y * GRID_W + _player_pos.x] = true
+
+	while not queue.is_empty():
+		var p: Vector2i = queue.pop_back()
+		for d in [Vector2i(0,-1), Vector2i(0,1), Vector2i(-1,0), Vector2i(1,0)]:
+			var nx: int = p.x + d.x
+			var ny: int = p.y + d.y
+			if nx < 0 or nx >= GRID_W or ny < 0 or ny >= GRID_H:
+				continue
+			var idx: int = ny * GRID_W + nx
+			if reachable[idx]:
+				continue
+			if _is_walkable(nx, ny):
+				reachable[idx] = true
+				queue.append(Vector2i(nx, ny))
+
+	# 2. Collect unreachable walkable tiles and POI positions
+	var unreachable: Array = []  # Vector2i positions that need connecting
+	for y in range(GRID_H):
+		for x in range(GRID_W):
+			var idx: int = y * GRID_W + x
+			if reachable[idx]:
+				continue
+			if _is_walkable(x, y):
+				unreachable.append(Vector2i(x, y))
+
+	if unreachable.is_empty():
+		return
+
+	# 3. For each disconnected island, carve a road to the nearest reachable tile.
+	#    We only need to connect one tile per island — flood-fill propagates the rest.
+	while not unreachable.is_empty():
+		var start: Vector2i = unreachable[0]
+		# BFS from start through walls toward any reachable tile
+		var came_from: Dictionary = {}  # Vector2i -> Vector2i
+		var bfs: Array = [start]
+		came_from[start] = start
+		var target: Vector2i = Vector2i(-1, -1)
+
+		while not bfs.is_empty() and target.x == -1:
+			var cur: Vector2i = bfs.pop_front()
+			for d in [Vector2i(0,-1), Vector2i(0,1), Vector2i(-1,0), Vector2i(1,0)]:
+				var nx: int = cur.x + d.x
+				var ny: int = cur.y + d.y
+				if nx < 0 or nx >= GRID_W or ny < 0 or ny >= GRID_H:
+					continue
+				var nv := Vector2i(nx, ny)
+				if came_from.has(nv):
+					continue
+				came_from[nv] = cur
+				var nidx: int = ny * GRID_W + nx
+				if reachable[nidx]:
+					target = nv
+					break
+				# Allow BFS through walls (we'll carve them into roads)
+				bfs.append(nv)
+
+		if target.x == -1:
+			# Truly isolated — remove from list and skip
+			unreachable.erase(start)
+			continue
+
+		# 4. Trace path back from target to start, carving walls into roads
+		var cur: Vector2i = target
+		while cur != start:
+			var prev: Vector2i = came_from[cur]
+			if not _is_walkable(cur.x, cur.y):
+				_set_tile(cur.x, cur.y, T_ROAD)
+			cur = prev
+
+		# 5. Re-flood from the carved path to update reachable set
+		var re_queue: Array = [target]
+		while not re_queue.is_empty():
+			var p: Vector2i = re_queue.pop_back()
+			for d in [Vector2i(0,-1), Vector2i(0,1), Vector2i(-1,0), Vector2i(1,0)]:
+				var nx: int = p.x + d.x
+				var ny: int = p.y + d.y
+				if nx < 0 or nx >= GRID_W or ny < 0 or ny >= GRID_H:
+					continue
+				var idx: int = ny * GRID_W + nx
+				if reachable[idx]:
+					continue
+				if _is_walkable(nx, ny):
+					reachable[idx] = true
+					re_queue.append(Vector2i(nx, ny))
+
+		# Remove all newly reachable tiles from the unreachable list
+		unreachable = unreachable.filter(func(v: Vector2i) -> bool:
+			return not reachable[v.y * GRID_W + v.x])
 
 func _place_poi(x: int, y: int, poi_type: int, label_text: String) -> void:
 	_set_tile(x, y, T_POI)
@@ -895,28 +1031,45 @@ func _build_3d_walls() -> void:
 		_wall_root.add_child(sign_light)
 
 func _add_wall_detail(x: int, y: int, wall_type: int, height: float, base_col: Color, seed_val: int) -> void:
-	# Cornice / ledge at top
+	# Check which neighbors are walkable (overhang only toward open sides)
+	var open_n: bool = _is_walkable(x, y - 1)  # north (-Z)
+	var open_s: bool = _is_walkable(x, y + 1)  # south (+Z)
+	var open_w: bool = _is_walkable(x - 1, y)  # west  (-X)
+	var open_e: bool = _is_walkable(x + 1, y)  # east  (+X)
+
+	var overhang: float = 0.06
+	var ledge_sx: float = 1.0 + (overhang if open_w else 0.0) + (overhang if open_e else 0.0)
+	var ledge_sz: float = 1.0 + (overhang if open_n else 0.0) + (overhang if open_s else 0.0)
+	var ledge_ox: float = (overhang if open_e else 0.0) * 0.5 - (overhang if open_w else 0.0) * 0.5
+	var ledge_oz: float = (overhang if open_s else 0.0) * 0.5 - (overhang if open_n else 0.0) * 0.5
+
+	# Cornice / ledge at top — only overhangs toward walkable tiles
 	var ledge := MeshInstance3D.new()
 	var lb := BoxMesh.new()
-	lb.size = Vector3(1.06, 0.08, 1.06)
+	lb.size = Vector3(ledge_sx, 0.08, ledge_sz)
 	ledge.mesh = lb
 	var lmat := StandardMaterial3D.new()
 	lmat.albedo_color = base_col.lightened(0.15)
 	lmat.roughness = 0.7
 	ledge.material_override = lmat
-	ledge.position = Vector3(float(x) + 0.5, height - 0.04, float(y) + 0.5)
+	ledge.position = Vector3(float(x) + 0.5 + ledge_ox, height + 0.01, float(y) + 0.5 + ledge_oz)
 	_wall_root.add_child(ledge)
 
-	# Base foundation strip
+	# Base foundation strip — same directional overhang
+	var found_oh: float = 0.04
+	var base_sx: float = 1.0 + (found_oh if open_w else 0.0) + (found_oh if open_e else 0.0)
+	var base_sz: float = 1.0 + (found_oh if open_n else 0.0) + (found_oh if open_s else 0.0)
+	var base_ox: float = (found_oh if open_e else 0.0) * 0.5 - (found_oh if open_w else 0.0) * 0.5
+	var base_oz: float = (found_oh if open_s else 0.0) * 0.5 - (found_oh if open_n else 0.0) * 0.5
 	var base := MeshInstance3D.new()
 	var bb := BoxMesh.new()
-	bb.size = Vector3(1.04, 0.15, 1.04)
+	bb.size = Vector3(base_sx, 0.15, base_sz)
 	base.mesh = bb
 	var bmat := StandardMaterial3D.new()
 	bmat.albedo_color = base_col.darkened(0.2)
 	bmat.roughness = 0.95
 	base.material_override = bmat
-	base.position = Vector3(float(x) + 0.5, 0.075, float(y) + 0.5)
+	base.position = Vector3(float(x) + 0.5 + base_ox, 0.075, float(y) + 0.5 + base_oz)
 	_wall_root.add_child(base)
 
 	# Rich walls: window-like indents
@@ -1890,6 +2043,11 @@ func _build_hud(parent: Control) -> void:
 	hbox.add_child(spacer)
 	hbox.add_child(RimvaleUtils.label("WASD / Arrows to move  |  Right-drag to rotate  |  Scroll to zoom", 11, RimvaleColors.TEXT_DIM))
 
+	var wait_btn := RimvaleUtils.button("⏳ Wait", RimvaleColors.CYAN, 32, 12)
+	wait_btn.custom_minimum_size.x = 70
+	wait_btn.pressed.connect(_on_wait_til_dawn_dusk)
+	hbox.add_child(wait_btn)
+
 	var exit_btn := RimvaleUtils.button("← Leave", RimvaleColors.TEXT_GRAY, 32, 12)
 	exit_btn.custom_minimum_size.x = 80
 	exit_btn.pressed.connect(_on_exit)
@@ -2112,9 +2270,9 @@ func _on_3d_input(event: InputEvent) -> void:
 			_cam_drag_start = event.position
 		# Scroll zoom
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_cam_dist = clampf(_cam_dist - 1.0, 5.0, 25.0)
+			_cam_dist = clampf(_cam_dist - 1.0, 2.0, 25.0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_cam_dist = clampf(_cam_dist + 1.0, 5.0, 25.0)
+			_cam_dist = clampf(_cam_dist + 1.0, 2.0, 25.0)
 		# Left click for tile interaction
 		elif event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_on_3d_click(event.position)
@@ -2565,6 +2723,29 @@ func _time_cost_str(hours: int = 1) -> String:
 	if hours == 1:
 		return "(1 hr)"
 	return "(%d hrs)" % hours
+
+## Wait until the next dawn (6 AM) or dusk (6 PM), whichever comes first.
+func _on_wait_til_dawn_dusk() -> void:
+	if _is_day_over():
+		_show_message("The day is over. Find a place to rest.", RimvaleColors.DANGER)
+		return
+	var target_hour: int
+	if _current_hour < 6:
+		target_hour = 6       # wait until dawn
+	elif _current_hour < 18:
+		target_hour = 18      # wait until dusk
+	else:
+		target_hour = 24      # wait until end of day (midnight / rest time)
+	var hours_to_wait: int = target_hour - _current_hour
+	if hours_to_wait <= 0:
+		return
+	_advance_time(hours_to_wait)
+	var label: String = "Dawn" if target_hour == 6 else ("Dusk" if target_hour == 18 else "Midnight")
+	_show_message(
+		"Waited %d hour%s until %s. (%s)" % [
+			hours_to_wait, "" if hours_to_wait == 1 else "s",
+			label, _hour_to_str(_current_hour)],
+		RimvaleColors.CYAN)
 
 ## Returns true if the day has ended (midnight or later).
 func _is_day_over() -> bool:

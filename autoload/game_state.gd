@@ -38,6 +38,9 @@ var busy_handles: Array = []
 ## Characters age by game_day / 365 years from their starting age.
 var game_day: int = 1
 
+# ── Debug ────────────────────────────────────────────────────────────────────
+var debug_mode: bool = false
+
 ## Advance the game clock by a number of days. Checks for aging effects.
 func advance_days(days: int) -> Array:
 	game_day += days
@@ -1064,6 +1067,7 @@ func save_game() -> bool:
 		"player_xp_required":        player_xp_required,
 		"player_rank":               player_rank,
 		"game_day":                  game_day,
+		"debug_mode":                debug_mode,
 		"gold":                      gold,
 		"tokens":                    tokens,
 		"remnant_fragments":         remnant_fragments,
@@ -1167,6 +1171,7 @@ func load_game() -> bool:
 	player_xp_required  = int(data.get("player_xp_required", 1000))
 	player_rank         = str(data.get("player_rank",    "Recruit"))
 	game_day            = int(data.get("game_day",         1))
+	debug_mode          = bool(data.get("debug_mode",     false))
 	gold                = int(data.get("gold",            500))
 	tokens              = int(data.get("tokens",          5))
 	remnant_fragments   = int(data.get("remnant_fragments", 0))

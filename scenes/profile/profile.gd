@@ -320,6 +320,32 @@ func _build_devtools_section(parent: VBoxContainer) -> void:
 	rows.add_theme_constant_override("separation", 8)
 	card.add_child(rows)
 
+	# Debug mode toggle
+	var debug_row := HBoxContainer.new()
+	debug_row.add_theme_constant_override("separation", 8)
+	var debug_lbl := RimvaleUtils.label("🐛 Debug Mode", 12, RimvaleColors.DANGER)
+	debug_lbl.custom_minimum_size = Vector2(100, 0)
+	debug_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	debug_row.add_child(debug_lbl)
+	var debug_check := CheckButton.new()
+	debug_check.button_pressed = GameState.debug_mode
+	debug_check.add_theme_font_size_override("font_size", 13)
+	debug_check.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
+	debug_check.text = "ON" if GameState.debug_mode else "OFF"
+	debug_check.toggled.connect(func(on: bool):
+		GameState.debug_mode = on
+		debug_check.text = "ON" if on else "OFF"
+		GameState.save_game()
+	)
+	debug_row.add_child(debug_check)
+	var debug_hint := RimvaleUtils.label(
+		"Enables auto-complete on story missions", 10, RimvaleColors.TEXT_DIM)
+	debug_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	debug_row.add_child(debug_hint)
+	rows.add_child(debug_row)
+
+	rows.add_child(RimvaleUtils.separator())
+
 	# Gold row
 	rows.add_child(_devtools_row(
 		"⚜ Gold",  RimvaleColors.GOLD,

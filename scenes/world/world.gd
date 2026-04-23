@@ -730,7 +730,7 @@ var OVERWORLD_REGIONS: Array = [
 		"id": "sublimini", "name": "Sublimini Dominus",
 		"flavor": "The beating heart of the void. Requires all 9 badges.",
 		"icon": "🕳",
-		"pos": Vector2(0.50, 0.95),
+		"pos": Vector2(0.50, 0.02),
 		"accent": Color(0.95, 0.20, 0.35, 1.0),
 		"badge": "",
 		"subregions": ["Sublimini Dominus", "Beating Heart of The Void"],
@@ -1184,6 +1184,18 @@ func _build_story_mission_row(m_data: Array) -> Control:
 	play_btn.pressed.connect(func():
 		_on_story_mission_play(cap_m_data))
 	right_vbox.add_child(play_btn)
+
+	# Debug auto-complete button
+	if GameState.debug_mode and not completed:
+		var auto_btn = RimvaleUtils.button("Auto ⚡", RimvaleColors.WARNING, 24, 10)
+		auto_btn.custom_minimum_size = Vector2(60, 24)
+		auto_btn.tooltip_text = "Auto-complete for 10,000 gold"
+		var cap_mid: String = mid
+		var cap_mxp: int = mxp
+		auto_btn.pressed.connect(func():
+			_debug_auto_complete_mission(cap_mid, cap_mxp)
+		)
+		right_vbox.add_child(auto_btn)
 
 	return row
 
@@ -2045,6 +2057,34 @@ func _on_story_mission_complete() -> void:
 	reward_dialog.confirmed.connect(func(): reward_dialog.queue_free())
 	add_child(reward_dialog)
 	reward_dialog.popup_centered(Vector2(360, 200))
+
+func _debug_auto_complete_mission(mid: String, mxp: int) -> void:
+	if not GameState.debug_mode:
+		return
+	if mid in GameState.story_completed_missions:
+		_show_world_toast("Already completed.")
+		return
+
+	# Award XP to party
+	var party: Array = GameState.get_active_handles()
+	for ph in party:
+		RimvaleAPI.engine.add_xp(ph, mxp, 20)
+
+	# Mark complete
+	GameState.story_completed_missions.append(mid)
+
+	# Award gold
+	GameState.earn_gold(10000)
+
+	# Check badges
+	_check_and_award_story_badges()
+	_update_story_badge_lbl()
+
+	# Save and refresh UI
+	GameState.save_game()
+	_rebuild_story_sections()
+
+	_show_world_toast("⚡ Auto-completed! +%d XP, +10,000 gold" % mxp)
 
 func _on_story_abort() -> void:
 	if _story_exec_overlay:
@@ -5700,8 +5740,8 @@ func _ow_build_sublimini_island(region: Dictionary) -> void:
 
 	var island := Node3D.new()
 	island.name = "Sublimini_Island"
-	# Float above the center of the map
-	island.position = Vector3(0.0, 12.0, -2.0)
+	# Float above the northern edge of the map
+	island.position = Vector3(0.0, 12.0, -15.0)
 	island.visible = unlocked
 
 	# Floating rock platform — jagged inverted cone shape
@@ -5910,8 +5950,8 @@ func _ow_zoom_to_region(rid: String) -> void:
 	if region.is_empty(): return
 
 	if rid == "sublimini":
-		# Sublimini is a floating island above the map
-		var island_pos := Vector3(0.0, 12.0, -2.0)
+		# Sublimini is a floating island above the northern edge of the map
+		var island_pos := Vector3(0.0, 12.0, -15.0)
 		_ow_animate_camera(
 			Vector3(island_pos.x + 3.0, island_pos.y + 6.0, island_pos.z + 8.0),
 			island_pos
@@ -5948,7 +5988,7 @@ func _ow_build_subregion_labels(region: Dictionary) -> void:
 	var center: Vector3
 	var base_h: float
 	if rid == "sublimini":
-		center = Vector3(0.0, 12.0, -2.0)
+		center = Vector3(0.0, 12.0, -15.0)
 		base_h = 12.0
 	else:
 		center = _ow_region_world_pos(region)
@@ -6372,6 +6412,18 @@ func _overworld_story_row(m_data: Array) -> Control:
 	play_btn.pressed.connect(func():
 		_on_story_mission_play(cap_m_data))
 	actions.add_child(play_btn)
+
+	# Debug auto-complete button
+	if GameState.debug_mode and not completed:
+		var auto_btn = RimvaleUtils.button("Auto ⚡", RimvaleColors.WARNING, 24, 10)
+		auto_btn.custom_minimum_size = Vector2(60, 24)
+		var cap_mid: String = mid
+		var cap_mxp: int = mxp
+		auto_btn.pressed.connect(func():
+			_debug_auto_complete_mission(cap_mid, cap_mxp)
+		)
+		actions.add_child(auto_btn)
+
 	v.add_child(actions)
 
 	return row
