@@ -696,6 +696,9 @@ func _build_feats(parent: VBoxContainer) -> void:
 
 	parent.add_child(RimvaleUtils.spacer(4))
 
+	# ── Safeguard stat chooser (shown on Feats tab when Safeguard is unlocked) ──
+	_build_safeguard_chooser(parent)
+
 	# Tiers to display
 	var tiers_to_show: Array = []
 	if _feat_filter_tier == 0:
@@ -969,6 +972,84 @@ func _sb_update_preview() -> void:
 	# Description
 	if is_instance_valid(_sb_desc_lbl):
 		_sb_desc_lbl.text = _sb_generate_description()
+
+# ── Safeguard stat chooser (shared by Feats tab) ────────────────────────────
+
+func _build_safeguard_chooser(parent: VBoxContainer) -> void:
+	if _handle == -1: return
+	var safeguard_tier: int = _e.get_character_feat_tier(_handle, "Safeguard")
+	if safeguard_tier < 1 or safeguard_tier > 4: return
+
+	var max_choices: int = 2
+	if safeguard_tier == 3: max_choices = 3
+	elif safeguard_tier == 4: max_choices = 4
+
+	var saf_card = PanelContainer.new()
+	saf_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var saf_style = StyleBoxFlat.new()
+	saf_style.bg_color = Color(0.10, 0.14, 0.20, 1.0)
+	saf_style.content_margin_left   = 10.0
+	saf_style.content_margin_right  = 10.0
+	saf_style.content_margin_top    = 10.0
+	saf_style.content_margin_bottom = 10.0
+	saf_card.add_theme_stylebox_override("panel", saf_style)
+	var saf_vbox = VBoxContainer.new()
+	saf_vbox.add_theme_constant_override("separation", 6)
+	saf_card.add_child(saf_vbox)
+
+	var tier_names: Array = ["", "Focused Defense", "Hardened Reflexes", "Expansive Guard", "Near-Total Resistance"]
+	saf_vbox.add_child(RimvaleUtils.label(
+		"Safeguard T%d: %s — Choose %d Stats" % [safeguard_tier, tier_names[safeguard_tier], max_choices], 14, RimvaleColors.ACCENT))
+	var tier_hints: Array = ["",
+		"Double stat Score on saving throws with chosen stats. Once/LR reroll a failed save.",
+		"Double stat Score + flat +2 on chosen stats. Once/SR advantage on a chosen-stat save.",
+		"Pick a 3rd stat. Success inspires allies within 15ft (+1d4 next action).",
+		"Pick a 4th stat. Once/LR auto-succeed on a chosen-stat save."]
+	var hint_lbl := RimvaleUtils.label(tier_hints[safeguard_tier], 11, RimvaleColors.TEXT_GRAY)
+	hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	saf_vbox.add_child(hint_lbl)
+
+	var chosen_raw = _e.get_safeguard_chosen_stats(_handle)
+	var chosen: Array = []
+	for c in chosen_raw:
+		chosen.append(int(c))
+
+	# Show currently chosen stat names
+	if not chosen.is_empty():
+		var chosen_names: Array = []
+		for ci in chosen:
+			if ci >= 0 and ci < STAT_NAMES.size():
+				chosen_names.append(STAT_NAMES[ci])
+		saf_vbox.add_child(RimvaleUtils.label(
+			"Current: %s" % ", ".join(chosen_names), 11, Color(0.30, 0.69, 0.31)))
+
+	var chip_row = HBoxContainer.new()
+	chip_row.add_theme_constant_override("separation", 6)
+	saf_vbox.add_child(chip_row)
+
+	for si in range(STAT_NAMES.size()):
+		var stat_idx_cap: int = si
+		var is_chosen: bool = si in chosen
+		var can_add: bool = is_chosen or chosen.size() < max_choices
+		var chip_col: Color = Color(0.30, 0.69, 0.31) if is_chosen else \
+			(RimvaleColors.TEXT_GRAY if can_add else RimvaleColors.TEXT_DIM)
+		var chip = RimvaleUtils.button(STAT_NAMES[si], chip_col, 30, 11)
+		chip.custom_minimum_size = Vector2(80, 0)
+		var max_cap: int = max_choices
+		chip.pressed.connect(func():
+			var cur_chosen = Array(_e.get_safeguard_chosen_stats(_handle))
+			if stat_idx_cap in cur_chosen:
+				cur_chosen.erase(stat_idx_cap)
+			elif cur_chosen.size() < max_cap:
+				cur_chosen.append(stat_idx_cap)
+			else:
+				return
+			_e.set_safeguard_chosen_stats(_handle, PackedInt32Array(cur_chosen))
+			_render_section()
+		)
+		chip_row.add_child(chip)
+
+	parent.add_child(saf_card)
 
 # ── Magic: main builder ───────────────────────────────────────────────────────
 
@@ -1539,64 +1620,6 @@ func _build_identity(parent: VBoxContainer) -> void:
 	if _handle == -1:
 		parent.add_child(RimvaleUtils.label("No hero selected.", 14, RimvaleColors.TEXT_DIM))
 		return
-
-	# ── Safeguard stat chooser ──
-	var safeguard_tier: int = _e.get_character_feat_tier(_handle, "Safeguard")
-	if safeguard_tier >= 1 and safeguard_tier <= 4:
-		var max_choices: int = 2
-		if safeguard_tier == 3: max_choices = 3
-		elif safeguard_tier == 4: max_choices = 4
-
-		# PanelContainer auto-sizes to children (ColorRect does not).
-		var saf_card = PanelContainer.new()
-		saf_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var saf_style = StyleBoxFlat.new()
-		saf_style.bg_color = Color(0.10, 0.14, 0.20, 1.0)
-		saf_style.content_margin_left   = 10.0
-		saf_style.content_margin_right  = 10.0
-		saf_style.content_margin_top    = 10.0
-		saf_style.content_margin_bottom = 10.0
-		saf_card.add_theme_stylebox_override("panel", saf_style)
-		var saf_vbox = VBoxContainer.new()
-		saf_vbox.add_theme_constant_override("separation", 6)
-		saf_card.add_child(saf_vbox)
-
-		saf_vbox.add_child(RimvaleUtils.label(
-			"Safeguard (T%d) — Choose %d Stats" % [safeguard_tier, max_choices], 14, RimvaleColors.ACCENT))
-		saf_vbox.add_child(RimvaleUtils.label("Chosen stats get doubled modifiers on saving throws.", 11, RimvaleColors.TEXT_GRAY))
-
-		var chosen_raw = _e.get_safeguard_chosen_stats(_handle)
-		var chosen: Array = []
-		for c in chosen_raw:
-			chosen.append(int(c))
-
-		var chip_row = HBoxContainer.new()
-		chip_row.add_theme_constant_override("separation", 6)
-		saf_vbox.add_child(chip_row)
-
-		for si in range(STAT_NAMES.size()):
-			var stat_idx_cap: int = si
-			var is_chosen: bool = si in chosen
-			var can_add: bool = is_chosen or chosen.size() < max_choices
-			var chip_col: Color = Color(0.30, 0.69, 0.31) if is_chosen else \
-				(RimvaleColors.TEXT_GRAY if can_add else RimvaleColors.TEXT_DIM)
-			var chip = RimvaleUtils.button(STAT_NAMES[si].left(3), chip_col, 30, 11)
-			chip.custom_minimum_size = Vector2(52, 0)
-			chip.pressed.connect(func():
-				if can_add or is_chosen:
-					var new_chosen: Array = chosen.duplicate()
-					if stat_idx_cap in new_chosen:
-						new_chosen.erase(stat_idx_cap)
-					else:
-						new_chosen.append(stat_idx_cap)
-					var arr = PackedInt32Array(new_chosen)
-					_e.set_safeguard_chosen_stats(_handle, arr)
-					_render_section()
-			)
-			chip_row.add_child(chip)
-
-		parent.add_child(saf_card)
-		parent.add_child(RimvaleUtils.separator())
 
 	# ── Societal Roles ──
 	parent.add_child(RimvaleUtils.label("SOCIETAL ROLE", 13, RimvaleColors.TEXT_DIM))

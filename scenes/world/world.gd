@@ -3945,11 +3945,16 @@ func _ritual_make_check(task_id: String) -> void:
 			bool(task.get("is_combustion", false)),
 			handle,
 			tp_range_val,
+			false,  # is_summon
+			false,  # is_construct
+			true,   # is_ritual — ritual spells cost 0 SP
 		)
 
 		# Promote to active
 		GameState.ritual_tasks.erase(task)
 		GameState.active_rituals.append(task)
+		# Recalculate SP to reflect the ritual's SP reservation
+		RimvaleAPI.engine.recalculate_derived_stats(handle)
 		_show_ritual_result(
 			"✓ Success! Rolled %d vs DC %d — '%s' learned by %s! Usable in dungeons." % [
 				total, dc, str(task["spell_name"]), str(task.get("caster_name", "caster"))],
@@ -3972,7 +3977,11 @@ func _ritual_abandon(task_id: String) -> void:
 func _ritual_dispel(ritual_id: String) -> void:
 	for i in range(GameState.active_rituals.size()):
 		if str(GameState.active_rituals[i]["id"]) == ritual_id:
+			var handle: int = int(GameState.active_rituals[i].get("caster_handle", -1))
 			GameState.active_rituals.remove_at(i)
+			# Recalculate SP to release the ritual's SP reservation
+			if handle >= 0:
+				RimvaleAPI.engine.recalculate_derived_stats(handle)
 			_refresh_ritual_ui()
 			GameState.save_game()   # persist removal immediately
 			return

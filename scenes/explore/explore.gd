@@ -3725,8 +3725,9 @@ func _init_random_npcs() -> void:
 			_spawned_npcs.append(npc)
 			_npc_positions[pos] = npc
 
-			# Build 3D marker using lineage portrait (use Human default for named NPCs)
-			var marker := _build_npc_marker(pos, "Human")
+			# Build 3D marker using the named NPC's lineage portrait
+			var named_lineage: String = str(npc.get("lineage", "Boreal Human"))
+			var marker := _build_npc_marker(pos, named_lineage)
 			_npc_markers[pos] = marker
 			break
 

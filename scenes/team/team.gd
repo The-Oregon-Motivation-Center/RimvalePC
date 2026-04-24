@@ -650,7 +650,7 @@ func _build_hero_card(handle: int) -> Control:
 	var ap:       int    = _e.get_character_ap(handle)
 	var max_ap:   int    = _e.get_character_max_ap(handle)
 	var sp:       int    = _e.get_character_sp(handle)
-	var max_sp:   int    = _e.get_character_max_sp(handle)
+	var max_sp:   int    = _e.get_available_max_sp(handle)
 	var ac:       int    = _e.get_character_ac(handle)
 	var speed:    int    = _e.get_character_movement_speed(handle)
 	var weapon:   String = _e.get_equipped_weapon(handle)
@@ -890,6 +890,7 @@ func _show_summon_menu() -> void:
 
 	menu.id_pressed.connect(_on_summon_id)
 	add_child(menu)
+	menu.popup_hide.connect(func(): menu.queue_free())
 	menu.popup_centered()
 
 func _on_summon_id(id: int) -> void:
@@ -1021,6 +1022,7 @@ func _show_sort_menu() -> void:
 	menu.add_item("By Level",      4)
 	menu.id_pressed.connect(_on_sort_id)
 	add_child(menu)
+	menu.popup_hide.connect(func(): menu.queue_free())
 	menu.popup_centered()
 
 func _on_sort_id(id: int) -> void:
@@ -1039,6 +1041,7 @@ func _show_rest_menu() -> void:
 	menu.set_item_disabled(0, GameState.short_rests_used >= GameState.MAX_SHORT_RESTS)
 	menu.id_pressed.connect(_on_rest_id)
 	add_child(menu)
+	menu.popup_hide.connect(func(): menu.queue_free())
 	menu.popup_centered()
 
 func _on_rest_id(id: int) -> void:
@@ -1140,6 +1143,7 @@ func _on_trade_rf() -> void:
 					_show_notice("No tokens to trade.")
 	)
 	add_child(menu)
+	menu.popup_hide.connect(func(): menu.queue_free())
 	menu.popup_centered()
 
 # ── Director Shop ─────────────────────────────────────────────────────────────

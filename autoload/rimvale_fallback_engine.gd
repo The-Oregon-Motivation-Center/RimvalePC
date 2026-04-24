@@ -283,7 +283,7 @@ func create_character(name: String, lineage: String, age: int) -> int:
 		"items":      [],
 		"attuned":    [],
 		"spells":     [],
-		"stats":      [1, 1, 1, 1, 1],
+		"stats":      [0, 0, 0, 0, 0],
 		"skills":     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 		"favored_skills": [],
 		"feats":      {},
@@ -474,7 +474,8 @@ func short_rest(handle: int) -> void:
 	c["ap"] = c["max_ap"]
 	var sp_gain: int = 1
 	if rr_t >= 3: sp_gain += 1
-	c["sp"] = mini(c["max_sp"], c["sp"] + sp_gain)
+	var sr_sp_cap: int = maxi(0, int(c["max_sp"]) - get_ritual_sp_committed(handle))
+	c["sp"] = mini(sr_sp_cap, c["sp"] + sp_gain)
 	# Rest & Recovery T4: remove one injury on short rest
 	if rr_t >= 4:
 		var injuries: Array = c.get("injuries", [])
@@ -489,7 +490,7 @@ func long_rest(handle: int) -> void:
 	var c = _chars[handle]
 	c["hp"] = c["max_hp"]
 	c["ap"] = c["max_ap"]
-	c["sp"] = c["max_sp"]
+	c["sp"] = maxi(0, int(c["max_sp"]) - get_ritual_sp_committed(handle))
 	# Long rest clears all injuries
 	c["injuries"] = []
 	# Reset life sacrifice DC and reduce insanity by 1 (from sleep deprivation only)
@@ -517,7 +518,8 @@ func spend_character_sp(handle: int, amount: int) -> bool:
 func restore_character_sp(handle: int, amount: int) -> void:
 	if not _chars.has(handle): return
 	var c = _chars[handle]
-	c["sp"] = mini(c["max_sp"], c["sp"] + amount)
+	var sp_cap: int = maxi(0, int(c["max_sp"]) - get_ritual_sp_committed(handle))
+	c["sp"] = mini(sp_cap, c["sp"] + amount)
 
 # ── Feats / skills ────────────────────────────────────────────────────────────
 func can_unlock_feat(handle: int, feat_name: String, tier: int) -> bool:
@@ -593,15 +595,18 @@ func recalculate_derived_stats(handle: int) -> void:
 	# ── Attunement SP cost — reduces max SP per PHB ──────────────────────────
 	new_sp = maxi(0, new_sp - get_attunement_sp_committed(handle))
 
-	# Preserve current HP/SP ratio if character is injured
+	# Preserve current HP ratio if character is injured
 	var hp_ratio: float = float(int(c.get("hp", new_hp))) / float(maxi(1, int(c.get("max_hp", new_hp))))
-	var sp_ratio: float = float(int(c.get("sp", new_sp))) / float(maxi(1, int(c.get("max_sp", new_sp))))
 	c["max_hp"] = new_hp
 	c["max_ap"] = new_ap
 	c["max_sp"] = new_sp
 	c["hp"] = maxi(1, int(float(new_hp) * hp_ratio))
 	c["ap"] = new_ap  # AP refreshes fully
-	c["sp"] = maxi(0, int(float(new_sp) * sp_ratio))
+	# ── Active ritual SP reservation — cap current SP to available pool ──
+	var ritual_reserved: int = get_ritual_sp_committed(handle)
+	var available_sp: int = maxi(0, new_sp - ritual_reserved)
+	# Clamp current SP to the available pool (don't exceed what's left after rituals)
+	c["sp"] = mini(int(c.get("sp", available_sp)), available_sp)
 	# PHB: AC formula depends on armor type + Speed stat. Refresh whenever stats change.
 	c["ac"] = _compute_ac(handle)
 
@@ -612,14 +617,14 @@ func recalculate_derived_stats(handle: int) -> void:
 	var total_skill_earned: int = 12 + (lv - 1) * 3
 
 	# Calculate how many points have been spent
-	# Stats: each stat starts at 1; cost is 1 per point up to 5, 2 per point above 5
+	# Stats: each stat starts at 0; cost is 1 per point up to 5, 2 per point above 5
 	var stat_spent: int = 0
 	for sv in stats:
 		var v: int = int(sv)
 		if v <= 5:
-			stat_spent += (v - 1)
+			stat_spent += v
 		else:
-			stat_spent += 4 + (v - 5) * 2  # 4 pts for 1→5, then 2 per above 5
+			stat_spent += 5 + (v - 5) * 2  # 5 pts for 0→5, then 2 per above 5
 
 	# Skills: each skill starts at 0; cost is 1 per rank up to 5, 2 per rank above 5
 	var skill_spent: int = 0
@@ -653,9 +658,12 @@ func level_up_character(handle: int) -> void:
 func spend_stat_point(handle: int, stat_type: int) -> bool:
 	if not _chars.has(handle): return false
 	var c = _chars[handle]
-	if c.get("stat_pts", 0) <= 0: return false
 	if stat_type < 0 or stat_type >= c["stats"].size(): return false
-	c["stat_pts"] -= 1
+	# Cost: 1 pt per point up to 5, 2 pts per point above 5
+	var current_val: int = int(c["stats"][stat_type])
+	var cost: int = 1 if current_val < 5 else 2
+	if int(c.get("stat_pts", 0)) < cost: return false
+	c["stat_pts"] -= cost
 	c["stats"][stat_type] += 1
 	# Recalculate derived stats when a stat point is spent
 	recalculate_derived_stats(handle)
@@ -664,9 +672,12 @@ func spend_stat_point(handle: int, stat_type: int) -> bool:
 func spend_skill_point(handle: int, skill_type: int) -> bool:
 	if not _chars.has(handle): return false
 	var c = _chars[handle]
-	if c.get("skill_pts", 0) <= 0: return false
 	if skill_type < 0 or skill_type >= c["skills"].size(): return false
-	c["skill_pts"] -= 1
+	# Cost: 1 pt per rank up to 5, 2 pts per rank above 5
+	var current_val: int = int(c["skills"][skill_type])
+	var cost: int = 1 if current_val < 5 else 2
+	if int(c.get("skill_pts", 0)) < cost: return false
+	c["skill_pts"] -= cost
 	c["skills"][skill_type] += 1
 	return true
 
@@ -2260,6 +2271,20 @@ func is_attuned(handle: int, item_name: String) -> bool:
 	return item_name in _chars[handle].get("attuned", [])
 
 ## Total SP committed to attunement for a character.
+## Returns the effective max SP after ritual reservations (max_sp - ritual cost).
+func get_available_max_sp(handle: int) -> int:
+	if not _chars.has(handle): return 0
+	var max_sp: int = int(_chars[handle].get("max_sp", 0))
+	return maxi(0, max_sp - get_ritual_sp_committed(handle))
+
+## Returns total SP reserved by active rituals belonging to this character.
+func get_ritual_sp_committed(handle: int) -> int:
+	var total: int = 0
+	for r in GameState.active_rituals:
+		if int(r.get("caster_handle", -1)) == handle:
+			total += int(r.get("sp_cost", r.get("sp_committed", 0)))
+	return total
+
 func get_attunement_sp_committed(handle: int) -> int:
 	if not _chars.has(handle): return 0
 	var total: int = 0
@@ -2920,11 +2945,11 @@ func _ensure_feat_registry() -> void:
 			3: "On initiative, gain bonus AP equal to Strength. Once/encounter reduce an AP cost by 1.",
 			5: "Your AP is (3×Strength)+3. Once/round when attacking, move 5 ft without provoking opportunity attacks."}},
 		"Safeguard": {"cat": cs, "tiers": {
-			1: "Choose 2 stats. Use double stat score for saving throws with those stats. Once/LR reroll a failed saving throw.",
-			2: "+2 to saving throws with chosen stats in addition to doubling. Once/SR advantage on a saving throw with chosen stats.",
-			3: "Choose a 3rd stat for double-score saving throws. Success on saving throw grants nearby allies +1d4 to next action.",
-			4: "Choose a 4th stat for double-score saving throws. Once/LR auto-succeed on a saving throw with any chosen stat.",
-			5: "Apply double-score benefit to ALL stat-based saving throws. Once/SR after saving throw success, regain HP equal to Level."}},
+			1: "Focused Defense: Choose 2 stats. Use double stat Score for saving throws with those stats. Once/LR reroll a failed saving throw with a chosen stat.",
+			2: "Hardened Reflexes: +2 to saving throws with chosen stats in addition to doubling. Once/SR advantage on a saving throw with a chosen stat.",
+			3: "Expansive Guard: Choose a 3rd stat for double-Score saving throws. Success on saving throw with chosen stat inspires allies within 15ft (+1d4 to next action).",
+			4: "Near-Total Resistance: Choose a 4th stat for double-Score saving throws. Once/LR auto-succeed on a saving throw with any chosen stat.",
+			5: "Paragon of Safeguards: Double Score benefit applies to ALL stat-based saving throws. Once/SR after saving throw success, regain HP equal to Level."}},
 		# ── Combat Feats ──
 		"Assassin's Execution": {"cat": cc, "tiers": {
 			1: "Reducing a creature to 0 HP deals an extra weapon damage die. Misses deal damage equal to attack stat (graze).",
@@ -7196,7 +7221,8 @@ func add_custom_spell(spell_name: String, domain: int, cost: int, description: S
 		max_targets: int, area_type: int, conditions_csv: String,
 		is_teleport: bool, is_combustion: bool = false,
 		caster_handle: int = -1, tp_range: int = 0,
-		is_summon: bool = false, is_construct: bool = false) -> void:
+		is_summon: bool = false, is_construct: bool = false,
+		is_ritual: bool = false) -> void:
 	_ensure_spell_db()   # guarantee built-in spells exist before adding custom ones
 	# Domain indices match the canonical 4-domain system used across all callers:
 	# 0=Biological, 1=Chemical, 2=Physical, 3=Spiritual
@@ -7235,6 +7261,7 @@ func add_custom_spell(spell_name: String, domain: int, cost: int, description: S
 		"combustion": is_combustion,
 		"summon": is_summon,
 		"construct": is_construct,
+		"ritual": is_ritual,
 		"custom": true,
 	}
 	# Teach the spell to the appropriate character(s)
@@ -8379,14 +8406,27 @@ func get_available_spell_actions(entity_id: String) -> Array:
 	var learned: Array = _chars[handle].get("spells", [])
 	if learned.is_empty(): return []
 
+	# Build set of spells already active as matrices — those are handled
+	# by get_available_matrix_actions() and shouldn't appear in the spell list.
+	var active_matrix_names: Dictionary = {}
+	if _dungeon_matrices.has(entity_id):
+		for mtx in _dungeon_matrices[entity_id]:
+			active_matrix_names[str(mtx["name"])] = true
+
 	var next_cost: int = int(ent.get("actions_taken", 0)) + 1
 	var sp_left: int = int(ent.get("sp", 0))
 	var actions: Array = []
 
 	for spell_name in learned:
 		if not _SPELL_DB.has(spell_name): continue
+		# Skip spells that are already sustained as active matrices
+		if active_matrix_names.has(spell_name): continue
 		var s: Dictionary = _SPELL_DB[spell_name]
 		var sc: int = int(s["sc"])
+		var spell_is_ritual: bool = bool(s.get("ritual", false))
+		# Ritual spells cost 0 SP — they are never gated by SP
+		if spell_is_ritual:
+			sc = 0
 		# Always include spells so the UI can show them (grayed out if unaffordable).
 		# The button renderer in dungeon.gd handles disabling based on AP/SP.
 
@@ -8399,10 +8439,11 @@ func get_available_spell_actions(entity_id: String) -> Array:
 		elif rt <= 6: range_idx = 2
 		else:         range_idx = 3
 
+		var desc_suffix: String = " [Ritual] (%d AP)" % next_cost if spell_is_ritual else " (%d AP)" % next_cost
 		var act: Dictionary = _make_action(
 			spell_name, "Spell", ACT_CAST_SPELL,
 			next_cost,                # escalating AP cost
-			sc,                       # SP cost
+			sc,                       # SP cost (0 for rituals)
 			bool(s["atk"]),           # is_attack
 			false,                    # is_ranged
 			spell_name,               # matrix_id stores spell name for lookup
@@ -8410,9 +8451,11 @@ func get_available_spell_actions(entity_id: String) -> Array:
 			int(s["mt"]),             # max_targets
 			bool(s["tp"]),            # is_teleport
 			range_idx,
-			str(s["desc"]) + " (%d AP)" % next_cost
+			str(s["desc"]) + desc_suffix
 		)
 		act["tp_range"] = int(s.get("tp_range", 0))
+		if spell_is_ritual:
+			act["ritual"] = true
 		actions.append(act)
 
 	return actions
@@ -9940,30 +9983,104 @@ func _dung_dispatch_spell(
 		var tile: int = _dung_tile(cx, cy)
 		if tile != 1:   # must be a floor tile
 			return _spell_refund.call("Cannot teleport to that tile.")
-		if _dung_occupied(cx, cy):
+
+		# Collect teleport subjects
+		var tp_subjects: Array = []
+		var tp_resisted: Array = []  # enemies who passed the arcane check
+		# Area teleport: gather all entities within the area radius
+		if area_type > 0:
+			const TP_AREA_RADII: Array = [0, 1, 3, 10]
+			var tp_radius: int = TP_AREA_RADII[clampi(area_type, 0, 3)]
+			var area_cx: int = int(caster["x"])
+			var area_cy: int = int(caster["y"])
+			# Collect all living entities in range
+			var tp_allies: Array = []
+			var tp_enemies: Array = []
+			for tp_e in _dungeon_entities:
+				if tp_e["is_dead"]: continue
+				var edx: int = abs(int(tp_e["x"]) - area_cx)
+				var edy: int = abs(int(tp_e["y"]) - area_cy)
+				if maxi(edx, edy) > tp_radius: continue
+				if tp_e["is_player"] == caster["is_player"]:
+					tp_allies.append(tp_e)
+				else:
+					tp_enemies.append(tp_e)
+			# Allies always come along
+			tp_subjects.append_array(tp_allies)
+			# Enemies: one arcane roll vs average enemy VIT save
+			if not tp_enemies.is_empty():
+				var caster_arcane: int = 0
+				var c_handle: int = caster.get("handle", -1)
+				if c_handle >= 0 and _chars.has(c_handle):
+					var c_skills: Array = _chars[c_handle].get("skills", [])
+					# Arcane is skill index 0
+					caster_arcane = int(c_skills[0]) if c_skills.size() > 0 else 0
+				var arcane_roll: int = randi_range(1, 20) + caster_arcane
+				# Average enemy VIT save as DC
+				var total_vit: int = 0
+				for enemy in tp_enemies:
+					var e_stats: Array = enemy.get("stats", [0,0,0,0,0])
+					total_vit += int(e_stats[3]) if e_stats.size() > 3 else 0
+				var avg_dc: int = 10 + (total_vit / maxi(1, tp_enemies.size()))
+				if arcane_roll >= avg_dc:
+					tp_subjects.append_array(tp_enemies)
+					tp_resisted = []
+				else:
+					tp_resisted = tp_enemies
+		else:
+			# Non-area: use target list or single target
+			var tp_target_list: Array = action.get("_target_list", [])
+			var tp_target_id: String = str(action.get("_teleport_target_id", ""))
+			if not tp_target_list.is_empty():
+				for tid in tp_target_list:
+					var tp_ent = _dung_find(str(tid))
+					if tp_ent != null and not tp_ent["is_dead"]:
+						tp_subjects.append(tp_ent)
+			elif tp_target_id != "" and tp_target_id != str(caster["id"]):
+				var tp_tgt = _dung_find(tp_target_id)
+				if tp_tgt != null and not tp_tgt["is_dead"]:
+					tp_subjects.append(tp_tgt)
+		if tp_subjects.is_empty():
+			tp_subjects.append(caster)
+
+		# Find placement tiles: first target at (cx, cy), rest at adjacent free tiles
+		var placement_tiles: Array = []
+		if not _dung_occupied(cx, cy):
+			placement_tiles.append(Vector2i(cx, cy))
+		for subj_idx in range(placement_tiles.size(), tp_subjects.size()):
+			# Search adjacent tiles in expanding rings
+			var placed: bool = false
+			for ring in range(1, 5):
+				if placed: break
+				for dy in range(-ring, ring + 1):
+					if placed: break
+					for dx in range(-ring, ring + 1):
+						if abs(dx) != ring and abs(dy) != ring: continue
+						var tx: int = cx + dx
+						var ty: int = cy + dy
+						if _dung_tile(tx, ty) != 1: continue
+						if _dung_occupied(tx, ty): continue
+						var tv := Vector2i(tx, ty)
+						if tv in placement_tiles: continue
+						placement_tiles.append(tv)
+						placed = true
+						break
+			if not placed:
+				break  # no more free tiles
+
+		if placement_tiles.is_empty():
 			return _spell_refund.call("Cannot teleport to an occupied tile.")
-		# Determine who gets teleported: target_id entity or self
-		var tp_subject = caster
-		var tp_subject_name: String = caster["name"]
-		var tp_target_id: String = str(action.get("_teleport_target_id", ""))
-		if tp_target_id != "" and tp_target_id != str(caster["id"]):
-			var tp_tgt = _dung_find(tp_target_id)
-			if tp_tgt != null and not tp_tgt["is_dead"]:
-				tp_subject = tp_tgt
-				tp_subject_name = tp_tgt["name"]
-		# Chebyshev distance from the subject's current position
-		var tp_dx: int = abs(cx - int(tp_subject["x"]))
-		var tp_dy: int = abs(cy - int(tp_subject["y"]))
+
+		# Distance check from first subject for SP scaling
+		var tp_dx: int = abs(cx - int(tp_subjects[0]["x"]))
+		var tp_dy: int = abs(cy - int(tp_subjects[0]["y"]))
 		var dist_tiles: int = maxi(tp_dx, tp_dy)
-		# Check if teleport has pre-paid range (ritual spell)
 		var tp_max_range: int = int(action.get("tp_range", 0))
 		var extra_sp: int = 0
 		if tp_max_range > 0:
-			# Pre-paid ritual teleport: enforce range limit, no extra SP
 			if dist_tiles > tp_max_range:
 				return _spell_refund.call("Out of range! Max teleport distance: %d tiles (you tried %d)." % [tp_max_range, dist_tiles])
 		else:
-			# Ad-hoc teleport: dynamic SP scaling by distance
 			var tp_remaining: int = dist_tiles
 			var bracket: int = 1
 			while tp_remaining > 0:
@@ -9977,23 +10094,30 @@ func _dung_dispatch_spell(
 			caster["sp"] = maxi(0, int(caster["sp"]) - extra_sp)
 			var tp_handle: int = caster.get("handle", -1)
 			if tp_handle >= 0 and _chars.has(tp_handle): _chars[tp_handle]["sp"] = caster["sp"]
-		tp_subject["x"] = cx
-		tp_subject["y"] = cy
-		if tp_max_range > 0:
-			# Ritual teleport — no extra SP message
-			if tp_subject == caster:
-				return _dung_ok("%s teleports to (%d, %d) [%d tiles]." % [
-					caster["name"], cx, cy, dist_tiles], ap_cost, sp_cost)
-			else:
-				return _dung_ok("%s teleports %s to (%d, %d) [%d tiles]." % [
-					caster["name"], tp_subject_name, cx, cy, dist_tiles], ap_cost, sp_cost)
-		else:
-			if tp_subject == caster:
-				return _dung_ok("%s teleports to (%d, %d) [%d tiles, %d extra SP]." % [
-					caster["name"], cx, cy, dist_tiles, extra_sp], ap_cost, sp_cost + extra_sp)
-			else:
-				return _dung_ok("%s teleports %s to (%d, %d) [%d tiles, %d extra SP]." % [
-					caster["name"], tp_subject_name, cx, cy, dist_tiles, extra_sp], ap_cost, sp_cost + extra_sp)
+
+		# Place subjects at their tiles
+		var tp_logs: Array = []
+		var placed_count: int = mini(tp_subjects.size(), placement_tiles.size())
+		for i in range(placed_count):
+			var subj = tp_subjects[i]
+			var dest: Vector2i = placement_tiles[i]
+			subj["x"] = dest.x
+			subj["y"] = dest.y
+			tp_logs.append("%s -> (%d, %d)" % [subj["name"], dest.x, dest.y])
+
+		var tp_msg: String = "%s teleports %s [%d tiles%s]." % [
+			caster["name"],
+			", ".join(tp_logs),
+			dist_tiles,
+			"" if tp_max_range > 0 else (", %d extra SP" % extra_sp)]
+		# Report enemies who resisted the teleport
+		if not tp_resisted.is_empty():
+			var resist_names: Array = []
+			for r_ent in tp_resisted:
+				resist_names.append(str(r_ent["name"]))
+			tp_msg += "\n%s resisted the teleport." % ", ".join(resist_names)
+		if overreach_log != "": tp_msg = overreach_log + "\n" + tp_msg
+		return _dung_ok(tp_msg, ap_cost, sp_cost + extra_sp)
 
 	# ── Area spells ──
 	if area_type > 0:
@@ -10027,23 +10151,33 @@ func _dung_dispatch_spell(
 		return _dung_ok(area_msg, ap_cost, sp_cost)
 
 	# ── Single/multi-target spells ──
-	if target_id == "":
-		# Self-range fallthrough (shouldn't normally arrive here)
+	# Support target list for multi-target spells (passed via action["_target_list"])
+	var target_list: Array = action.get("_target_list", [])
+	if target_list.is_empty() and target_id != "":
+		target_list = [target_id]
+	if target_list.is_empty():
 		return _spell_refund.call("%s requires a target." % spell_name)
 
-	var tgt = _dung_find(target_id)
-	if tgt == null or tgt["is_dead"]:
-		return _spell_refund.call("Target is dead or invalid.")
+	var mt_logs: Array = []
+	for tid in target_list:
+		var tgt = _dung_find(str(tid))
+		if tgt == null or tgt["is_dead"]:
+			mt_logs.append("%s: target is dead or invalid." % str(tid))
+			continue
+		# Range check (Chebyshev distance)
+		if range_tiles > 0:
+			var rdx: int = abs(int(tgt["x"]) - int(caster["x"]))
+			var rdy: int = abs(int(tgt["y"]) - int(caster["y"]))
+			if maxi(rdx, rdy) > range_tiles:
+				mt_logs.append("%s is out of range (max %d tiles)." % [tgt["name"], range_tiles])
+				continue
+		var mt_entry: String = _spell_apply_to_target(caster, tgt, spell_name,
+			is_attack, is_heal, die_count, die_sides, conds, dur, is_attack)
+		mt_logs.append(mt_entry)
 
-	# Range check (Chebyshev distance)
-	if range_tiles > 0:
-		var rdx: int = abs(int(tgt["x"]) - int(caster["x"]))
-		var rdy: int = abs(int(tgt["y"]) - int(caster["y"]))
-		if maxi(rdx, rdy) > range_tiles:
-			return _spell_refund.call("%s is out of range (max %d tiles)." % [spell_name, range_tiles])
-
-	var log_entry: String = _spell_apply_to_target(caster, tgt, spell_name,
-		is_attack, is_heal, die_count, die_sides, conds, dur, is_attack)
+	if mt_logs.is_empty():
+		return _spell_refund.call("No valid targets for %s." % spell_name)
+	var log_entry: String = "\n".join(mt_logs)
 	if overreach_log != "": log_entry = overreach_log + "\n" + log_entry
 	return _dung_ok(log_entry, ap_cost, sp_cost)
 

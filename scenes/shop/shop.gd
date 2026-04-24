@@ -160,6 +160,7 @@ func _switch_tab(idx: int) -> void:
 		new_chip.pressed.connect(func(): _switch_tab(idx_cap))
 		var old: Button = _tab_btns[i]
 		old.replace_by(new_chip)
+		old.queue_free()
 		_tab_btns[i] = new_chip
 	_refresh_list()
 
@@ -494,6 +495,7 @@ func _filter_items(cat: String) -> void:
 		new_chip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		new_chip.pressed.connect(func(): _filter_items(c_cap))
 		old.replace_by(new_chip)
+		old.queue_free()
 		_filter_chips[c] = new_chip
 	_refresh_list(cat)
 
@@ -519,5 +521,7 @@ func _show_notice(msg: String) -> void:
 	toast.offset_left = 40
 	toast.offset_right = -40
 	add_child(toast)
-	await get_tree().create_timer(2.0).timeout
-	toast.queue_free()
+	get_tree().create_timer(2.0).timeout.connect(func():
+		if is_instance_valid(toast):
+			toast.queue_free()
+	)

@@ -787,5 +787,7 @@ func _show_notice(msg: String) -> void:
 	toast.offset_left = 40
 	toast.offset_right = -40
 	add_child(toast)
-	await get_tree().create_timer(2.0).timeout
-	toast.queue_free()
+	get_tree().create_timer(2.0).timeout.connect(func():
+		if is_instance_valid(toast):
+			toast.queue_free()
+	)

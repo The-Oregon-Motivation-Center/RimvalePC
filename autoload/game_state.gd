@@ -117,6 +117,9 @@ func ensure_ritual_spells_registered() -> void:
 			bool(r.get("is_combustion", false)),
 			handle,
 			int(r.get("tp_range", 0)),
+			false,  # is_summon
+			false,  # is_construct
+			true,   # is_ritual — ritual spells cost 0 SP
 		)
 	# Clean up: remove ritual spells from characters who aren't the caster
 	for sp_name in ritual_owners:

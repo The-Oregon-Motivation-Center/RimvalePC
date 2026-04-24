@@ -138,6 +138,12 @@ var _area_action: Dictionary      = {}
 var _area_radius: int             = 0
 var _area_preview: Vector2i       = Vector2i(-1, -1)  # tile under cursor
 var _area_tp_origin: Vector2i     = Vector2i(-1, -1)  # teleport range center (caster pos)
+# Multi-target spell selection state
+var _multi_target_mode: bool      = false
+var _multi_target_action: Dictionary = {}
+var _multi_target_list: Array     = []   # array of entity id strings
+var _multi_target_max: int        = 1
+var _multi_target_friendly: bool  = true
 
 const MAP_SIZE: int  = 25
 const TILE_SIZE: int = 32
@@ -4277,6 +4283,36 @@ func _on_grid_input(event: InputEvent) -> void:
 	# Resolve the entity under the click once, shared by both branches below.
 	var clicked_ent: Dictionary = _entity_at(tx, ty)
 
+	# Multi-target mode: collect targets, confirm when done
+	if _multi_target_mode:
+		if not clicked_ent.is_empty() and not bool(clicked_ent["is_dead"]):
+			var is_friendly: bool = bool(clicked_ent.get("is_player", false)) or bool(clicked_ent.get("is_friendly", false))
+			if _multi_target_friendly == is_friendly:
+				var eid: String = str(clicked_ent["id"])
+				if eid in _multi_target_list:
+					# Already selected — remove it
+					_multi_target_list.erase(eid)
+					_add_log("[color=yellow]Removed %s from targets.[/color]" % str(clicked_ent.get("name", eid)))
+				elif _multi_target_list.size() < _multi_target_max:
+					_multi_target_list.append(eid)
+					_add_log("[color=cyan]Added %s (%d/%d).[/color]" % [
+						str(clicked_ent.get("name", eid)), _multi_target_list.size(), _multi_target_max])
+				else:
+					_add_log("[color=yellow]Max targets reached (%d). Click empty space or press Enter to confirm.[/color]" % _multi_target_max)
+				var who: String = "allies" if _multi_target_friendly else "enemies"
+				_action_mode_lbl.text = "Select up to %d %s (%d/%d). Click empty to confirm.  [ESC to cancel]" % [
+					_multi_target_max, who, _multi_target_list.size(), _multi_target_max]
+				_update_3d_view()
+			else:
+				_add_log("[color=yellow]Invalid target — click %s.[/color]" % ("an ally" if _multi_target_friendly else "an enemy"))
+		else:
+			# Clicked empty space or dead entity — confirm if we have targets
+			if not _multi_target_list.is_empty():
+				_confirm_multi_target()
+			else:
+				_cancel_pending_action()
+		return
+
 	# Single-target mode: click a valid target (enemy or ally depending on action)
 	if not _pending_action.is_empty():
 		if not clicked_ent.is_empty() and not bool(clicked_ent["is_dead"]):
@@ -4808,7 +4844,11 @@ func _on_action_pressed(action: Dictionary) -> void:
 		_area_action  = action.duplicate()
 		_area_radius  = AREA_RADII[clampi(area_type, 0, 3)]
 		_area_preview = Vector2i(-1, -1)
-		_action_mode_lbl.text = "Click a tile to place area (%d-tile radius)…  [ESC to cancel]" % _area_radius
+		if is_tp:
+			# Area teleport: all units within radius of caster will be teleported to destination
+			_action_mode_lbl.text = "Click a destination tile — all units within %d tiles teleport there (enemies roll to resist).  [ESC to cancel]" % _area_radius
+		else:
+			_action_mode_lbl.text = "Click a tile to place area (%d-tile radius)…  [ESC to cancel]" % _area_radius
 		_update_3d_view()
 		return
 
@@ -4851,6 +4891,22 @@ func _on_action_pressed(action: Dictionary) -> void:
 		if bool(spell_db_entry.get("construct", false)):
 			_open_construct_builder_dialog(action)
 			return
+
+	# Multi-target spells (mt > 1, non-area): enter multi-target selection mode
+	var max_targets: int = int(action.get("max_targets", 1))
+	if action_id == 10 and max_targets > 1 and area_type == 0 and not is_tp:
+		var _sp_nm: String = str(action.get("matrix_id", ""))
+		var _sp_db: Dictionary = _e._SPELL_DB.get(_sp_nm, {})
+		var friendly: bool = bool(_sp_db.get("heal", false)) or not is_attack
+		_multi_target_mode = true
+		_multi_target_action = action.duplicate()
+		_multi_target_list = []
+		_multi_target_max = max_targets
+		_multi_target_friendly = friendly
+		var who: String = "allies" if friendly else "enemies"
+		_action_mode_lbl.text = "Select up to %d %s (0/%d selected). Click to add, click again to confirm.  [ESC to cancel]" % [max_targets, who, max_targets]
+		_update_3d_view()
+		return
 
 	# Healing spells: always target allies, even if is_attack was set by mistake
 	if action_id == 10 and range_idx > 0:  # ACT_CAST_SPELL with range
@@ -4911,6 +4967,32 @@ func _execute_action_on_target(target_id: String) -> void:
 	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, target_id, 0, 0)
 	_handle_action_result(result)
 
+func _confirm_multi_target() -> void:
+	if _multi_target_list.is_empty() or _selected_id == "":
+		_cancel_pending_action()
+		return
+	var action: Dictionary = _multi_target_action.duplicate()
+	action["_target_list"] = _multi_target_list.duplicate()
+	# For multi-target teleport, transition to tile selection
+	if bool(action.get("is_teleport", false)):
+		_multi_target_mode = false
+		var sel_ent: Dictionary = _get_entity(_selected_id)
+		var tp_max: int = int(action.get("tp_range", 0))
+		_area_mode    = true
+		_area_action  = action.duplicate()
+		_area_radius  = tp_max
+		_area_preview = Vector2i(-1, -1)
+		_area_tp_origin = Vector2i(int(sel_ent.get("x", -1)), int(sel_ent.get("y", -1))) if tp_max > 0 else Vector2i(-1, -1)
+		_action_mode_lbl.text = "Click a floor tile to teleport %d units to…  [ESC to cancel]" % _multi_target_list.size()
+		_multi_target_action = {}
+		_multi_target_list = []
+		_update_3d_view()
+		return
+	# Non-teleport: execute immediately with target list
+	_cancel_pending_action()
+	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
+	_handle_action_result(result)
+
 func _cancel_pending_action() -> void:
 	_pending_action  = {}
 	_area_mode       = false
@@ -4918,6 +5000,10 @@ func _cancel_pending_action() -> void:
 	_area_radius     = 0
 	_area_preview    = Vector2i(-1, -1)
 	_area_tp_origin  = Vector2i(-1, -1)
+	_multi_target_mode   = false
+	_multi_target_action = {}
+	_multi_target_list   = []
+	_multi_target_max    = 1
 	_action_mode_lbl.text = ""
 	_update_3d_view()
 
@@ -5121,7 +5207,9 @@ func _update_entity_card() -> void:
 
 	var cur_sp: int   = int(ent.get("sp", 0))
 	var max_sp: int   = int(ent.get("max_sp", 6))
-	_badge_sp.text    = "✦ %d/%d" % [cur_sp, max_sp]
+	var ritual_res: int = _e.get_ritual_sp_committed(int(ent.get("handle", -1)))
+	var eff_max_sp: int = maxi(0, max_sp - ritual_res)
+	_badge_sp.text    = "✦ %d/%d" % [cur_sp, eff_max_sp]
 
 	var weapon_name: String = str(ent.get("equipped_weapon", "Unarmed"))
 	handle = int(ent.get("handle", -1))
