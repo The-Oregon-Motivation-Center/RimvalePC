@@ -3858,7 +3858,7 @@ const CREATURE_NAMES_VILLAGER: Array = [
 ]
 const CREATURE_NAMES_MONSTER: Array = [
 	"Goblin Raider","Skeleton","Zombie","Imp","Crawler","Stinger","Ogre",
-	"Wraith","Gorgon","Troll","Orc Warrior","Dark Elf","Ghoul","Shade",
+	"Wraith","Gorgon","Troll","Dark Elf","Ghoul","Shade",
 	"Hobgoblin","Gnoll","Harpy","Minotaur","Chimera","Manticore",
 ]
 
@@ -4062,11 +4062,6 @@ const GMG_MONSTER_ABILITIES: Dictionary = {
 		{"name":"Burrow","ap":2,"sp":0,"dice":[0,0],"range":0,"conds":[],"desc":"Dig underground, becoming untargetable until next turn.","cd":"1/encounter"},
 	],
 	# ── Level 4-6: Moderate Threats ──
-	"Orc Warrior": [
-		{"name":"Aggressive Charge","ap":1,"sp":0,"dice":[0,0],"range":0,"conds":[],"desc":"Move up to speed toward enemy as a free action.","cd":"1/turn"},
-		{"name":"Brutal Critical","ap":0,"sp":0,"dice":[1,8],"range":0,"conds":[],"desc":"On critical hit, add extra weapon die of damage.","cd":"passive"},
-		{"name":"Relentless","ap":0,"sp":0,"dice":[0,0],"range":0,"conds":[],"desc":"When reduced to 0 HP, drop to 1 HP instead (1/rest).","cd":"1/encounter"},
-	],
 	"Dark Elf": [
 		{"name":"Faerie Fire","ap":1,"sp":2,"dice":[0,0],"range":6,"conds":["glowing"],"desc":"Outline target in light — attacks against have advantage.","cd":"1/encounter"},
 		{"name":"Darkness","ap":1,"sp":2,"dice":[0,0],"range":4,"conds":["blinded"],"desc":"Create sphere of magical darkness.","cd":"1/encounter"},
@@ -6999,6 +6994,11 @@ func process_enemy_phase() -> String:
 	var enemy: Dictionary = _combat_order[_combat_idx]
 	if bool(enemy.get("is_player", false)) or bool(enemy.get("is_dead", false)):
 		return ""
+	# Dungeon Crawl: un-alerted enemies don't act. They wait until the
+	# player walks into their line of sight + perception range.
+	if _crawl_active and not bool(enemy.get("is_alerted", false)):
+		_combat_log = "%s remains unaware." % enemy["name"]
+		return _combat_log
 	# Find nearest living player (positional data not tracked, so pick first)
 	var target: Dictionary = {}
 	for cb in _combat_order:
@@ -7566,7 +7566,16 @@ const TILE_VOID: int     = 0
 const TILE_FLOOR: int    = 1
 const TILE_WALL: int     = 2
 const TILE_OBSTACLE: int = 3
-const MAP_SIZE: int      = 25
+## Map size — variable so Dungeon Crawl mode can override to 50 (or higher).
+## Standard dungeons reset this to 25 on start. All loops, fog/elevation
+## arrays, pathfinding, and LOS use this var directly.
+var MAP_SIZE: int = 25
+const MAP_SIZE_STANDARD: int = 25
+const MAP_SIZE_CRAWL: int    = 50
+
+## Dungeon-Crawl specific — true while a crawl is active. Combat code can
+## branch on this for spawn density, alert state, etc.
+var _crawl_active: bool = false
 
 # ── Action IDs (mirror mobile ActionType enum) ────────────────────────────────
 const ACT_MELEE:        int = 0
@@ -7757,6 +7766,10 @@ func _make_action(
 # ── Dungeon init ──────────────────────────────────────────────────────────────
 func start_dungeon(player_handles, enemy_level: int,
 		specific_enemy_handle: int, terrain_style: int) -> void:
+	# Reset crawl state for a standard run unless the caller (a crawl
+	# entry-point) has just set MAP_SIZE / _crawl_active themselves.
+	if not _crawl_active:
+		MAP_SIZE = MAP_SIZE_STANDARD
 	_dungeon_active       = true
 	_dungeon_round        = 1
 	_dungeon_enemy_level  = maxi(1, enemy_level)
@@ -8100,6 +8113,98 @@ func _compute_visible_tiles(cx: int, cy: int, radius: int) -> Array:
 
 ## Returns true if there is an unobstructed line of sight from (x0,y0) to (x1,y1).
 ## Uses Bresenham's line algorithm; walls and void tiles block vision.
+## Dungeon Crawl: walk every un-alerted enemy, see if any player is within
+## perception range AND has unbroken line of sight. If so, alert the enemy
+## and propagate the alert to allies within `alert_radius`.
+func _run_crawl_perception_pass() -> void:
+	if not _crawl_active:
+		return
+	# Snapshot player positions so we don't allocate inside the loop.
+	var players: Array = []
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) and not bool(ent.get("is_dead", false)):
+			players.append(ent)
+	if players.is_empty():
+		return
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) or bool(ent.get("is_friendly", false)):
+			continue
+		if bool(ent.get("is_dead", false)):
+			continue
+		if bool(ent.get("is_alerted", false)):
+			continue
+		if bool(ent.get("is_chest", false)):
+			continue
+		var ex: int = int(ent["x"])
+		var ey: int = int(ent["y"])
+		var prange: int = int(ent.get("perception_range", 12))
+		for p in players:
+			var px: int = int(p["x"])
+			var py: int = int(p["y"])
+			# Chebyshev distance — visual range is round, not Manhattan.
+			var dx: int = absi(px - ex)
+			var dy: int = absi(py - ey)
+			var cheb: int = maxi(dx, dy)
+			if cheb > prange:
+				continue
+			# Line of sight (walls block).
+			if not _los_clear(ex, ey, px, py):
+				continue
+			# Detected. Mark, remember, and propagate.
+			ent["is_alerted"]   = true
+			ent["last_seen_x"]  = px
+			ent["last_seen_y"]  = py
+			_propagate_alert(ent)
+			break  # already alerted; check next enemy
+
+## Once an enemy is alerted, allies within their `alert_radius` (tile
+## Manhattan distance) get pulled into combat too. Mirrors the "one cried
+## out and the rest came running" idiom.
+func _propagate_alert(source: Dictionary) -> void:
+	var sx: int = int(source.get("x", 0))
+	var sy: int = int(source.get("y", 0))
+	var radius: int = int(source.get("alert_radius", 6))
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) or bool(ent.get("is_friendly", false)):
+			continue
+		if bool(ent.get("is_dead", false)):
+			continue
+		if bool(ent.get("is_chest", false)):
+			continue
+		if bool(ent.get("is_alerted", false)):
+			continue
+		var dx: int = absi(int(ent.get("x", 0)) - sx)
+		var dy: int = absi(int(ent.get("y", 0)) - sy)
+		if dx + dy <= radius:
+			ent["is_alerted"] = true
+			ent["last_seen_x"] = source.get("last_seen_x", -1)
+			ent["last_seen_y"] = source.get("last_seen_y", -1)
+
+## When the player walks onto a chest tile, transfer its loot to the stash.
+## Marks the chest looted; the renderer will draw a different (open) state.
+func _try_loot_chest_at(tx: int, ty: int) -> void:
+	for ent in _dungeon_entities:
+		if not bool(ent.get("is_chest", false)):
+			continue
+		if bool(ent.get("looted", false)):
+			continue
+		if int(ent.get("x", -1)) != tx or int(ent.get("y", -1)) != ty:
+			continue
+		# Transfer inventory to stash.
+		var inv: Array = ent.get("inventory", []) as Array
+		var picked: Array = []
+		for item_name in inv:
+			GameState.add_to_stash(str(item_name))
+			picked.append(str(item_name))
+		ent["inventory"] = []
+		ent["looted"] = true
+		# Combat log so the player gets feedback.
+		if picked.size() > 0:
+			_combat_log = "Opened %s — found %s." % [str(ent.get("name", "Treasure Chest")), ", ".join(picked)]
+		else:
+			_combat_log = "Opened %s — empty." % str(ent.get("name", "Treasure Chest"))
+		return  # one chest per tile
+
 func _los_clear(x0: int, y0: int, x1: int, y1: int) -> bool:
 	# Viewer's own tile is always visible
 	if x0 == x1 and y0 == y1: return true
@@ -9375,6 +9480,13 @@ func move_dungeon_player(id: String, nx: int, ny: int) -> bool:
 			grappled["y"] = old_y
 
 	_update_fog()
+	# Dungeon Crawl: after the player moves, run perception checks against
+	# every un-alerted enemy. Detection cascades through allies via
+	# _propagate_alert below.
+	if _crawl_active:
+		_run_crawl_perception_pass()
+	# Auto-loot any chest the player just stepped on.
+	_try_loot_chest_at(int(ent["x"]), int(ent["y"]))
 	return true
 
 ## Return all tiles the entity can reach this turn.
@@ -12693,23 +12805,42 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 	_dungeon_encounter_name = "Kaiju Hunt: %s" % str(ks[0])
 	_dungeon_enemy_level    = int(ks[5])
 
-	# Create multi-part kaiju entity with hit zones: Body, Head, Left Limb, Right Limb
+	# Create multi-part kaiju entity with hit zones: Body, Head, Left Limb, Right Limb.
+	# All four parts live inside a 4×4 tile footprint (Colossal size per the spec).
+	# Footprint origin (top-left): (19, 19). Footprint covers tiles (19..22, 19..22).
+	# The renderer reads `footprint_w` / `footprint_h` / `footprint_origin_x` /
+	# `footprint_origin_y` on the Body entity to draw a 4-tile-wide trunk dome.
 	var kaiju_name: String = str(ks[0])
 	var hp_per_zone: int = boss_hp / 4
 
-	# Body (main)
+	var KAIJU_FOOTPRINT_W: int = 4
+	var KAIJU_FOOTPRINT_H: int = 4
+	var KAIJU_FOOTPRINT_X0: int = 19
+	var KAIJU_FOOTPRINT_Y0: int = 19
+
+	# Body (main) — anchor carries footprint metadata so the renderer draws a
+	# 4×4 trunk. Sits at tile (20, 21) = center-bottom of the footprint.
 	_dungeon_entities.append({
 		"id":             "kaiju_body",
 		"name":           kaiju_name + " (Body)",
 		"handle":         -1,
-		"lineage_name":   "Kaiju",
-		"x": 21, "y": 21, "z": 0,
+		"lineage_name":   kaiju_name,
+		"x": 20, "y": 21, "z": 0,
 		"is_player":   false,
 		"is_friendly": false,
 		"is_dead":     false,
 		"is_flying":   false,
 		"is_kaiju":    true,
 		"kaiju_part":  "Body",
+		"is_kaiju_trunk":      true,  # render a 4×4 trunk dome on top
+		"footprint_w":         KAIJU_FOOTPRINT_W,
+		"footprint_h":         KAIJU_FOOTPRINT_H,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
+		"size_id":     "colossal",
+		"size_tile_count": KAIJU_FOOTPRINT_W * KAIJU_FOOTPRINT_H,
+		"reach_ft":    20,
 		"hp":    hp_per_zone * 2, "max_hp": hp_per_zone * 2,
 		"ap":    int(ks[3]),  "max_ap": int(ks[3]),
 		"sp":    0,           "max_sp": 0,
@@ -12727,12 +12858,12 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 		"boss_desc":   str(ks[7]),
 	})
 
-	# Head
+	# Head — top-center of the 4×4 footprint.
 	_dungeon_entities.append({
 		"id":             "kaiju_head",
 		"name":           kaiju_name + " (Head)",
 		"handle":         -1,
-		"lineage_name":   "Kaiju",
+		"lineage_name":   kaiju_name,
 		"x": 21, "y": 19, "z": 0,
 		"is_player":   false,
 		"is_friendly": false,
@@ -12740,6 +12871,10 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 		"is_flying":   false,
 		"is_kaiju":    true,
 		"kaiju_part":  "Head",
+		"is_kaiju_part":       true,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
 		"hp":    hp_per_zone, "max_hp": hp_per_zone,
 		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
 		"sp":    0,           "max_sp": 0,
@@ -12756,19 +12891,23 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 		"is_boss":     true,
 	})
 
-	# Left Limb
+	# Left Limb — left edge of the 4×4 footprint.
 	_dungeon_entities.append({
 		"id":             "kaiju_left",
 		"name":           kaiju_name + " (Left Limb)",
 		"handle":         -1,
-		"lineage_name":   "Kaiju",
-		"x": 19, "y": 21, "z": 0,
+		"lineage_name":   kaiju_name,
+		"x": 19, "y": 22, "z": 0,
 		"is_player":   false,
 		"is_friendly": false,
 		"is_dead":     false,
 		"is_flying":   false,
 		"is_kaiju":    true,
 		"kaiju_part":  "Left Limb",
+		"is_kaiju_part":       true,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
 		"hp":    hp_per_zone, "max_hp": hp_per_zone,
 		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
 		"sp":    0,           "max_sp": 0,
@@ -12785,19 +12924,23 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 		"is_boss":     true,
 	})
 
-	# Right Limb
+	# Right Limb — right edge of the 4×4 footprint.
 	_dungeon_entities.append({
 		"id":             "kaiju_right",
 		"name":           kaiju_name + " (Right Limb)",
 		"handle":         -1,
-		"lineage_name":   "Kaiju",
-		"x": 23, "y": 21, "z": 0,
+		"lineage_name":   kaiju_name,
+		"x": 22, "y": 22, "z": 0,
 		"is_player":   false,
 		"is_friendly": false,
 		"is_dead":     false,
 		"is_flying":   false,
 		"is_kaiju":    true,
 		"kaiju_part":  "Right Limb",
+		"is_kaiju_part":       true,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
 		"hp":    hp_per_zone, "max_hp": hp_per_zone,
 		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
 		"sp":    0,           "max_sp": 0,
@@ -12815,6 +12958,264 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 	})
 
 	_update_fog()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DUNGEON CRAWL — extended dungeon mode (50×50, detection AI, chests)
+# ─────────────────────────────────────────────────────────────────────────────
+##
+## Dungeon Crawl differs from a standard dungeon in three ways:
+##   1. Map is 2× the linear size (50×50 vs 25×25 — so 4× the area).
+##   2. Enemies start with `is_alerted = false` and only act once they have
+##      detected a player via line-of-sight + perception range. Once one
+##      member of a group is alerted, allies within an "alert radius" of
+##      that enemy are pulled into combat too.
+##   3. Treasure chests are scattered through the map and contain pre-rolled
+##      loot from `_generate_creature_loot`. Chests trip when a player walks
+##      onto their tile (existing entity step-on path picks them up).
+##
+## Internally this delegates to `start_dungeon()` for the heavy lifting,
+## then post-processes the entity list to add the alert state and chests.
+func start_dungeon_crawl(player_handles, enemy_level: int, terrain_style: int,
+		extra_enemies: int = 5) -> void:
+	# Switch global map size BEFORE start_dungeon runs so its fog/elevation
+	# arrays size correctly. _crawl_active gates the start_dungeon reset.
+	_crawl_active = true
+	MAP_SIZE      = MAP_SIZE_CRAWL
+
+	start_dungeon(player_handles, enemy_level, -1, terrain_style)
+
+	_dungeon_type = 3   # 0=standard, 1=kaiju, 2=apex, 3=crawl
+	_dungeon_encounter_name = "Dungeon Crawl: %s" % _dungeon_terrain_name
+
+	# Tag every enemy with detection state. Players + allies are unaffected.
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) or bool(ent.get("is_friendly", false)):
+			continue
+		if bool(ent.get("is_dead", false)):
+			continue
+		# Default perception: 12 + DIV-ish stat. Fall back to 12 if missing.
+		var perc_div: int = int(ent.get("div", 0))
+		if perc_div == 0:
+			perc_div = int(ent.get("perception", 0))
+		ent["is_alerted"]      = false
+		ent["alert_radius"]    = 6     # tiles — allies within this radius alert too
+		ent["perception_range"] = 12 + maxi(0, perc_div)
+		ent["last_seen_x"]     = -1
+		ent["last_seen_y"]     = -1
+
+	# CRITICAL: start_dungeon spawned the base encounter assuming a 25×25
+	# arena, so all those enemies are clustered next to the player spawn.
+	# Re-scatter every enemy to the outer ring of the 50×50 map BEFORE the
+	# player can see them. This is what makes Crawl feel like exploration
+	# instead of a 25-mob ambush at the doorway.
+	_redistribute_crawl_enemies(15)
+
+	# Spawn additional crawl enemies — the larger map needs more density.
+	# Pull encounters from the same builder used by start_dungeon, just tag
+	# them as un-alerted and place them in outer rings.
+	if extra_enemies > 0:
+		_spawn_crawl_extra_enemies(enemy_level, extra_enemies)
+
+	# Spawn 5–8 chests. Count scales with map area, not enemy budget.
+	_spawn_crawl_chests(maxi(5, enemy_level / 2 + 4))
+
+	_update_fog()
+
+## Walks every non-player, non-friendly, non-chest entity and teleports them
+## to a random walkable tile whose Manhattan distance from EVERY player is
+## at least `min_dist`. Falls back to the entity's current spot only if no
+## valid distant tile can be found in 200 attempts (rare).
+##
+## Called once at the end of start_dungeon_crawl so the standard-encounter
+## spawn (which clusters near the player anchor) ends up dispersed across
+## the 50×50 map. Without this, opening a crawl drops you straight into a
+## point-blank ambush.
+func _redistribute_crawl_enemies(min_dist: int) -> void:
+	# Snapshot player positions.
+	var player_positions: Array = []
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) and not bool(ent.get("is_dead", false)):
+			player_positions.append(Vector2i(int(ent["x"]), int(ent["y"])))
+	if player_positions.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+
+	for ent in _dungeon_entities:
+		# Skip players, allies, dead bodies, and chests.
+		if bool(ent.get("is_player", false)):     continue
+		if bool(ent.get("is_friendly", false)):   continue
+		if bool(ent.get("is_dead", false)):       continue
+		if bool(ent.get("is_chest", false)):      continue
+		if bool(ent.get("is_kaiju", false)):      continue   # bosses keep their pos
+
+		var placed: bool = false
+		for attempt in range(200):
+			var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+			var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+			# Walkability
+			var idx: int = ty * MAP_SIZE + tx
+			if idx < 0 or idx >= _dungeon_map.size():
+				continue
+			if _dungeon_map[idx] != TILE_FLOOR:
+				continue
+			if _dung_occupied(tx, ty):
+				continue
+			# Min-distance from every player
+			var ok: bool = true
+			for pp in player_positions:
+				if absi(tx - pp.x) + absi(ty - pp.y) < min_dist:
+					ok = false
+					break
+			if not ok:
+				continue
+			ent["x"] = tx
+			ent["y"] = ty
+			placed = true
+			break
+		# If no spot was found in 200 attempts (very dense walls), leave
+		# the entity in place — they'll just be a closer encounter.
+
+## Spawn a few extra enemies on the outer ring of the crawl map, all
+## un-alerted. Re-uses the existing build_encounter / spawn helpers.
+func _spawn_crawl_extra_enemies(enemy_level: int, n: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	# Find player anchor for distance checks.
+	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)):
+			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
+			break
+
+	var spawned: int = 0
+	var attempts: int = 0
+	while spawned < n and attempts < 200:
+		attempts += 1
+		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+		# Outer ring: at least 18 tiles from any player.
+		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
+		if dist < 18:
+			continue
+		# Walkable check
+		var idx: int = ty * MAP_SIZE + tx
+		if idx < 0 or idx >= _dungeon_map.size():
+			continue
+		if _dungeon_map[idx] != TILE_FLOOR:
+			continue
+		if _dung_occupied(tx, ty):
+			continue
+
+		# Build a single creature using a real creature name from the pools
+		# so the sprite-portrait lookup matches files like wolf.png /
+		# boar.png / etc. Three category pools (animal, villager, monster)
+		# are chosen at random per spawn to give the crawl variety.
+		var c_lv: int = enemy_level
+		var pools: Array = [
+			CREATURE_NAMES_ANIMAL,
+			CREATURE_NAMES_VILLAGER,
+			CREATURE_NAMES_MONSTER,
+		]
+		var pool: Array = pools[rng.randi() % pools.size()]
+		var creature_name: String = str(pool[rng.randi() % pool.size()])
+		# Pick a weapon from the matching weapon pool.
+		var weapon: String
+		if pool == CREATURE_NAMES_ANIMAL:
+			weapon = CREATURE_WEAPONS_ANIMAL[rng.randi() % CREATURE_WEAPONS_ANIMAL.size()]
+		elif pool == CREATURE_NAMES_VILLAGER:
+			weapon = CREATURE_WEAPONS_VILLAGER[rng.randi() % CREATURE_WEAPONS_VILLAGER.size()]
+		else:
+			weapon = CREATURE_WEAPONS_MONSTER[rng.randi() % CREATURE_WEAPONS_MONSTER.size()]
+		var c_max_hp: int = 10 + 4 * c_lv + rng.randi_range(0, c_lv * 2)
+		var ac: int = 10 + (c_lv / 2) + rng.randi_range(0, 2)
+		_dungeon_entities.append({
+			"id":             "crawl_enemy_%d" % spawned,
+			"name":           creature_name,
+			"handle":         -1,
+			"lineage_name":   creature_name,   # ← drives wolf.png / boar.png / etc.
+			"x": tx, "y": ty, "z": 1,
+			"is_player":   false,
+			"is_friendly": false,
+			"is_dead":     false,
+			"is_flying":   false,
+			"hp":          c_max_hp, "max_hp": c_max_hp,
+			"ap":          10 + c_lv,    "max_ap": 10 + c_lv,
+			"sp":          5,             "max_sp": 5,
+			"ac":          ac,
+			"speed":       3,
+			"ap_spent":    0, "move_used": 0,
+			"equipped_weapon": weapon,
+			"equipped_armor":  "Leather Armor",
+			"equipped_shield": "None",
+			"equipped_light":  "None",
+			"conditions":  [],
+			"inventory":   _generate_creature_loot(c_lv),
+			"looted":      false,
+			"div":         2,
+			# Crawl-specific detection state
+			"is_alerted":       false,
+			"alert_radius":     6,
+			"perception_range": 14,
+			"last_seen_x":     -1,
+			"last_seen_y":     -1,
+		})
+		spawned += 1
+
+## Spawn `n` treasure chests on walkable tiles, biased toward the middle
+## ring (not too close to spawn, not too far from any explored area).
+func _spawn_crawl_chests(n: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)):
+			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
+			break
+
+	var spawned: int = 0
+	var attempts: int = 0
+	while spawned < n and attempts < 300:
+		attempts += 1
+		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
+		if dist < 6 or dist > 38:
+			continue
+		var idx: int = ty * MAP_SIZE + tx
+		if idx < 0 or idx >= _dungeon_map.size():
+			continue
+		if _dungeon_map[idx] != TILE_FLOOR:
+			continue
+		if _dung_occupied(tx, ty):
+			continue
+
+		# Loot quality scales with distance from spawn — deeper chests
+		# carry better loot. Use the existing creature-loot generator at a
+		# scaled-up level.
+		var loot_level: int = _dungeon_enemy_level + (dist / 8)
+		_dungeon_entities.append({
+			"id":             "crawl_chest_%d" % spawned,
+			"name":           "Treasure Chest",
+			"handle":         -1,
+			"lineage_name":   "",
+			"x": tx, "y": ty, "z": 1,
+			"is_player":   false,
+			"is_friendly": false,
+			"is_dead":     false,
+			"is_flying":   false,
+			"is_chest":    true,    # ← marks this entity as a chest
+			"hp":          1, "max_hp": 1,
+			"ap":          0, "max_ap": 0,
+			"sp":          0, "max_sp": 0,
+			"ac":          10,
+			"speed":       0,
+			"conditions":  [],
+			"inventory":   _generate_creature_loot(loot_level),
+			"looted":      false,
+		})
+		spawned += 1
 
 func start_apex_dungeon(player_handles, apex_idx: int, terrain_style: int) -> void:
 	start_dungeon(player_handles, 1, -1, terrain_style)

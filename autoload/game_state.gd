@@ -145,6 +145,18 @@ var current_region: String = "plains"
 var current_subregion: String = ""
 ## Current hour of day for region exploration (0-23, starts at 6AM)
 var explore_current_hour: int = 6
+
+## Dungeon render style preference — "region" (default — region-map styled
+## dungeon with procedural terrain, signposts, daylight) or "classic"
+## (legacy grid-token tactical map). Read by dungeon.gd on map load;
+## toggled from the world Dungeon tab.
+var dungeon_render_style: String = "region"
+
+## Dungeon visual quality — "low", "medium" (default), or "high". Affects
+## prop density, light count, and the 3D viewport's internal resolution.
+## Bigger crawl maps (50×50) hit hardware harder; lowering quality is the
+## fastest way to make them playable on lighter machines.
+var dungeon_quality: String = "medium"
 ## Saved explore position so player returns to same tile after dungeon
 var explore_return_pos: Vector2i = Vector2i(-1, -1)
 var explore_return_active: bool = false
@@ -180,6 +192,29 @@ var social_consequences: Dictionary = {}
 var active_quests: Array = []
 ## Completed quest IDs to prevent re-offering
 var completed_quest_ids: Array = []
+
+# ── Regional NPCs (permanent, schedule-driven) ──────────────────────────────────
+## Per-NPC mutable state, keyed by the NPC's stable `id` (see RegionalNpcs).
+## Shape: {
+##   "<npc_id>": {
+##     "trust": int,
+##     "dialogue_flags": Dictionary,
+##     "last_interaction_day": int,
+##     "quest_progress": Dictionary,
+##   }
+## }
+## Populated lazily — only NPCs the player has interacted with appear here.
+var regional_npc_state: Dictionary = {}
+
+func get_regional_npc_state(npc_id: String) -> Dictionary:
+	if not regional_npc_state.has(npc_id):
+		regional_npc_state[npc_id] = {
+			"trust": 0,
+			"dialogue_flags": {},
+			"last_interaction_day": 0,
+			"quest_progress": {},
+		}
+	return regional_npc_state[npc_id]
 
 # ── Bounty System ────────────────────────────────────────────────────────────────
 ## Per-region bounty in gold pieces: { "region_name": int }
@@ -510,95 +545,323 @@ const MILITIA_EQUIP_TIERS: Array = [
 	{"name":"Advanced",    "ac":20, "dmg_bonus":8, "gold":800},
 ]
 
-## Mob definitions — 6 moods × variety
-const MOB_MOODS: Array = ["Enraged", "Terrified", "Jubilant", "Desperate", "Opportunistic", "Frenzied"]
+## Mob definitions — canonical data lives in autoload/mob_system.gd
+## (MobSystem.MOODS, MobSystem.TRAITS, MobSystem.LEADERS). These arrays are
+## kept as back-compat aliases so the existing UI code in world.gd keeps
+## working without a rename pass. Entry shape matches MobSystem 1-for-1.
+const MOB_MOODS: Array = ["Enraged", "Terrified", "Jubilant", "Desperate", "Opportunistic", "Frenzied", "Panicked", "Zealous"]
 const MOB_TRAITS: Array = [
-	{"name":"Firestarters", "desc":"Can ignite objects as group action."},
-	{"name":"Swarm",        "desc":"Move through obstacles as difficult terrain."},
-	{"name":"Opportunists", "desc":"Loot and steal with +2 bonus."},
-	{"name":"Unstoppable",  "desc":"Ignore the first failed morale check."},
-	{"name":"Quick Learners","desc":"+1 attack after each miss (max +1/round)."},
-	{"name":"Mob Healers",  "desc":"Heal 1d4 HP every round."},
-	{"name":"Shadowed",     "desc":"Advantage on stealth at night."},
-	{"name":"Ironhide",     "desc":"Resist non-magical bludgeoning."},
-	{"name":"Cacophony",    "desc":"Enemies have disadvantage on perception in 300ft."},
-	{"name":"Rallying Cry", "desc":"Once per encounter: +2 checks for allies in 30ft."},
-	{"name":"Nimble Feet",  "desc":"Movement speed +10ft."},
-	{"name":"Keen Senses",  "desc":"Advantage on perception vs hidden threats."},
+	{"name":"Firestarters",  "desc":"Can ignite objects as a group action."},
+	{"name":"Swarm",         "desc":"Move through obstacles as if difficult terrain."},
+	{"name":"Opportunists",  "desc":"+2 to loot or steal actions."},
+	{"name":"Unstoppable",   "desc":"Ignore the first failed morale check."},
+	{"name":"Quick Learners","desc":"+1 to attack for the rest of the encounter after each failed attack (max +1 / round)."},
+	{"name":"Mob Healers",   "desc":"Heal 1d4 every round as a basic action."},
+	{"name":"Shadowed",      "desc":"Advantage on stealth checks at night."},
+	{"name":"Ironhide",      "desc":"Resistance to non-magical bludgeoning."},
+	{"name":"Cacophony",     "desc":"Enemies have disadvantage on perception + ranged within 300 ft."},
+	{"name":"Rallying Cry",  "desc":"Once per encounter: +2 to checks for allies in 30 ft for 1 minute."},
+	{"name":"Nimble Feet",   "desc":"Movement speed +10 ft."},
+	{"name":"Keen Senses",   "desc":"Advantage on perception checks vs hidden threats."},
 ]
 
 const MOB_LEADERS: Array = [
 	{"name":"None",      "desc":"No leader."},
 	{"name":"Firebrand", "desc":"Once per encounter: +2 attack for one round."},
-	{"name":"Coward",    "desc":"+2 morale when fleeing, -2 attacks."},
-	{"name":"Trickster", "desc":"Once per encounter: bypass barriers."},
-	{"name":"Brute",     "desc":"+1 dmg per 5 members for one round, -2 AC."},
-	{"name":"Prophet",   "desc":"Immune to fear effects."},
-	{"name":"Scavenger", "desc":"Loot twice as fast."},
-	{"name":"Whisperer", "desc":"Near-silence, advantage stealth."},
-	{"name":"Bulwark",   "desc":"+3 AC, -10ft movement in formation."},
-	{"name":"Madman",    "desc":"Act twice, roll instinct at turn end."},
+	{"name":"Coward",    "desc":"+2 morale when fleeing, -2 to attacks."},
+	{"name":"Trickster", "desc":"Once per encounter: ignore difficult terrain or bypass a barrier."},
+	{"name":"Brute",     "desc":"+1 damage per 5 members for one round, -2 AC."},
+	{"name":"Prophet",   "desc":"Immune to fear effects (zealotry)."},
+	{"name":"Scavenger", "desc":"Loot/scavenge twice as fast — extra resources or improvised weapons."},
+	{"name":"Whisperer", "desc":"Near-silence, advantage on sneak. -2 AC while sneaking."},
+	{"name":"Bulwark",   "desc":"+3 AC, -10 ft movement while in formation."},
+	{"name":"Madman",    "desc":"Acts twice, but rolls Instinct Table at turn end."},
 	{"name":"Shadow",    "desc":"Can hide or disperse instantly."},
 ]
 
-## Kaiju available for recruitment (matched to DD_KAIJUS in world.gd)
+## Kaiju available for recruitment. Stats synced with KaijuSystem.KAIJU_DEFS
+## (single source of truth — see autoload/kaiju_system.gd). HP/AC follow the
+## spec formula HP = 10 × Level + VIT; damage threshold = Level.
 const KAIJU_RECRUITS: Array = [
-	{"name":"Pyroclast",         "title":"the Living Volcano",      "level":12, "hp":200, "ac":22, "gold":2000, "rf":10},
-	{"name":"Grondar",           "title":"the Mountain King",       "level":13, "hp":220, "ac":23, "gold":2500, "rf":12},
-	{"name":"Thal'Zuur",         "title":"the Drowned One",         "level":14, "hp":240, "ac":24, "gold":3000, "rf":15},
-	{"name":"Ny'Zorrak",         "title":"the Starborn Maw",        "level":15, "hp":280, "ac":25, "gold":4000, "rf":20},
-	{"name":"Mirecoast Sleeper", "title":"the Tidemaker Colossus",  "level":14, "hp":250, "ac":24, "gold":3200, "rf":16},
-	{"name":"Aegis Ultima",      "title":"the Arcane Sentinel",     "level":13, "hp":210, "ac":23, "gold":2800, "rf":14},
+	{"name":"Pyroclast",         "title":"the Living Volcano",      "level":12, "hp":136, "ac":13, "gold":2000, "rf":10, "def_idx":0},
+	{"name":"Grondar",           "title":"the Mountain King",       "level":13, "hp":137, "ac":16, "gold":2500, "rf":12, "def_idx":1},
+	{"name":"Thal'Zuur",         "title":"the Drowned One",         "level":14, "hp":149, "ac":14, "gold":3000, "rf":15, "def_idx":2},
+	{"name":"Ny'Zorrak",         "title":"the Starborn Maw",        "level":15, "hp":158, "ac":15, "gold":4000, "rf":20, "def_idx":3},
+	{"name":"Mirecoast Sleeper", "title":"the Tidemaker Colossus",  "level":14, "hp":150, "ac":12, "gold":3200, "rf":16, "def_idx":4},
+	{"name":"Aegis Ultima",      "title":"the Arcane Sentinel",     "level":13, "hp":138, "ac":25, "gold":2800, "rf":14, "def_idx":5},
 ]
 
-## Recruit a militia squad. Returns true on success.
+## Recruit a militia squad using the MilitiaSystem spec formulas.
+##   HP = 10 × Level + VIT,  AP = 10 + STR,  SP = 3 + Level + DIV.
+## Stats are distributed based on the militia type's emphasis; full MP-budget
+## building (stat allocation, commander roles, multi-trait picks, vehicles,
+## special trainings) is exposed via `recruit_militia_mp_build()` below.
+## Returns true on success.
 func recruit_militia(type_idx: int, equip_tier: int, member_count: int, custom_name: String = "") -> bool:
 	if type_idx < 0 or type_idx >= MILITIA_TYPES.size(): return false
 	if equip_tier < 0 or equip_tier >= MILITIA_EQUIP_TIERS.size(): return false
-	member_count = clampi(member_count, 3, 20)
+	member_count = clampi(member_count, 3, 30)
 	var cost_per: int = 25 + MILITIA_EQUIP_TIERS[equip_tier]["gold"]
 	var total_gold: int = cost_per * member_count / 5
 	if gold < total_gold: return false
 	gold -= total_gold
+
 	var mtype: Dictionary = MILITIA_TYPES[type_idx]
 	var tier: Dictionary  = MILITIA_EQUIP_TIERS[equip_tier]
-	var level: int = 1 + equip_tier * 2
-	var hp: int = 10 * level + member_count * 3
-	var display_name: String = custom_name if custom_name != "" else "%s Militia" % mtype["name"]
+	var level: int = 1 + equip_tier * 2  # legacy progression — tier 0 = L1 … tier 3 = L7
+
+	# Default stat distribution: balanced militia with slight VIT / STR weight.
+	# Total 14 points at L1 scales gently with tier — advanced squads get sharper stats.
+	var str_score: int = 2 + equip_tier
+	var spd: int       = 2 + (equip_tier / 2)
+	var intel: int     = 2
+	var vit: int       = 3 + equip_tier
+	var div: int       = 1 + (equip_tier / 2)
+
+	var MilitiaSystemRef = preload("res://autoload/militia_system.gd")
+	var hp_total: int = MilitiaSystemRef.compute_hp(level, vit)
+	var ap_total: int = MilitiaSystemRef.compute_ap(str_score)
+	var sp_total: int = MilitiaSystemRef.compute_sp(level, div)
+	var morale: int  = MilitiaSystemRef.compute_morale(
+		equip_tier + 1,  # tier 1..4
+		vit, 0, 0, hp_total, hp_total, 0)
+
+	var display_name: String = custom_name if custom_name != "" else ("%s Militia" % str(mtype["name"]))
 	recruited_allies.append({
-		"type": "militia", "def_idx": type_idx, "equip_tier": equip_tier,
-		"name": display_name, "level": level, "members": member_count,
-		"hp": hp, "max_hp": hp,
-		"ac": int(tier["ac"]) + int(mtype["ac_bonus"]),
-		"dmg_bonus": int(tier["dmg_bonus"]) + int(mtype["dmg_bonus"]),
-		"speed": 5, "trait": mtype["trait"],
+		"type":        "militia",
+		"def_idx":     type_idx,
+		"equip_tier":  equip_tier,
+		"name":        display_name,
+		"level":       level,
+		"members":     member_count,
+		"hp":          hp_total,
+		"max_hp":      hp_total,
+		"ap":          ap_total,
+		"max_ap":      ap_total,
+		"sp":          sp_total,
+		"max_sp":      sp_total,
+		"morale":      morale,
+		"max_morale":  morale,
+		"ac":          int(tier["ac"]) + int(mtype["ac_bonus"]),
+		"dmg_bonus":   int(tier["dmg_bonus"]) + int(mtype["dmg_bonus"]),
+		"str":         str_score,
+		"spd":         spd,
+		"int":         intel,
+		"vit":         vit,
+		"div":         div,
+		"speed":       5,
+		"trait":       mtype["trait"],
+		"victories":   0,
+		"casualties":  0,
 	})
 	save_game()
 	return true
 
-## Recruit a mob. Returns true on success.
+## Advanced MP-budget militia builder. Lets the caller specify the full spec
+## build (stats, traits, commander roles, vehicles, etc.) provided they fit
+## within `mp_budget`. Returns true on success.
+## `build` dict shape:
+##   {
+##     type_id:     String    matching MilitiaSystem.TYPES[].id
+##     stats:       Dict      {str, spd, int, vit, div}  — each already in spec stat-point budget
+##     stats_mp:    int       how many MP were spent (caller-validated)
+##     size_idx:    int       0=Small, 1=Medium, 2=Large
+##     extra_members: int
+##     equip_tier_idx: int   0..3  (Improvised..Advanced Tech)
+##     trait_ids:   Array[String]  first free, extras +5 MP each
+##     commander_role_ids: Array[String]  1 MP each, stack on one unit
+##     vehicle_ids: Array[String]
+##     special_trainings: int   (count, 3 MP each)
+##     elite_units: int         (count, 5 MP each)
+##     unique_asset_ids: Array[String]
+##     feats_count: int         3 feats per 1 MP
+##     morale_mp: int           direct MP → morale
+##     faction_backed: bool
+##     region_in_chaos: bool
+##     built_from_base: bool
+##     player_sp_donated: int
+##   }
+## `mp_budget` is typically from `MilitiaSystem.compute_mp(...)`.
+func recruit_militia_mp_build(build: Dictionary, mp_budget: int, custom_name: String = "") -> Dictionary:
+	var MilitiaSystemRef = preload("res://autoload/militia_system.gd")
+	var type_def: Dictionary = MilitiaSystemRef.get_type_by_id(str(build.get("type_id", "guard")))
+	if type_def.is_empty():
+		return {"ok": false, "reason": "Unknown militia type."}
+
+	var stats: Dictionary = build.get("stats", {"str": 0, "spd": 0, "int": 0, "vit": 0, "div": 0})
+	var equip_idx: int = clampi(int(build.get("equip_tier_idx", 0)), 0, MilitiaSystemRef.EQUIPMENT_TIERS.size() - 1)
+	var equip: Dictionary = MilitiaSystemRef.get_equipment(equip_idx)
+
+	var cost: int = MilitiaSystemRef.compute_build_cost(
+		int(build.get("stats_mp", 0)),
+		int(build.get("size_idx", 0)),
+		int(build.get("extra_members", 0)),
+		equip_idx,
+		(build.get("trait_ids", []) as Array).size(),
+		(build.get("commander_role_ids", []) as Array).size(),
+		build.get("vehicle_ids", []) as Array,
+		int(build.get("special_trainings", 0)),
+		int(build.get("elite_units", 0)),
+		build.get("unique_asset_ids", []) as Array,
+		int(build.get("feats_count", 0)),
+		int(build.get("morale_mp", 0)))
+	if cost > mp_budget:
+		return {"ok": false, "reason": "Build costs %d MP; budget is %d." % [cost, mp_budget]}
+
+	# Member count
+	var size_idx: int = clampi(int(build.get("size_idx", 0)), 0, MilitiaSystemRef.SIZES.size() - 1)
+	var base_members: int = int(MilitiaSystemRef.SIZES[size_idx]["members"])
+	var member_count: int = base_members + int(build.get("extra_members", 0))
+
+	# Level — prefer explicit, else derive from member count (similar to mob).
+	var level: int = clampi(int(build.get("level", 1 + equip_idx * 2)), 1, 20)
+
+	var str_score: int = int(stats.get("str", 0))
+	var spd: int       = int(stats.get("spd", 0))
+	var intel: int     = int(stats.get("int", 0))
+	var vit: int       = int(stats.get("vit", 0))
+	var div: int       = int(stats.get("div", 0))
+
+	var hp_total: int = MilitiaSystemRef.compute_hp(level, vit)
+	var ap_total: int = MilitiaSystemRef.compute_ap(str_score)
+	var sp_total: int = MilitiaSystemRef.compute_sp(level, div)
+
+	var equipment_tier_num: int = int(equip["tier"])
+	var morale: int = MilitiaSystemRef.compute_morale(
+		equipment_tier_num, vit, 0, 0, hp_total, hp_total,
+		int(build.get("morale_mp", 0)))
+
+	# AC: base equipment AC + type bonus + commander bonus + Shield Wall etc.
+	var ac: int = int(equip["ac"])
+	if type_def.has("modifiers") and type_def["modifiers"].has("ac"):
+		ac += int(type_def["modifiers"]["ac"])
+	var commanders: Array = build.get("commander_role_ids", [])
+	if commanders.size() > 0:
+		ac += MilitiaSystemRef.COMMANDER_AC_BONUS   # +2 for commander unit(s)
+
+	# Damage bonus = equipment dmg_bonus + type atk bonus
+	var dmg_bonus: int = int(equip["dmg_bonus"])
+	if type_def.has("modifiers") and type_def["modifiers"].has("dmg"):
+		dmg_bonus += int(type_def["modifiers"]["dmg"])
+
+	var display_name: String = custom_name if custom_name != "" else ("%s Militia" % str(type_def["name"]))
+
+	# Find legacy type_idx by matching ID against MILITIA_TYPES names.
+	var legacy_type_idx: int = 0
+	for i in range(MILITIA_TYPES.size()):
+		if str(MILITIA_TYPES[i]["name"]).begins_with(str(type_def["name"]).split(" ")[0]):
+			legacy_type_idx = i
+			break
+
+	recruited_allies.append({
+		"type":         "militia",
+		"def_idx":      legacy_type_idx,
+		"type_id":      type_def["id"],
+		"equip_tier":   equip_idx,
+		"name":         display_name,
+		"level":        level,
+		"members":      member_count,
+		"hp":           hp_total,
+		"max_hp":       hp_total,
+		"ap":           ap_total,
+		"max_ap":       ap_total,
+		"sp":           sp_total,
+		"max_sp":       sp_total,
+		"morale":       morale,
+		"max_morale":   morale,
+		"ac":           ac,
+		"dmg_bonus":    dmg_bonus,
+		"str":          str_score, "spd": spd, "int": intel, "vit": vit, "div": div,
+		"speed":        5,
+		"traits":       build.get("trait_ids", []),
+		"commanders":   commanders,
+		"vehicles":     build.get("vehicle_ids", []),
+		"special_trainings": int(build.get("special_trainings", 0)),
+		"elite_units":  int(build.get("elite_units", 0)),
+		"unique_assets":build.get("unique_asset_ids", []),
+		"mp_spent":     cost,
+		"mp_budget":    mp_budget,
+		"victories":    0,
+		"casualties":   0,
+	})
+	save_game()
+	return {"ok": true, "mp_spent": cost, "mp_remaining": mp_budget - cost}
+
+## Recruit a mob. Uses MobSystem for spec-correct stats:
+##   HP pool = 1 per member, AP = 10 + STR, SP = 5 + Level + DIV.
+##   Level derived from member_count (1 level per 5 members, cap 20).
+##   Stats distributed proportionally to a mob-brawler profile.
+## Returns true on success.
 func recruit_mob(member_count: int, trait_idx: int, leader_idx: int, custom_name: String = "") -> bool:
-	member_count = clampi(member_count, 5, 50)
+	member_count = clampi(member_count, 5, 200)   # Small..Huge per spec
 	if trait_idx < 0 or trait_idx >= MOB_TRAITS.size(): return false
 	if leader_idx < 0 or leader_idx >= MOB_LEADERS.size(): return false
 	var cost: int = member_count * 10
 	if gold < cost: return false
 	gold -= cost
-	var hp_per: int = 3
-	var total_hp: int = member_count * hp_per
-	var display_name: String = custom_name if custom_name != "" else "%s Mob" % MOB_TRAITS[trait_idx]["name"]
+
+	var level: int = clampi(1 + member_count / 5, 1, 20)
+	var MobSystemRef = preload("res://autoload/mob_system.gd")
+	var live: Dictionary = MobSystemRef.generate_procedural(level, member_count)
+
+	# Override trait / leader with the player's picks (not the procedural defaults).
+	var trait_dict: Dictionary = MOB_TRAITS[trait_idx]
+	var leader_dict: Dictionary = MOB_LEADERS[leader_idx]
+
+	var display_name: String = custom_name if custom_name != "" else ("%s Mob" % str(trait_dict["name"]))
+
+	# AC: mobs are loosely formed — base 12. Trait / leader modifiers applied
+	# at combat-time by the combat engine, not baked in here.
+	var base_ac: int = 12
+	if str(leader_dict["name"]) == "Bulwark":
+		base_ac += 3
+	if str(trait_dict["name"]) == "Ironhide":
+		base_ac += 1
+
 	recruited_allies.append({
-		"type": "mob", "def_idx": trait_idx, "leader_idx": leader_idx,
-		"name": display_name, "level": maxi(1, member_count / 5),
-		"members": member_count, "hp": total_hp, "max_hp": total_hp,
-		"ac": 12, "dmg_bonus": 0, "speed": 5,
-		"trait": MOB_TRAITS[trait_idx]["name"],
-		"leader": MOB_LEADERS[leader_idx]["name"],
+		"type":              "mob",
+		"def_idx":           trait_idx,
+		"leader_idx":        leader_idx,
+		"name":              display_name,
+		"level":             int(live["level"]),
+		"members":           member_count,
+		"hp":                int(live["hp"]),
+		"max_hp":            int(live["max_hp"]),
+		"ap":                int(live["ap"]),
+		"max_ap":            int(live["max_ap"]),
+		"sp":                int(live["sp"]),
+		"max_sp":            int(live["max_sp"]),
+		"morale":            int(live["morale"]),
+		"max_morale":        int(live["morale"]),
+		"ac":                base_ac,
+		"dmg_bonus":         0,
+		"speed":             int(live["base_move_ft"]) / 5,   # back-compat: speed in 5ft units
+		"move_ft":           int(live["base_move_ft"]),
+		"momentum_move_ft":  int(live["momentum_move_ft"]),
+		"attack_dice":       live["attack_dice"],     # {count, sides}
+		"thrown_dice":       live["thrown_dice"],
+		"trap_dice":         live["trap_dice"],
+		"size":              str(live["size"]),
+		"max_cohesion_ft":   int(live["max_cohesion_ft"]),
+		"solo_hp_per_member":int(live["solo_hp_per_member"]),
+		"morale_trigger_hp": int(live["morale_trigger_hp"]),
+		"str":               int(live["str"]),
+		"spd":               int(live["spd"]),
+		"int":               int(live["int"]),
+		"vit":               int(live["vit"]),
+		"div":               int(live["div"]),
+		"trait":             str(trait_dict["name"]),
+		"trait_desc":        str(trait_dict["desc"]),
+		"leader":            str(leader_dict["name"]),
+		"leader_desc":       str(leader_dict["desc"]),
+		"mood":              str(live.get("mood", "Enraged")),
 	})
 	save_game()
 	return true
 
-## Recruit a kaiju. Requires Barracks facility. Returns true on success.
+## Recruit a kaiju. Requires Barracks facility. Pulls full spec stats from
+## KaijuSystem so the recruited ally has spec-correct HP/AP/SP/threshold/
+## immunities/resistances/abilities. Returns true on success.
 func recruit_kaiju(kaiju_idx: int) -> bool:
 	if kaiju_idx < 0 or kaiju_idx >= KAIJU_RECRUITS.size(): return false
 	if not has_facility("defenders"): return false  # Requires Barracks
@@ -606,14 +869,62 @@ func recruit_kaiju(kaiju_idx: int) -> bool:
 	if gold < int(k["gold"]) or remnant_fragments < int(k["rf"]): return false
 	gold -= int(k["gold"])
 	remnant_fragments -= int(k["rf"])
-	recruited_allies.append({
-		"type": "kaiju", "def_idx": kaiju_idx,
-		"name": "%s, %s" % [k["name"], k["title"]],
-		"level": int(k["level"]),
-		"hp": int(k["hp"]), "max_hp": int(k["hp"]),
-		"ac": int(k["ac"]), "dmg_bonus": 10, "speed": 3,
-		"members": 1, "trait": "Kaiju",
-	})
+
+	# Resolve the full spec-correct stat block from KaijuSystem.
+	var KaijuSystemRef = preload("res://autoload/kaiju_system.gd")
+	var resolved: Dictionary = KaijuSystemRef.resolve(int(k.get("def_idx", kaiju_idx)))
+	if resolved.is_empty():
+		# Fallback to the KAIJU_RECRUITS row if KaijuSystem can't resolve.
+		recruited_allies.append({
+			"type": "kaiju", "def_idx": kaiju_idx,
+			"name": "%s, %s" % [k["name"], k["title"]],
+			"level": int(k["level"]),
+			"hp": int(k["hp"]), "max_hp": int(k["hp"]),
+			"ac": int(k["ac"]), "dmg_bonus": 10, "speed": 3,
+			"members": 1, "trait": "Kaiju",
+		})
+	else:
+		var s: Dictionary = resolved["stats"]
+		recruited_allies.append({
+			"type":           "kaiju",
+			"def_idx":        kaiju_idx,
+			"name":           "%s, %s" % [resolved["name"], resolved["title"]],
+			"level":          int(resolved["level"]),
+			"hp":             int(resolved["hp"]),
+			"max_hp":         int(resolved["max_hp"]),
+			"ap":             int(resolved["ap"]),
+			"max_ap":         int(resolved["max_ap"]),
+			"sp":             int(resolved["sp"]),
+			"max_sp":         int(resolved["max_sp"]),
+			"ac":             int(resolved["ac"]),
+			"threshold":      int(resolved["threshold"]),
+			"lr_uses":        int(resolved["lr_uses"]),
+			"move_ft":        int(resolved["move_ft"]),
+			"multi_target":   int(resolved["multi_target"]),
+			"scaled_area_ft": int(resolved["scaled_area_ft"]),
+			"str":            int(s["str"]),
+			"spd":            int(s["spd"]),
+			"int":            int(s["int"]),
+			"vit":            int(s["vit"]),
+			"div":            int(s["div"]),
+			"immunities":     resolved.get("immunities", []),
+			"resistances":    resolved.get("resistances", []),
+			"conditional":    resolved.get("conditional", []),
+			"abilities":      resolved.get("abilities", []),
+			"feats":          resolved.get("feats", []),
+			"dmg_bonus":      10,          # back-compat for the existing combat path
+			"speed":          int(s["spd"]),  # back-compat: some combat code reads .speed
+			"members":        1,
+			"trait":          "Kaiju",
+			"size":           str(resolved.get("size", "Colossal")),
+			"size_id":        str(resolved.get("size_id", "colossal")),
+			"size_tile_count":int(resolved.get("size_tile_count", 16)),   # Colossal = 4×4 compressed
+			# Store footprint as [width, height] for JSON save/load compatibility.
+			"footprint_w":    int((resolved.get("footprint_tiles", Vector2i(4, 4)) as Vector2i).x),
+			"footprint_h":    int((resolved.get("footprint_tiles", Vector2i(4, 4)) as Vector2i).y),
+			"reach_ft":       int(resolved.get("reach_ft", 20)),
+			"height_ft":      int(resolved.get("height_ft", 60)),
+		})
 	save_game()
 	return true
 
@@ -1063,7 +1374,7 @@ func save_game() -> bool:
 		active_ritual_data.append(_serialize_ritual(r))
 
 	var data: Dictionary = {
-		"version":                   4,
+		"version":                   5,
 		"player_name":               player_name,
 		"player_level":              player_level,
 		"player_xp":                 player_xp,
@@ -1095,6 +1406,9 @@ func save_game() -> bool:
 		"active_quests":             active_quests,
 		"completed_quest_ids":       completed_quest_ids,
 		"bounty_per_region":         bounty_per_region,
+		"regional_npc_state":        regional_npc_state,
+		"dungeon_render_style":      dungeon_render_style,
+		"dungeon_quality":           dungeon_quality,
 		"reputation_events":         reputation_events,
 		"bank_balance":              bank_balance,
 		"vault_seals":               vault_seals,
@@ -1199,6 +1513,9 @@ func load_game() -> bool:
 	active_quests            = Array(data.get("active_quests", []))
 	completed_quest_ids      = Array(data.get("completed_quest_ids", []))
 	bounty_per_region        = Dictionary(data.get("bounty_per_region", {}))
+	regional_npc_state       = Dictionary(data.get("regional_npc_state", {}))
+	dungeon_render_style     = str(data.get("dungeon_render_style", "region"))
+	dungeon_quality          = str(data.get("dungeon_quality", "medium"))
 	reputation_events        = Array(data.get("reputation_events", []))
 	bank_balance             = int(data.get("bank_balance", 0))
 	vault_seals              = Array(data.get("vault_seals", []))

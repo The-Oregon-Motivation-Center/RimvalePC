@@ -305,32 +305,36 @@ const ASCENSION_PATHS: Dictionary = {
 # ══════════════════════════════════════════════════════════════════════════════
 # KAIJU CREATOR (GMG Section 21)
 # ══════════════════════════════════════════════════════════════════════════════
-## Generate a kaiju from level
+# Canonical Kaiju data + formulas now live in autoload/kaiju_system.gd.
+# This wrapper remains for backwards compatibility with older callsites.
+
+const _KaijuSystem = preload("res://autoload/kaiju_system.gd")
+
+## Generate a procedural Kaiju at the given level using the Kaiju Creator spec.
+## HP = 10 × Level + VIT,  AP = 10 + Level + STR,  SP = 10 + Level + DIV,
+## Threat Points = Level,  Damage Threshold = Level,  Movement = 40 ft × SPD.
+## For a specific named Kaiju, use KaijuSystem.resolve(idx) instead.
 static func generate_kaiju(level: int) -> Dictionary:
-	var hp: int = 10 * level + randi_range(0, level * 2)
-	var threshold: int = level
-	var ac: int = 12 + level / 2
-	var legendary_actions: int = 1 + level / 5
-	return {
-		"name": "Kaiju Lv.%d" % level,
-		"level": level,
-		"hp": hp, "max_hp": hp,
-		"ac": ac,
-		"threshold": threshold,
-		"speed": 4 + level / 3,
-		"legendary_actions": legendary_actions,
-		"hit_zones": [
-			{"name": "Head", "ac": ac + 2, "hp": hp / 4},
-			{"name": "Body", "ac": ac, "hp": hp / 2},
-			{"name": "Left Limb", "ac": ac - 1, "hp": hp / 8},
-			{"name": "Right Limb", "ac": ac - 1, "hp": hp / 8},
-		],
-		"area_attacks": [
-			{"name": "Stomp", "dice": [level / 2, 8], "range": 2, "type": "bludgeoning"},
-			{"name": "Breath Weapon", "dice": [level / 3, 10], "range": 5, "type": "fire"},
-			{"name": "Tail Sweep", "dice": [level / 3, 6], "range": 3, "type": "bludgeoning"},
-		],
-	}
+	var k: Dictionary = _KaijuSystem.generate_procedural(level)
+	# Back-compat shape: older code expects hit_zones + area_attacks arrays.
+	var ac: int = int(k["ac"])
+	var hp: int = int(k["hp"])
+	k["hit_zones"] = [
+		{"name": "Head",       "ac": ac + 2, "hp": hp / 4},
+		{"name": "Body",       "ac": ac,     "hp": hp / 2},
+		{"name": "Left Limb",  "ac": ac - 1, "hp": hp / 8},
+		{"name": "Right Limb", "ac": ac - 1, "hp": hp / 8},
+	]
+	var area_ft: int = int(k["scaled_area_ft"])
+	var multi: int = int(k["multi_target"])
+	k["area_attacks"] = [
+		{"name": "Stomp",         "dice": [level / 2, 8],  "area_ft": area_ft,     "targets": multi, "type": "bludgeoning"},
+		{"name": "Breath Weapon", "dice": [level / 3, 10], "area_ft": area_ft * 2, "targets": multi, "type": "fire"},
+		{"name": "Tail Sweep",    "dice": [level / 3, 6],  "area_ft": area_ft,     "targets": multi, "type": "bludgeoning"},
+	]
+	k["legendary_actions"] = 1 + level / 5
+	k["speed"] = int(k["stats"]["spd"])
+	return k
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADVERSARY LEVELING (GMG Section 22)

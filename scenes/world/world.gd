@@ -2138,6 +2138,101 @@ func _build_dungeon_tab(parent: Control) -> void:
 	vbox.add_child(sub_lbl)
 	vbox.add_child(RimvaleUtils.spacer(4))
 
+	# ── Render Style Toggle ─────────────────────────────────────────────────
+	# Persists to GameState.dungeon_render_style. Read by dungeon.gd on load.
+	vbox.add_child(RimvaleUtils.label("Map Style", 14, RimvaleColors.TEXT_WHITE))
+	var style_row := HBoxContainer.new()
+	style_row.add_theme_constant_override("separation", 8)
+	style_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(style_row)
+
+	var classic_col := Color(0.55, 0.45, 0.30)   # parchment/torchlight
+	var region_col  := Color(0.35, 0.65, 0.55)   # emerald/map
+
+	var classic_btn := RimvaleUtils.button("🏰 Classic Dungeon", classic_col, 40, 12)
+	classic_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var region_btn  := RimvaleUtils.button("🗺 Region Map Style", region_col, 40, 12)
+	region_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# Visually mark the current selection — brighter font on the active one.
+	var _highlight_style_btns := func():
+		var is_region: bool = GameState.dungeon_render_style == "region"
+		classic_btn.add_theme_color_override("font_color",
+			RimvaleColors.TEXT_WHITE if not is_region else RimvaleColors.TEXT_DIM)
+		region_btn.add_theme_color_override("font_color",
+			RimvaleColors.TEXT_WHITE if is_region else RimvaleColors.TEXT_DIM)
+
+	classic_btn.pressed.connect(func():
+		GameState.dungeon_render_style = "classic"
+		GameState.save_game()
+		_highlight_style_btns.call())
+	region_btn.pressed.connect(func():
+		GameState.dungeon_render_style = "region"
+		GameState.save_game()
+		_highlight_style_btns.call())
+
+	style_row.add_child(classic_btn)
+	style_row.add_child(region_btn)
+	_highlight_style_btns.call()
+
+	var style_note := RimvaleUtils.label(
+		"Classic: grid-token tactical map. Region Map Style: procedural terrain, lighting, and atmospheric props styled like the explore view.",
+		11, RimvaleColors.TEXT_DIM)
+	style_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(style_note)
+
+	# ── Render Quality (performance) ────────────────────────────────────────
+	# Persists to GameState.dungeon_quality. Lower = sparser props + smaller
+	# 3D viewport — significant savings on big crawl maps.
+	vbox.add_child(RimvaleUtils.spacer(6))
+	vbox.add_child(RimvaleUtils.label("Render Quality", 14, RimvaleColors.TEXT_WHITE))
+	var qrow := HBoxContainer.new()
+	qrow.add_theme_constant_override("separation", 8)
+	qrow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(qrow)
+
+	var low_btn  := RimvaleUtils.button("⚡ Low", Color(0.55, 0.42, 0.22), 36, 11)
+	var med_btn  := RimvaleUtils.button("• Medium", Color(0.45, 0.50, 0.40), 36, 11)
+	var high_btn := RimvaleUtils.button("✨ High", Color(0.30, 0.55, 0.55), 36, 11)
+	for b in [low_btn, med_btn, high_btn]:
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var _highlight_q_btns := func():
+		var q: String = GameState.dungeon_quality
+		low_btn.add_theme_color_override("font_color",
+			RimvaleColors.TEXT_WHITE if q == "low" else RimvaleColors.TEXT_DIM)
+		med_btn.add_theme_color_override("font_color",
+			RimvaleColors.TEXT_WHITE if q == "medium" else RimvaleColors.TEXT_DIM)
+		high_btn.add_theme_color_override("font_color",
+			RimvaleColors.TEXT_WHITE if q == "high" else RimvaleColors.TEXT_DIM)
+
+	low_btn.pressed.connect(func():
+		GameState.dungeon_quality = "low"
+		GameState.save_game()
+		_highlight_q_btns.call())
+	med_btn.pressed.connect(func():
+		GameState.dungeon_quality = "medium"
+		GameState.save_game()
+		_highlight_q_btns.call())
+	high_btn.pressed.connect(func():
+		GameState.dungeon_quality = "high"
+		GameState.save_game()
+		_highlight_q_btns.call())
+
+	qrow.add_child(low_btn)
+	qrow.add_child(med_btn)
+	qrow.add_child(high_btn)
+	_highlight_q_btns.call()
+
+	var q_note := RimvaleUtils.label(
+		"Low: sparse props, smaller 3D viewport — big crawls run faster.\n"
+		+ "Medium: balanced. High: full effects (best on strong hardware).",
+		11, RimvaleColors.TEXT_DIM)
+	q_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(q_note)
+
+	vbox.add_child(RimvaleUtils.separator())
+
 	# ── Encounter Type ───────────────────────────────────────────────────────
 	vbox.add_child(RimvaleUtils.label("Encounter Type", 14, RimvaleColors.TEXT_WHITE))
 
@@ -2148,6 +2243,7 @@ func _build_dungeon_tab(parent: Control) -> void:
 		["Militia Encounter", Color(0.00, 0.51, 0.56, 1.0)],
 		["Mob Encounter",     Color(0.75, 0.44, 0.25, 1.0)],
 		["Custom Monster",    Color(0.80, 0.20, 0.80, 1.0)],
+		["🗺 Dungeon Crawl",  Color(0.30, 0.55, 0.40, 1.0)],
 	]
 	_dd_type_btns.clear()
 	for i in range(type_data.size()):
@@ -2384,7 +2480,32 @@ func _dd_rebuild_config() -> void:
 				mopt.item_selected.connect(func(idx: int) -> void:
 					_dd_custom_monster_idx = idx)
 
-		6: # Siege Warfare
+		6: # Dungeon Crawl
+			var crawl_info = RimvaleUtils.label(
+				"Extended 50×50 dungeon. Enemies don't act until they detect you "
+				+ "(line of sight + perception). Treasure chests scattered throughout — "
+				+ "step on one to loot.",
+				11, RimvaleColors.TEXT_GRAY)
+			crawl_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_dd_config_panel.add_child(crawl_info)
+			# Enemy level slider — same control as Standard.
+			var crow = HBoxContainer.new()
+			crow.add_theme_constant_override("separation", 8)
+			var clbl = RimvaleUtils.label("Enemy Level: %d" % _dd_enemy_level, 13, RimvaleColors.TEXT_WHITE)
+			clbl.custom_minimum_size = Vector2(150, 0)
+			crow.add_child(clbl)
+			var cslider = HSlider.new()
+			cslider.min_value = 1
+			cslider.max_value = 15
+			cslider.step = 1
+			cslider.value = _dd_enemy_level
+			cslider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			cslider.value_changed.connect(func(v: float) -> void:
+				_dd_enemy_level = int(v)
+				clbl.text = "Enemy Level: %d" % _dd_enemy_level)
+			crow.add_child(cslider)
+			_dd_config_panel.add_child(crow)
+		7: # Siege Warfare
 			var info = RimvaleUtils.label(
 				"Assault a fortified position. Break through walls defended by organized forces.",
 				11, RimvaleColors.TEXT_GRAY)
@@ -2482,7 +2603,9 @@ func _dd_launch() -> void:
 			var monster: Dictionary = GameState.custom_monsters[idx]
 			if RimvaleAPI.engine.has_method("start_custom_monster_dungeon"):
 				RimvaleAPI.engine.start_custom_monster_dungeon(handles, monster, _dd_terrain_style)
-		6: # Siege
+		6: # Dungeon Crawl — extended 50×50 with detection AI + treasure chests
+			RimvaleAPI.engine.start_dungeon_crawl(handles, _dd_enemy_level, _dd_terrain_style)
+		7: # Siege (no UI yet; legacy code path)
 			RimvaleAPI.engine.start_siege_dungeon(handles, _dd_siege_tier, _dd_terrain_style)
 	# Spawn recruited allies into the dungeon as friendly entities
 	if GameState.recruited_allies.size() > 0:

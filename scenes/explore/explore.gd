@@ -8,6 +8,8 @@
 extends Control
 
 const _WS = preload("res://autoload/world_systems.gd")
+const RegionalNpcs = preload("res://scenes/explore/regional_npcs.gd")
+const RegionalDialogues = preload("res://scenes/explore/regional_dialogues.gd")
 
 # ── Tile type constants ─────────────────────────────────────────────────────
 const T_ROAD: int      = 0
@@ -84,6 +86,12 @@ var _spawned_npcs: Array = []            # Array of npc data dicts with "pos" Ve
 var _npc_markers: Dictionary = {}        # Vector2i → Node3D marker
 var _npc_positions: Dictionary = {}      # Vector2i → npc data dict (for quick lookup)
 var _skills_used_this_poi: Array = []    # Skills used at current POI (for combo detection)
+
+# ── Regional (permanent) NPCs — see scenes/explore/regional_npcs.gd ────────
+var _spawned_regional_npcs: Array = []          # Copies of NPC dicts, "pos" == current tile
+var _regional_npc_markers: Dictionary = {}      # Vector2i → Node3D
+var _regional_npc_positions: Dictionary = {}    # Vector2i → npc dict (click lookup)
+var _last_schedule_hour_key: int = -1           # Last schedule_key_for_hour we refreshed for
 
 var _region_id: String = ""
 var _subregion: String = ""
@@ -176,6 +184,7 @@ func _ready() -> void:
 	_build_ui()
 	_init_hidden_caches()
 	_init_random_npcs()
+	_populate_regional_npcs()
 
 	# Reset social cooldowns when entering a new subregion
 	GameState.social_cooldowns.clear()
@@ -2347,6 +2356,12 @@ func _try_move(dir: Vector2i) -> void:
 	# Check for hidden caches near new position
 	_check_nearby_caches(new_pos)
 
+	# Check if we stepped on a regional (permanent) NPC — highest priority
+	if _regional_npc_positions.has(new_pos):
+		_stop_auto_walk()
+		_show_regional_npc_panel(_regional_npc_positions[new_pos])
+		return
+
 	# Check if we stepped on a random NPC — stop auto-walk
 	if _npc_positions.has(new_pos):
 		_stop_auto_walk()
@@ -2717,6 +2732,8 @@ func _time_period() -> Array:
 func _advance_time(hours: int = 1) -> bool:
 	_current_hour += hours
 	GameState.explore_current_hour = _current_hour
+	# Re-snap regional NPCs if we've crossed a schedule boundary (6/12/18/0).
+	_refresh_regional_npc_schedule()
 	return _current_hour < 24
 
 func _time_cost_str(hours: int = 1) -> String:
@@ -2858,6 +2875,15 @@ func _show_acf_panel() -> void:
 	var intel_btn := RimvaleUtils.button("🔍 View Intelligence Report", RimvaleColors.CYAN, 38, 12)
 	intel_btn.pressed.connect(func(): _show_intel_panel(_show_acf_panel))
 	_info_vbox.add_child(intel_btn)
+
+	# ── Arcane / Foraging popups (mirror world.gd) ───────────────────────────
+	var rituals_btn := RimvaleUtils.button("✨ Arcane Center (Rituals)…", RimvaleColors.SP_PURPLE, 44, 13)
+	rituals_btn.pressed.connect(_show_rituals_popup)
+	_info_vbox.add_child(rituals_btn)
+
+	var forage_btn := RimvaleUtils.button("🌿 Outpost (Foraging)…", RimvaleColors.CYAN, 44, 13)
+	forage_btn.pressed.connect(_show_foraging_popup)
+	_info_vbox.add_child(forage_btn)
 
 	# Social interactions
 	_add_social_section(_info_vbox, "acf", [
@@ -3019,6 +3045,11 @@ func _show_rest_panel() -> void:
 	)
 	_info_vbox.add_child(save_btn)
 
+	# ── Rituals popup (mirrors world.gd) ─────────────────────────────────────
+	var rituals_btn := RimvaleUtils.button("✨ Arcane Rituals…", RimvaleColors.SP_PURPLE, 44, 13)
+	rituals_btn.pressed.connect(_show_rituals_popup)
+	_info_vbox.add_child(rituals_btn)
+
 	# Social interactions
 	_add_social_section(_info_vbox, "rest", [
 		["Medical", "Tend to Wounds", "heal:full", "Expert care! Everyone is fully restored and refreshed.", "none", "Bandages applied, but the technique was rough. Normal rest is enough.", "🩺"],
@@ -3146,12 +3177,46 @@ func _show_blacksmith_panel() -> void:
 	)
 	_info_vbox.add_child(reinforce_btn)
 
+	# ── Crafting popup (mirrors world.gd's Crafting tab) ─────────────────────
+	var craft_btn := RimvaleUtils.button("🔨 Crafting…", RimvaleColors.GOLD, 44, 13)
+	craft_btn.pressed.connect(_show_crafting_popup)
+	_info_vbox.add_child(craft_btn)
+
 	# Social interactions
 	_add_social_section(_info_vbox, "smith", [
 		["Crafting", "Assist at the Forge", "xp:40", "You work the bellows expertly. The smith is impressed. +40 XP.", "none", "You singe your eyebrows but learn nothing useful.", "🔨"],
 		["Speechcraft", "Negotiate Bulk Deal", "gold:40", "The smith agrees to a standing discount. +40 Gold refund.", "none", "\"I don't do deals. Price is price.\"", "🗣"],
 		["Creature Handling", "Calm the Pack Beast", "xp:30|item:Iron Shield", "The beast settles. The grateful smith gives you a spare shield. +30 XP.", "none", "The beast snorts and you back away carefully.", "🐴"],
 	], _show_blacksmith_panel)
+
+# ── POI Activity Popups ─────────────────────────────────────────────────────
+# These mirror world.gd's matching tabs but run as self-contained dialogs so
+# the player can use them directly from a region-map POI. Each popup
+# instances, displays, and queue_frees itself on hide.
+
+func _show_crafting_popup() -> void:
+	var CraftingPopupScript = preload("res://scenes/popups/crafting_popup.gd")
+	var popup: AcceptDialog = CraftingPopupScript.new()
+	add_child(popup)
+	popup.popup_centered(Vector2i(680, 640))
+
+func _show_foraging_popup() -> void:
+	var ForagingPopupScript = preload("res://scenes/popups/foraging_popup.gd")
+	var popup: AcceptDialog = ForagingPopupScript.new()
+	add_child(popup)
+	popup.popup_centered(Vector2i(520, 560))
+
+func _show_rituals_popup() -> void:
+	var RitualsPopupScript = preload("res://scenes/popups/rituals_popup.gd")
+	var popup: AcceptDialog = RitualsPopupScript.new()
+	add_child(popup)
+	popup.popup_centered(Vector2i(640, 720))
+
+func _show_base_popup() -> void:
+	var BasePopupScript = preload("res://scenes/popups/base_popup.gd")
+	var popup: AcceptDialog = BasePopupScript.new()
+	add_child(popup)
+	popup.popup_centered(Vector2i(600, 640))
 
 # ── Library ─────────────────────────────────────────────────────────────────
 
@@ -3508,6 +3573,11 @@ func _show_town_hall_panel() -> void:
 			gov_name = str(_WS.GOVERNMENT_TYPES[gov_type].get("name", gov_type))
 		_info_vbox.add_child(RimvaleUtils.label("Government: %s" % gov_name, 11, RimvaleColors.TEXT_GRAY))
 	
+	# ── Base Management popup (mirrors world.gd base tab) ───────────────────
+	var base_btn := RimvaleUtils.button("🏛 Base Management…", RimvaleColors.GOLD, 44, 13)
+	base_btn.pressed.connect(_show_base_popup)
+	_info_vbox.add_child(base_btn)
+
 	_info_vbox.add_child(RimvaleUtils.separator())
 	_info_vbox.add_child(RimvaleUtils.label("AVAILABLE RITES", 12, RimvaleColors.ACCENT))
 	
@@ -3775,6 +3845,213 @@ func _build_npc_marker(pos: Vector2i, lineage: String) -> Node3D:
 
 	_world3d_root.add_child(marker)
 	return marker
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Regional (permanent) NPCs — roster from RegionalNpcs, dialogue from
+# RegionalDialogues. Schedule: four waypoints per NPC at 6am/12pm/6pm/12am.
+# ═════════════════════════════════════════════════════════════════════════════
+
+func _populate_regional_npcs() -> void:
+	_spawned_regional_npcs.clear()
+	_regional_npc_positions.clear()
+	# Remove any leftover markers (subregion change)
+	for m in _regional_npc_markers.values():
+		if is_instance_valid(m):
+			m.queue_free()
+	_regional_npc_markers.clear()
+
+	var roster: Array = RegionalNpcs.get_roster(_subregion)
+	if roster.is_empty():
+		return
+
+	var hour: int = _current_hour
+	_last_schedule_hour_key = RegionalNpcs.schedule_key_for_hour(hour)
+
+	for npc_def in roster:
+		var npc: Dictionary = (npc_def as Dictionary).duplicate(true)
+		var target: Vector2i = RegionalNpcs.waypoint_for(npc, hour)
+		# Snap to a walkable non-POI tile if the authored waypoint conflicts.
+		var pos: Vector2i = _snap_to_walkable(target, 4)
+		# Avoid stacking on top of another regional NPC (just let later ones
+		# settle on a neighbor). If truly no free tile, place anyway — tie-break
+		# by NPC id means only one panel will ever open from a shared tile.
+		if _regional_npc_positions.has(pos):
+			pos = _snap_to_walkable(target, 6)
+		npc["pos"] = pos
+		_spawned_regional_npcs.append(npc)
+		_regional_npc_positions[pos] = npc
+
+		var lineage: String = str(npc.get("lineage", "Boreal Human"))
+		var tint: Color = npc.get("portrait_tint", RegionalNpcs.REGIONAL_TINT)
+		var marker := _build_regional_npc_marker(pos, lineage, tint)
+		_regional_npc_markers[pos] = marker
+
+func _refresh_regional_npc_schedule() -> void:
+	if _spawned_regional_npcs.is_empty():
+		return
+	var hour_key: int = RegionalNpcs.schedule_key_for_hour(_current_hour)
+	if hour_key == _last_schedule_hour_key:
+		return  # still in the same slot — no movement yet
+	_last_schedule_hour_key = hour_key
+
+	# Build a new positions dict; move markers; drop any shared-tile conflicts.
+	var new_positions: Dictionary = {}
+	var new_markers: Dictionary = {}
+	for npc in _spawned_regional_npcs:
+		var target: Vector2i = RegionalNpcs.waypoint_for(npc, _current_hour)
+		var pos: Vector2i = _snap_to_walkable(target, 4)
+		if new_positions.has(pos):
+			pos = _snap_to_walkable(target, 6)
+		var old_pos: Vector2i = npc.get("pos", pos)
+		npc["pos"] = pos
+		new_positions[pos] = npc
+
+		var marker = _regional_npc_markers.get(old_pos, null)
+		if marker != null and is_instance_valid(marker):
+			marker.position = _tile_to_world(pos.x, pos.y)
+			new_markers[pos] = marker
+		else:
+			# Marker was somehow gone — rebuild.
+			var lineage: String = str(npc.get("lineage", "Boreal Human"))
+			var tint: Color = npc.get("portrait_tint", RegionalNpcs.REGIONAL_TINT)
+			new_markers[pos] = _build_regional_npc_marker(pos, lineage, tint)
+
+	# Free any markers that didn't get remapped (shouldn't happen, but safe).
+	for old_pos in _regional_npc_markers.keys():
+		if not new_markers.values().has(_regional_npc_markers[old_pos]):
+			var leftover = _regional_npc_markers[old_pos]
+			if is_instance_valid(leftover):
+				leftover.queue_free()
+
+	_regional_npc_positions = new_positions
+	_regional_npc_markers = new_markers
+
+func _build_regional_npc_marker(pos: Vector2i, lineage: String, tint: Color) -> Node3D:
+	var marker := Node3D.new()
+	var world_pos: Vector3 = _tile_to_world(pos.x, pos.y)
+	marker.position = world_pos
+
+	var model: Node3D = CharacterModelBuilder.build_sprite_model(
+		lineage, "None", "None", "None", 0.50, tint)
+	if model != null:
+		model.position.y = 0.0
+		marker.add_child(model)
+	else:
+		var cap := MeshInstance3D.new()
+		var cm := CapsuleMesh.new()
+		cm.radius = 0.12; cm.height = 0.5
+		cap.mesh = cm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = tint
+		mat.emission_enabled = true
+		mat.emission = tint
+		mat.emission_energy_multiplier = 1.0
+		cap.material_override = mat
+		cap.position.y = 0.3
+		marker.add_child(cap)
+
+	# Silver ring icon — distinct from random (gold diamond) & named (cyan).
+	var ring := MeshInstance3D.new()
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.10
+	torus.outer_radius = 0.16
+	ring.mesh = torus
+	ring.position = Vector3(0, 0.75, 0)
+	ring.rotation_degrees = Vector3(90, 0, 0)
+	var ring_mat := StandardMaterial3D.new()
+	ring_mat.albedo_color = Color(0.85, 0.88, 0.95, 0.95)
+	ring_mat.emission_enabled = true
+	ring_mat.emission = Color(0.90, 0.92, 1.0)
+	ring_mat.emission_energy_multiplier = 2.0
+	ring.material_override = ring_mat
+	marker.add_child(ring)
+
+	_world3d_root.add_child(marker)
+	return marker
+
+## Find the nearest walkable, non-POI, non-occupied tile within `radius` of `target`.
+## Returns target itself if already valid, or the closest acceptable tile in a
+## breadth-first spiral. Final fallback: target unchanged.
+func _snap_to_walkable(target: Vector2i, radius: int = 4) -> Vector2i:
+	if _tile_is_placeable(target):
+		return target
+	for r in range(1, radius + 1):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if abs(dx) != r and abs(dy) != r:
+					continue  # only the outer ring each pass
+				var p := Vector2i(target.x + dx, target.y + dy)
+				if _tile_is_placeable(p):
+					return p
+	return target
+
+func _tile_is_placeable(p: Vector2i) -> bool:
+	if p.x < 1 or p.y < 1 or p.x >= GRID_W - 1 or p.y >= GRID_H - 1:
+		return false
+	if not _is_walkable(p.x, p.y):
+		return false
+	if _poi_map.has(p):
+		return false
+	if _hidden_cache_map.has(p):
+		return false
+	if _npc_positions.has(p):
+		return false
+	return true
+
+func _show_regional_npc_panel(npc: Dictionary) -> void:
+	_clear_info()
+	var npc_name: String = str(npc.get("name", "Stranger"))
+	var lineage: String = str(npc.get("lineage", "Unknown"))
+	var role: String = str(npc.get("role", ""))
+	var npc_id: String = str(npc.get("id", npc_name))
+	var state: Dictionary = GameState.get_regional_npc_state(npc_id)
+	var trust: int = int(state.get("trust", 0))
+
+	_info_vbox.add_child(RimvaleUtils.label(
+		"👤  " + npc_name, 16, npc.get("portrait_tint", RegionalNpcs.REGIONAL_TINT)))
+	var sub: String = lineage
+	if role != "":
+		sub += " — " + role
+	_info_vbox.add_child(RimvaleUtils.label(sub, 11, RimvaleColors.TEXT_GRAY))
+	_info_vbox.add_child(RimvaleUtils.label(
+		"Trust: %d" % trust, 11,
+		RimvaleColors.HP_GREEN if trust > 0 else (RimvaleColors.DANGER if trust < 0 else RimvaleColors.TEXT_DIM)))
+	_info_vbox.add_child(RimvaleUtils.separator())
+	_add_time_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.spacer(4))
+
+	# Talk → kick off the dialogue tree, if one is registered.
+	var tree_id: String = str(npc.get("dialogue_tree_id", ""))
+	if tree_id != "" and RegionalDialogues.has_tree(tree_id):
+		var talk_btn := RimvaleUtils.button(
+			"💬 Talk with " + npc_name.split(" ")[0] + " %s" % _time_cost_str(),
+			RimvaleColors.CYAN, 44, 13)
+		var cap_npc: Dictionary = npc
+		var cap_tree_id: String = tree_id
+		talk_btn.pressed.connect(func():
+			if not _try_action(func(): _show_regional_npc_panel(cap_npc)): return
+			state["last_interaction_ts"] = int(Time.get_unix_time_from_system())
+			_start_dialogue(
+				RegionalDialogues.get_tree(cap_tree_id),
+				func(): _show_regional_npc_panel(cap_npc))
+		)
+		_info_vbox.add_child(talk_btn)
+	else:
+		_info_vbox.add_child(RimvaleUtils.label(
+			"(No dialogue yet — content pending.)", 10, RimvaleColors.TEXT_DIM))
+
+	# Small skill-check social row (optional per-NPC override, else sensible defaults).
+	var social_actions: Array = npc.get("social_actions", [
+		["Intuition", "Read their mood", "xp:20",
+			"You read the room. %s softens, just a little. +20 XP." % npc_name, "none",
+			"Their face betrays nothing. You learn little.", "🧐"],
+		["Speechcraft", "Share a passing pleasantry", "rep:Crown:1",
+			"A warm exchange. The locals mark you as someone who remembers faces.",
+			"none", "They nod politely and move on.", "🗣"],
+	])
+	var cap_npc2: Dictionary = npc
+	_add_social_section(_info_vbox, "regional_" + npc_id, social_actions,
+		func(): _show_regional_npc_panel(cap_npc2))
 
 func _show_npc_panel(npc: Dictionary) -> void:
 	_clear_info()

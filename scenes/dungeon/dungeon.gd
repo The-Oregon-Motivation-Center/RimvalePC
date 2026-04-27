@@ -23,6 +23,12 @@ var _c_wall:      Color = Color(0.22, 0.20, 0.18)
 var _c_obstacle:  Color = Color(0.30, 0.25, 0.20)
 var _c_accent:    Color = Color(0.55, 0.45, 0.30)
 
+# Render style — "classic" or "region" — read from GameState on load.
+# Classic = grid-token tactical render (current behavior).
+# Region  = region-map-styled render (procedural terrain, atmosphere, props)
+#           — see _apply_region_style_overrides() for the visual deltas.
+var _render_style: String = "classic"
+
 # Biome metadata from palette
 var _biome_prop_set:     String = "cave"
 var _biome_light_color:  Color  = Color(1.0, 0.65, 0.25)
@@ -145,7 +151,10 @@ var _multi_target_list: Array     = []   # array of entity id strings
 var _multi_target_max: int        = 1
 var _multi_target_friendly: bool  = true
 
-const MAP_SIZE: int  = 25
+## Map size — read from the engine on load. Standard dungeons = 25,
+## Dungeon Crawl mode = 50 (or whatever the engine sets). All rendering /
+## fog / pathfinding loops use this var directly. Synced via _sync_map_size().
+var MAP_SIZE: int = 25
 const TILE_SIZE: int = 32
 
 # Tile colours
@@ -248,6 +257,27 @@ var _scroll:           ScrollContainer # unused in 3D mode (kept for compat)
 
 # ── 3D Rendering ──────────────────────────────────────────────────────────────
 var _viewport_3d:       SubViewport    = null
+# Cached on map load from GameState.dungeon_quality. Drives prop density,
+# viewport size, and shadow toggles in the region-style render path.
+# Values: "low" / "medium" / "high".
+var _quality: String = "medium"
+
+# ── Render-distance culling (chunked rendering) ────────────────────────────
+# Big crawl maps don't need every tile drawn — only tiles within Chebyshev
+# `_render_radius` of ANY player are built into the scene. When a player
+# moves `_render_chunk_step` tiles from the last anchor, set _map_dirty so
+# the next _update_3d_view rebuilds the visible chunk.
+# Disabled (radius=0 / step=0) for standard 25×25 dungeons; auto-enables at
+# MAP_SIZE > 30 (i.e., crawl).
+var _render_radius:     int = 0
+var _render_chunk_step: int = 0
+# Per-player anchor tile recorded the last time tiles were rebuilt.
+var _last_render_anchors: Array = []
+# Region-style prop root — populated only when _render_style == "region".
+# Holds grass tufts, stone cornices, streetlamps, benches, and the daylight
+# DirectionalLight. Lives as a child of _world3d_root, cleared + rebuilt
+# whenever _rebuild_region_style_props() runs.
+var _region_prop_root:  Node3D         = null
 var _cam3d:             Camera3D       = null
 var _world3d_root:      Node3D         = null
 var _tile_root:         Node3D         = null
@@ -338,7 +368,41 @@ func _ready() -> void:
 			_map = _e.get_dungeon_map()
 	_fog       = _e.get_dungeon_fog()
 	_elevation = _e.get_dungeon_elevation_map()
+	# Pull map size from the engine so Dungeon Crawl's 50×50 layout drives
+	# all the rendering / camera / fog loops correctly.
+	if _e.get("MAP_SIZE") != null:
+		MAP_SIZE = int(_e.get("MAP_SIZE"))
 	_load_terrain_palette()
+
+	# Read the render-style toggle from GameState. Set on the world Dungeon
+	# tab (Classic / Region Map Style). "region" swaps in explore-map visuals.
+	_render_style = str(GameState.get("dungeon_render_style"))
+	if _render_style != "region":
+		_render_style = "classic"
+	# Render-quality preference (low / medium / high).
+	_quality = str(GameState.get("dungeon_quality"))
+	if not (_quality == "low" or _quality == "medium" or _quality == "high"):
+		_quality = "medium"
+	# Render-distance culling — only enabled on big maps. Radius is now the
+	# Chebyshev half-width of the visible chunk; the rendered area is a
+	# (2 × radius + 1) square. Smaller chunks = less per-rebuild work and
+	# tighter draw budget. Chunk step is the move-distance threshold that
+	# retriggers the rebuild — small step keeps the chunk centered on the
+	# party as they walk, so edges don't visibly pop in.
+	if MAP_SIZE > 30:
+		match _quality:
+			"low":  _render_radius = 6     # 13×13 visible chunk
+			"high": _render_radius = 10    # 21×21
+			_:      _render_radius = 8     # 17×17
+		_render_chunk_step = 2
+	else:
+		_render_radius = 0     # 0 disables culling entirely
+		_render_chunk_step = 0
+	_last_render_anchors.clear()
+	print("[Dungeon] render style = %s, quality = %s, map = %d×%d, cull radius = %d"
+		% [_render_style, _quality, MAP_SIZE, MAP_SIZE, _render_radius])
+	if _render_style == "region":
+		_apply_region_style_overrides()
 
 	_build_ui()
 	_build_banner()
@@ -422,12 +486,515 @@ func _load_terrain_palette() -> void:
 	_biome_fog_color    = Color(float(fc2[0]), float(fc2[1]), float(fc2[2]))
 	_biome_fog_density  = float(pal.get("fog_density", 0.3))
 
+## Override dungeon palette + biome atmosphere with region-map-styled values
+## when the "Region Map Style" toggle is active on the world Dungeon tab.
+##
+## The region-map look in explore.gd has brighter, higher-contrast floors,
+## plaza/park accents, gentler fog, warmer ambient light, and procedural
+## building silhouettes. This function substitutes those values so the same
+## dungeon layout reads as an outdoor/urban region rather than a cavern.
+##
+## Phase 1 (this pass): palette + atmosphere overrides — makes the dungeon
+##   feel visually region-ish without changing the grid/combat logic.
+## Phase 2 (TBD): port explore.gd's procedural building + POI props into
+##   dungeon.gd via a new `_build_region_style_scene()` that runs after
+##   `_first_3d_build()` when `_render_style == "region"`.
+func _apply_region_style_overrides() -> void:
+	# Brighter, higher-saturation floor colors reminiscent of explore.gd.
+	_c_floor     = Color(0.42, 0.55, 0.35)   # grassy green (vs. cave brown)
+	_c_floor_alt = Color(0.48, 0.60, 0.38)
+	_c_wall      = Color(0.26, 0.35, 0.42)   # cool stone instead of near-black
+	_c_obstacle  = Color(0.38, 0.42, 0.30)
+	_c_accent    = Color(0.72, 0.60, 0.30)   # warm path/road color
+
+	# Biome overrides — push toward the outdoor explore vibe.
+	_biome_prop_set     = "region_outdoor"   # consumed by prop-spawner; unknown keys gracefully skip
+	_biome_wall_style   = "stone_block"
+	_biome_ceiling      = "open_sky"
+	_biome_light_color  = Color(1.0, 0.92, 0.78)   # daylight cream
+	_biome_light_energy = 3.4
+	_biome_fog_color    = Color(0.70, 0.82, 0.92)  # soft sky haze
+	_biome_fog_density  = 0.12                      # much thinner than cave fog
+
+	# Camera — match explore.gd's framing so dungeon tiles read at the same
+	# on-screen size as region-map tiles. Tile meshes are already 1:1 with
+	# the region grid (both ~0.98 world units), so the only thing that
+	# made dungeon tiles feel small was the farther camera distance + a
+	# steeper pitch. Pulling in closer + lowering the pitch matches explore.
+	_cam_dist  = 10.0   # was 24.0
+	_cam_pitch = 40.0   # was 55.0
+
+## Rebuild the Region-Style prop overlay. Runs after the classic tile/wall
+## rebuild when _render_style == "region". Adds outdoor visuals on top of
+## the base tiles without modifying classic code paths.
+##
+## What it spawns:
+##   - Daylight DirectionalLight (warm cream)
+##   - Grass tufts on walkable tiles (sparse, deterministic)
+##   - Stone cornices on wall edges facing walkable tiles
+##   - Streetlamps at regular intervals on walkable tiles
+##   - Wooden benches at a handful of scripted spots
+##   - Path markings (thin accent boxes) to suggest streets
+##
+## Everything is parented to _region_prop_root so toggling back to classic
+## wipes it cleanly. Uses deterministic RNG seeded by MAP_SIZE so repeated
+## rebuilds look stable across the session.
+## Returns true when `(tx, ty)` is within `_render_radius` Chebyshev distance
+## of ANY living player. When `_render_radius == 0` (standard 25×25 maps),
+## returns true unconditionally — culling is off.
+func _tile_in_render_radius(tx: int, ty: int) -> bool:
+	if _render_radius <= 0:
+		return true
+	for ent in _entities:
+		if not bool(ent.get("is_player", false)):
+			continue
+		if bool(ent.get("is_dead", false)):
+			continue
+		var dx: int = absi(int(ent["x"]) - tx)
+		var dy: int = absi(int(ent["y"]) - ty)
+		if maxi(dx, dy) <= _render_radius:
+			return true
+	return false
+
+## Snapshot every live player's tile, used to compare against last frame's
+## rebuild anchors. Returns an Array of Vector2i.
+func _current_player_anchors() -> Array:
+	var out: Array = []
+	for ent in _entities:
+		if bool(ent.get("is_player", false)) and not bool(ent.get("is_dead", false)):
+			out.append(Vector2i(int(ent["x"]), int(ent["y"])))
+	return out
+
+## True if any live player has moved `_render_chunk_step` or more tiles from
+## their position at the last rebuild. Trips a re-render so the visible
+## chunk slides with the party.
+func _player_moved_past_chunk_step() -> bool:
+	if _render_chunk_step <= 0:
+		return false
+	var current: Array = _current_player_anchors()
+	# First call after load — record and don't trigger.
+	if _last_render_anchors.is_empty() or _last_render_anchors.size() != current.size():
+		_last_render_anchors = current.duplicate()
+		return false
+	for i in range(current.size()):
+		var c: Vector2i = current[i]
+		var last: Vector2i = _last_render_anchors[i]
+		var dx: int = absi(c.x - last.x)
+		var dy: int = absi(c.y - last.y)
+		if maxi(dx, dy) >= _render_chunk_step:
+			_last_render_anchors = current.duplicate()
+			return true
+	return false
+
+func _rebuild_region_style_props() -> void:
+	if _region_prop_root == null:
+		return
+	# Clear any previous pass.
+	for c in _region_prop_root.get_children():
+		c.free()
+	if _map.is_empty():
+		return
+
+	# ── Daylight ────────────────────────────────────────────────────────────
+	# Warm cream directional + a soft blue fill, mirroring explore.gd's
+	# outdoor lighting. These stack on top of the existing dungeon lights —
+	# combined effect is a notably brighter, less-cavernous scene.
+	# Shadow casting is the single biggest perf cost on big maps; only
+	# enabled on High quality.
+	var sun := DirectionalLight3D.new()
+	sun.light_color   = Color(1.00, 0.92, 0.78)   # daylight cream
+	sun.light_energy  = 1.30
+	sun.shadow_enabled = (_quality == "high")
+	sun.rotation_degrees = Vector3(-55.0, 35.0, 0.0)
+	_region_prop_root.add_child(sun)
+
+	var sky_fill := DirectionalLight3D.new()
+	sky_fill.light_color   = Color(0.75, 0.85, 1.00)
+	sky_fill.light_energy  = 0.40
+	sky_fill.shadow_enabled = false
+	sky_fill.rotation_degrees = Vector3(30.0, -150.0, 0.0)
+	_region_prop_root.add_child(sky_fill)
+
+	# ── Deterministic RNG (stable visuals across rebuilds) ──────────────────
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 424242 + int(MAP_SIZE)
+
+	# ── Density tuning ──────────────────────────────────────────────────────
+	# A 50×50 crawl is 4× the area of a 25×25 standard, so the standard
+	# density values would multiply prop count by 4 too. Auto-shrink density
+	# in big maps + further by quality preference.
+	# Final prop density factor (multiplies the per-tile spawn chances).
+	var density_mul: float = 1.0
+	if MAP_SIZE > 30:
+		density_mul *= 0.45        # crawl mode = sparser baseline
+	match _quality:
+		"low":  density_mul *= 0.50
+		"high": density_mul *= 1.00
+		_:      density_mul *= 0.85  # medium = mild trim
+	# Lamppost spacing in tiles. Wider spacing = fewer lights = cheaper.
+	var lamp_spacing: int = 6
+	if MAP_SIZE > 30:
+		lamp_spacing = 10
+	if _quality == "low":
+		lamp_spacing = maxi(lamp_spacing + 4, 12)
+	# Skip cornices entirely on low quality (they're per-wall-tile).
+	var draw_cornices: bool = _quality != "low"
+	# Bench chance per tile.
+	var bench_chance: float = 0.02 * density_mul
+	# Path-mark chance per qualifying tile.
+	var path_chance: float = 0.35 * density_mul
+	# Grass chance per walkable tile.
+	var grass_chance: float = 0.22 * density_mul
+
+	# Pre-built meshes reused across tiles.
+	var grass_blade := BoxMesh.new()
+	grass_blade.size = Vector3(0.04, 0.14, 0.04)
+	var cornice_mesh := BoxMesh.new()
+	cornice_mesh.size = Vector3(0.98, 0.10, 0.22)
+	var lamp_post_mesh := CylinderMesh.new()
+	lamp_post_mesh.top_radius = 0.04
+	lamp_post_mesh.bottom_radius = 0.05
+	lamp_post_mesh.height = 0.90
+	var lamp_bulb_mesh := SphereMesh.new()
+	lamp_bulb_mesh.radius = 0.10
+	lamp_bulb_mesh.height = 0.20
+	var bench_seat_mesh := BoxMesh.new()
+	bench_seat_mesh.size = Vector3(0.55, 0.06, 0.18)
+	var bench_leg_mesh := BoxMesh.new()
+	bench_leg_mesh.size = Vector3(0.05, 0.20, 0.05)
+	var path_mark_mesh := BoxMesh.new()
+	path_mark_mesh.size = Vector3(0.12, 0.02, 0.40)
+
+	# Shared materials.
+	var path_mat := _make_mat(Color(0.82, 0.74, 0.40), 0.0, 0.80)
+	var cornice_mat := _make_mat(Color(0.62, 0.66, 0.58), 0.0, 0.70)
+	var lamp_post_mat := _make_mat(Color(0.20, 0.17, 0.14), 0.1, 0.45)
+	var lamp_bulb_mat := _make_mat(
+		Color(1.0, 0.90, 0.55), 0.0, 0.25,
+		Color(1.0, 0.85, 0.45), 1.8)
+	var bench_wood_mat := _make_mat(Color(0.50, 0.32, 0.18), 0.0, 0.75)
+	var bench_leg_mat  := _make_mat(Color(0.30, 0.22, 0.14), 0.1, 0.60)
+
+	# ── Walk the map ────────────────────────────────────────────────────────
+	# Render-distance culling: skip tiles outside the live render chunk on
+	# big maps. Saves ~75% of prop work on a 50×50 crawl.
+	for ty in range(MAP_SIZE):
+		for tx in range(MAP_SIZE):
+			if not _tile_in_render_radius(tx, ty):
+				continue
+			var idx: int = ty * MAP_SIZE + tx
+			var tile: int = _map[idx]
+			var cx: float = float(tx) + 0.5
+			var cz: float = float(ty) + 0.5
+			var is_walkable: bool = (tile == 1)
+
+			if is_walkable:
+				# Grass tufts — density-scaled, 2–4 blades each.
+				if rng.randf() < grass_chance:
+					var blade_count: int = rng.randi_range(2, 4)
+					for b in range(blade_count):
+						var ox: float = rng.randf_range(-0.30, 0.30)
+						var oz: float = rng.randf_range(-0.30, 0.30)
+						var blade_col := Color(
+							0.16 + rng.randf() * 0.08,
+							0.48 + rng.randf() * 0.12,
+							0.14 + rng.randf() * 0.06)
+						var blade_mat := _make_mat(blade_col, 0.0, 0.85)
+						_make_mesh_inst(grass_blade, blade_mat,
+							cx + ox, 0.15 + rng.randf() * 0.03, cz + oz,
+							_region_prop_root)
+				# Path markings — every 4th tile diagonally, density-scaled.
+				if (tx + ty) % 4 == 0 and rng.randf() < path_chance:
+					_make_mesh_inst(path_mark_mesh, path_mat,
+						cx, 0.11, cz, _region_prop_root)
+				# Streetlamps — spacing scales with map size + quality.
+				if (tx % lamp_spacing == 2) and (ty % lamp_spacing == 2):
+					# Post
+					_make_mesh_inst(lamp_post_mesh, lamp_post_mat,
+						cx, 0.55, cz, _region_prop_root)
+					# Bulb
+					_make_mesh_inst(lamp_bulb_mesh, lamp_bulb_mat,
+						cx, 1.05, cz, _region_prop_root)
+					# Actual point light
+					var lamp := OmniLight3D.new()
+					lamp.light_color = Color(1.0, 0.92, 0.60)
+					lamp.light_energy = 0.8
+					lamp.omni_range = 4.0
+					lamp.position = Vector3(cx, 1.05, cz)
+					_region_prop_root.add_child(lamp)
+				# Benches — density-scaled.
+				if rng.randf() < bench_chance:
+					var bench := Node3D.new()
+					bench.position = Vector3(cx, 0.0, cz)
+					bench.rotation_degrees = Vector3(0.0, float(rng.randi_range(0, 3)) * 90.0, 0.0)
+					_region_prop_root.add_child(bench)
+					# Seat
+					var seat := MeshInstance3D.new()
+					seat.mesh = bench_seat_mesh
+					seat.set_surface_override_material(0, bench_wood_mat)
+					seat.position = Vector3(0.0, 0.23, 0.0)
+					bench.add_child(seat)
+					# Legs
+					for sx in [-0.22, 0.22]:
+						for sz in [-0.07, 0.07]:
+							var leg := MeshInstance3D.new()
+							leg.mesh = bench_leg_mesh
+							leg.set_surface_override_material(0, bench_leg_mat)
+							leg.position = Vector3(sx, 0.10, sz)
+							bench.add_child(leg)
+			else:
+				# Wall-adjacency cornice: if this wall tile has a walkable
+				# neighbour, add a stone cornice facing that neighbour.
+				# Skipped entirely on Low quality (cornices = per-wall mesh).
+				if not draw_cornices:
+					continue
+				var n := _region_wall_walkable_neighbour(tx, ty)
+				if n != Vector2i.ZERO:
+					var c_pos_x: float = cx + float(n.x) * 0.40
+					var c_pos_z: float = cz + float(n.y) * 0.40
+					var cornice := MeshInstance3D.new()
+					cornice.mesh = cornice_mesh
+					cornice.set_surface_override_material(0, cornice_mat)
+					cornice.position = Vector3(c_pos_x, 1.30, c_pos_z)
+					# Rotate cornice to run along the wall face.
+					if n.x != 0:
+						cornice.rotation_degrees = Vector3(0.0, 90.0, 0.0)
+					_region_prop_root.add_child(cornice)
+
+	# Phase 3: building signposts from flood-filled wall clusters.
+	_spawn_region_building_signposts(rng)
+
+## Phase 3: procedural building signposts from connected wall clusters.
+## Flood-fill connected wall tiles into "buildings"; for each building with
+## enough tiles, pick a signpost position on a visible edge and spawn a
+## name + glow so the cluster reads as a named building, not just a wall.
+const _REGION_BUILDING_NAMES: Array = [
+	"Guildhall",      "Stonemarket",   "Ironward Watch",   "Bellwether Hall",
+	"The Veiled Inn", "Corvus Archive","Emberforge",        "Candlegate Chapel",
+	"Wayfarer's Rest","Tallow & Thread","Lighthouse Ward",  "Almsgiver's Door",
+	"Crow's Assembly","Mint Annex",    "Harvest Vault",     "Salter's Row",
+	"The Ashen Bough","Velvet Warren", "Loom Ward",         "Knotgate",
+]
+
+func _spawn_region_building_signposts(rng: RandomNumberGenerator) -> void:
+	if _map.is_empty() or _region_prop_root == null:
+		return
+
+	# Flood-fill wall tiles into contiguous clusters.
+	var visited: Dictionary = {}
+	var clusters: Array = []
+	for ty in range(MAP_SIZE):
+		for tx in range(MAP_SIZE):
+			var idx: int = ty * MAP_SIZE + tx
+			if _map[idx] == 1:
+				continue
+			var key: int = tx * MAP_SIZE + ty
+			if visited.has(key):
+				continue
+			# BFS this wall cluster.
+			var cluster: Array = []
+			var queue: Array = [Vector2i(tx, ty)]
+			visited[key] = true
+			while queue.size() > 0:
+				var p: Vector2i = queue.pop_front()
+				cluster.append(p)
+				for d in [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]:
+					var nx: int = p.x + d.x
+					var ny: int = p.y + d.y
+					if nx < 0 or ny < 0 or nx >= MAP_SIZE or ny >= MAP_SIZE:
+						continue
+					var nidx: int = ny * MAP_SIZE + nx
+					if nidx < 0 or nidx >= _map.size():
+						continue
+					if _map[nidx] == 1:
+						continue
+					var nkey: int = nx * MAP_SIZE + ny
+					if visited.has(nkey):
+						continue
+					visited[nkey] = true
+					queue.append(Vector2i(nx, ny))
+			if cluster.size() >= 4:
+				clusters.append(cluster)
+
+	# Performance: in big maps + low quality, skip the warm OmniLight per
+	# signpost (the post + plate still render). 50×50 with 30 wall clusters
+	# was dropping ~30 lights — too many for low-end hardware.
+	var attach_signpost_light: bool = true
+	if MAP_SIZE > 30 and _quality == "low":
+		attach_signpost_light = false
+	# Hard cap on signpost lights regardless of quality.
+	var max_signpost_lights: int = 12 if _quality == "high" else (8 if _quality == "medium" else 4)
+	var signpost_lights_used: int = 0
+
+	# For each qualifying cluster, spawn one signpost on the edge facing
+	# the most walkable neighbours — feels like a building's "front door".
+	var name_idx: int = rng.randi_range(0, _REGION_BUILDING_NAMES.size() - 1)
+	var post_mesh := CylinderMesh.new()
+	post_mesh.top_radius = 0.04
+	post_mesh.bottom_radius = 0.05
+	post_mesh.height = 0.80
+	var plate_mesh := BoxMesh.new()
+	plate_mesh.size = Vector3(1.10, 0.28, 0.05)
+	var post_mat := _make_mat(Color(0.38, 0.30, 0.22), 0.0, 0.75)
+	var plate_mat := _make_mat(
+		Color(0.92, 0.82, 0.55), 0.0, 0.45,
+		Color(0.85, 0.72, 0.45), 0.8)
+
+	for cluster in clusters:
+		# Cull: only spawn signposts for clusters whose centroid is within
+		# the live render chunk. Distant buildings show their wall meshes
+		# (already culled) but no glowing signs that would betray them.
+		if _render_radius > 0:
+			var any_in_radius: bool = false
+			for ct in cluster:
+				if _tile_in_render_radius(ct.x, ct.y):
+					any_in_radius = true
+					break
+			if not any_in_radius:
+				continue
+		# Find the wall tile in this cluster whose neighbour-count of
+		# walkable tiles is highest — that's the "front" of the building.
+		var best_tile: Vector2i = cluster[0]
+		var best_face: Vector2i = Vector2i.ZERO
+		var best_score: int = -1
+		for p in cluster:
+			var score: int = 0
+			var first_walkable: Vector2i = Vector2i.ZERO
+			for d in [Vector2i(0,-1), Vector2i(0,1), Vector2i(1,0), Vector2i(-1,0)]:
+				var nx: int = p.x + d.x
+				var ny: int = p.y + d.y
+				if nx < 0 or ny < 0 or nx >= MAP_SIZE or ny >= MAP_SIZE:
+					continue
+				var nidx: int = ny * MAP_SIZE + nx
+				if _map[nidx] == 1:
+					score += 1
+					if first_walkable == Vector2i.ZERO:
+						first_walkable = d
+			if score > best_score:
+				best_score = score
+				best_tile = p
+				best_face = first_walkable
+		if best_score <= 0 or best_face == Vector2i.ZERO:
+			continue  # fully enclosed wall, no signpost
+
+		# Drop the signpost on the walkable tile adjacent to best_tile's face
+		# so it reads as standing in front of the building.
+		var sx: float = float(best_tile.x) + 0.5 + float(best_face.x) * 0.55
+		var sz: float = float(best_tile.y) + 0.5 + float(best_face.y) * 0.55
+
+		# Post.
+		_make_mesh_inst(post_mesh, post_mat, sx, 0.50, sz, _region_prop_root)
+
+		# Name plate — rotated to face toward the walkable tile.
+		var plate := MeshInstance3D.new()
+		plate.mesh = plate_mesh
+		plate.set_surface_override_material(0, plate_mat)
+		plate.position = Vector3(sx, 1.05, sz)
+		if best_face.x != 0:
+			plate.rotation_degrees = Vector3(0.0, 90.0, 0.0)
+		_region_prop_root.add_child(plate)
+
+		# Small warm accent light at the plate so signs glow at night.
+		# Capped on big maps / low quality to keep light count reasonable.
+		if attach_signpost_light and signpost_lights_used < max_signpost_lights:
+			var accent := OmniLight3D.new()
+			accent.light_color = Color(1.0, 0.85, 0.55)
+			accent.light_energy = 0.5
+			accent.omni_range = 2.2
+			accent.position = Vector3(sx, 1.15, sz)
+			_region_prop_root.add_child(accent)
+			signpost_lights_used += 1
+
+		# Tint the plate by cluster size: bigger buildings get richer plates.
+		var tier: int = clampi(cluster.size() / 6, 0, 2)
+		match tier:
+			1:
+				plate.set_surface_override_material(0, _make_mat(
+					Color(0.95, 0.76, 0.42), 0.05, 0.45,
+					Color(0.95, 0.72, 0.35), 1.0))
+			2:
+				plate.set_surface_override_material(0, _make_mat(
+					Color(0.95, 0.62, 0.32), 0.15, 0.40,
+					Color(0.95, 0.60, 0.28), 1.3))
+
+		# Rotate the name-pool index for variety across clusters.
+		name_idx = (name_idx + 1) % _REGION_BUILDING_NAMES.size()
+
+## Helper: if tile (tx, ty) is a wall, return the direction (as a unit
+## Vector2i) of the first walkable neighbour, or Vector2i.ZERO if none.
+## Used to orient cornices along the outward face of a wall.
+func _region_wall_walkable_neighbour(tx: int, ty: int) -> Vector2i:
+	# Priority order: N, S, E, W. Returns the step direction from the wall
+	# TOWARD the walkable tile so the cornice hangs over that edge.
+	var candidates: Array = [
+		Vector2i(0, -1), Vector2i(0, 1),
+		Vector2i(1, 0),  Vector2i(-1, 0),
+	]
+	for d in candidates:
+		var nx: int = tx + d.x
+		var ny: int = ty + d.y
+		if nx < 0 or ny < 0 or nx >= MAP_SIZE or ny >= MAP_SIZE:
+			continue
+		var nidx: int = ny * MAP_SIZE + nx
+		if nidx < 0 or nidx >= _map.size():
+			continue
+		if _map[nidx] == 1:
+			return d
+	return Vector2i.ZERO
+
 ## Update WorldEnvironment to match current biome palette.
 func _update_biome_environment() -> void:
 	if _env_node == null: return
 	var env: Environment = _env_node.environment
 	if env == null: return
 
+	# Region Map Style: outdoor sky environment overrides cavern darkness.
+	# Background switches to a procedural sky; ambient light, fog, and glow
+	# are all tuned for daylight rather than torchlight.
+	if _render_style == "region":
+		env.background_mode = Environment.BG_SKY
+		var sky_res: Sky = env.sky
+		if sky_res == null:
+			sky_res = Sky.new()
+			env.sky = sky_res
+		var proc_mat: ProceduralSkyMaterial = sky_res.sky_material as ProceduralSkyMaterial
+		if proc_mat == null:
+			proc_mat = ProceduralSkyMaterial.new()
+			sky_res.sky_material = proc_mat
+		# Bright daylight sky — a touch of warmth in the sun zone, soft
+		# horizon haze, deep cool blue overhead.
+		proc_mat.sky_top_color     = Color(0.45, 0.62, 0.86)
+		proc_mat.sky_horizon_color = Color(0.78, 0.86, 0.92)
+		proc_mat.sky_curve         = 0.15
+		proc_mat.sky_energy_multiplier = 1.00
+		proc_mat.ground_bottom_color = Color(0.30, 0.32, 0.28)
+		proc_mat.ground_horizon_color = Color(0.62, 0.66, 0.60)
+		proc_mat.ground_curve      = 0.05
+		proc_mat.ground_energy_multiplier = 1.00
+		proc_mat.sun_angle_max     = 30.0
+		proc_mat.sun_curve         = 0.05
+		# Daylight ambient — strong cream, mild fog, gentle bloom.
+		env.ambient_light_color = Color(0.82, 0.85, 0.78)
+		env.ambient_light_energy = 1.10
+		env.fog_enabled = true
+		env.fog_light_color = Color(0.78, 0.86, 0.92)
+		env.fog_density = 0.012   # very thin haze, not soup
+		env.glow_enabled = true
+		env.glow_intensity = 0.65
+		env.glow_bloom = 0.18
+		# Update directional lights to daylight too — even if the cavern
+		# pass set them, they get overridden in region mode.
+		for child in _world3d_root.get_children():
+			if child is DirectionalLight3D:
+				if child.name == "SunLight":
+					child.light_color = Color(1.00, 0.95, 0.82)
+					child.light_energy = 1.20
+				elif child.name == "FillLight":
+					child.light_color = Color(0.75, 0.85, 1.00)
+					child.light_energy = 0.40
+		return
+
+	# Classic / cavern path (unchanged):
 	# Background — derived from biome fog color, deeper
 	env.background_color = _biome_fog_color.darkened(0.6)
 
@@ -2139,7 +2706,12 @@ func _build_center_panel() -> Control:
 
 	# SubViewport — hosts the 3D world (fixed internal resolution; stretched to container by svc)
 	_viewport_3d = SubViewport.new()
-	_viewport_3d.size = Vector2i(1024, 768)  # fixed internal resolution
+	# Internal 3D resolution scales with quality. Lower = much cheaper to
+	# render, especially on big crawl maps. 768×576 ≈ 56% of 1024×768 px.
+	match _quality:
+		"low":  _viewport_3d.size = Vector2i(768, 576)
+		"high": _viewport_3d.size = Vector2i(1280, 960)
+		_:      _viewport_3d.size = Vector2i(1024, 768)
 	_viewport_3d.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_viewport_3d.transparent_bg = false
 	svc.add_child(_viewport_3d)
@@ -2207,6 +2779,7 @@ func _build_center_panel() -> Control:
 	_torch_root   = Node3D.new(); _torch_root.name   = "Torches";  _world3d_root.add_child(_torch_root)
 	_fog_root     = Node3D.new(); _fog_root.name     = "Fog";      _world3d_root.add_child(_fog_root)
 	_particle_root = Node3D.new(); _particle_root.name = "Particles"; _world3d_root.add_child(_particle_root)
+	_region_prop_root = Node3D.new(); _region_prop_root.name = "RegionProps"; _world3d_root.add_child(_region_prop_root)
 
 	return bg
 
@@ -2818,10 +3391,24 @@ func _on_loot_take_all() -> void:
 ## Called everywhere queue_redraw() was previously called.
 func _update_3d_view() -> void:
 	if _viewport_3d == null: return
+	# When render-distance culling is on, retrigger a rebuild as the player
+	# walks past chunk boundaries so the visible "live chunk" slides with
+	# the party. Cheap check (Chebyshev compare, returns immediately when
+	# culling is disabled).
+	if _player_moved_past_chunk_step():
+		_map_dirty = true
 	if _map_dirty:
 		_rebuild_3d_tiles()
 		_rebuild_3d_torches()
 		_rebuild_3d_ambience()
+		# Region Map Style: layer outdoor props + daylight on top of the
+		# classic render (palette already tuned via _apply_region_style_overrides).
+		if _render_style == "region":
+			_rebuild_region_style_props()
+		elif _region_prop_root != null:
+			# Clean up any leftover region props when returning to classic.
+			for c in _region_prop_root.get_children():
+				c.free()
 		_map_dirty = false
 	_update_3d_entities()
 	_update_3d_overlays()
@@ -2902,6 +3489,11 @@ func _rebuild_3d_tiles() -> void:
 
 	for ty in range(MAP_SIZE):
 		for tx in range(MAP_SIZE):
+			# Render-distance culling — skip tiles far from any player on big
+			# maps. _tile_in_render_radius returns true unconditionally when
+			# culling is disabled (standard 25×25 dungeons).
+			if not _tile_in_render_radius(tx, ty):
+				continue
 			var idx: int  = ty * MAP_SIZE + tx
 			var tile: int = _map[idx]
 			var cx: float = float(tx) + 0.5   # 3D world center X
@@ -3735,6 +4327,12 @@ func _rebuild_3d_torches() -> void:
 	rng.seed = 42   # deterministic placement
 	for ty in range(1, MAP_SIZE - 1, 4):
 		for tx in range(1, MAP_SIZE - 1, 4):
+			# Cull torches outside the live render chunk on big maps. Each
+			# torch ships a flame mesh + OmniLight (with shadows!) +
+			# GPUParticles3D — leaving these active across a 50×50 map is
+			# the main reason distant areas were lit on Low quality.
+			if not _tile_in_render_radius(tx, ty):
+				continue
 			var idx: int = ty * MAP_SIZE + tx
 			if _map[idx] != 1: continue
 			# Check if adjacent to a wall — remember direction for mounting
@@ -3840,13 +4438,37 @@ func _rebuild_3d_ambience() -> void:
 
 	if _map.is_empty(): return
 
+	# Compute the ambience anchor: when culling is active we center particle
+	# emission boxes on the average player position (so dust + fog hug the
+	# camera instead of fogging the whole 50×50 map). Also shrink the box
+	# extents to the render radius so we're emitting only across the live
+	# chunk — dramatic particle-count reduction.
+	var amb_center: Vector3 = Vector3(float(MAP_SIZE) * 0.5, 0.0, float(MAP_SIZE) * 0.5)
+	var amb_extent: float = float(MAP_SIZE) * 0.5
+	var amb_amount_mul: float = 1.0
+	if _render_radius > 0:
+		var anchors: Array = _current_player_anchors()
+		if anchors.size() > 0:
+			var sum_x: float = 0.0
+			var sum_z: float = 0.0
+			for a in anchors:
+				sum_x += float(a.x)
+				sum_z += float(a.y)
+			amb_center = Vector3(sum_x / float(anchors.size()) + 0.5, 0.0,
+				sum_z / float(anchors.size()) + 0.5)
+		amb_extent = float(_render_radius)
+		# Particles emit into a smaller box; cut amount proportionally so
+		# density stays consistent and the GPU does less work.
+		var area_ratio: float = (amb_extent * amb_extent) / (float(MAP_SIZE) * 0.5 * float(MAP_SIZE) * 0.5)
+		amb_amount_mul = clampf(area_ratio, 0.15, 1.0)
+
 	# ── Biome-colored dust / particle motes ──────────────────────────────────
 	var dust_col: Color = _biome_fog_color.lightened(0.55)
 	dust_col.a = 0.45
 	var dust := GPUParticles3D.new()
 	var dust_pm := ParticleProcessMaterial.new()
 	dust_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	dust_pm.emission_box_extents = Vector3(float(MAP_SIZE) * 0.5, 1.2, float(MAP_SIZE) * 0.5)
+	dust_pm.emission_box_extents = Vector3(amb_extent, 1.2, amb_extent)
 	dust_pm.direction = Vector3(0.5, 0.15, 0.4)
 	dust_pm.initial_velocity_min = 0.12
 	dust_pm.initial_velocity_max = 0.28
@@ -3855,7 +4477,7 @@ func _rebuild_3d_ambience() -> void:
 	dust_pm.scale_max = 0.045
 	dust_pm.color = dust_col
 	dust.process_material = dust_pm
-	dust.amount = int(80 + 120 * _biome_fog_density)
+	dust.amount = maxi(8, int((80 + 120 * _biome_fog_density) * amb_amount_mul))
 	dust.lifetime = 7.0
 	dust.preprocess = 4.0
 	var dust_mesh := SphereMesh.new()
@@ -3873,7 +4495,7 @@ func _rebuild_3d_ambience() -> void:
 	dust_vis.shading_mode     = BaseMaterial3D.SHADING_MODE_UNSHADED
 	dust_mesh.material = dust_vis
 	dust.draw_pass_1 = dust_mesh
-	dust.position = Vector3(float(MAP_SIZE) * 0.5, 1.2, float(MAP_SIZE) * 0.5)
+	dust.position = Vector3(amb_center.x, 1.2, amb_center.z)
 	ambience_root.add_child(dust)
 
 	# ── Fog layer (ground-hugging haze using biome fog_color and density) ────
@@ -3881,7 +4503,7 @@ func _rebuild_3d_ambience() -> void:
 		var fog_part := GPUParticles3D.new()
 		var fog_pm := ParticleProcessMaterial.new()
 		fog_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-		fog_pm.emission_box_extents = Vector3(float(MAP_SIZE) * 0.5, 0.3, float(MAP_SIZE) * 0.5)
+		fog_pm.emission_box_extents = Vector3(amb_extent, 0.3, amb_extent)
 		fog_pm.direction = Vector3(0.3, 0.0, 0.2)
 		fog_pm.initial_velocity_min = 0.05
 		fog_pm.initial_velocity_max = 0.15
@@ -3892,7 +4514,7 @@ func _rebuild_3d_ambience() -> void:
 		fog_vis_col.a = _biome_fog_density * 0.6
 		fog_pm.color = fog_vis_col
 		fog_part.process_material = fog_pm
-		fog_part.amount = int(60 * _biome_fog_density + 20)
+		fog_part.amount = maxi(6, int((60 * _biome_fog_density + 20) * amb_amount_mul))
 		fog_part.lifetime = 12.0
 		fog_part.preprocess = 8.0
 		var fog_mesh := SphereMesh.new()
@@ -3904,7 +4526,7 @@ func _rebuild_3d_ambience() -> void:
 		fog_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		fog_mesh.material = fog_mat
 		fog_part.draw_pass_1 = fog_mesh
-		fog_part.position = Vector3(float(MAP_SIZE) * 0.5, 0.35, float(MAP_SIZE) * 0.5)
+		fog_part.position = Vector3(amb_center.x, 0.35, amb_center.z)
 		ambience_root.add_child(fog_part)
 
 	# ── Biome-tinted fill light ──────────────────────────────────────────────
@@ -3930,18 +4552,23 @@ func _update_3d_entities() -> void:
 		c.free()
 	if _entities.is_empty(): return
 
+	# Region Map Style scales tokens up so they fill their tiles like
+	# region-map NPCs do. Camera also pulled in (~2.4× closer), so this
+	# keeps units' on-screen size proportional rather than shrinking.
+	var unit_scale: float = 1.55 if _render_style == "region" else 1.0
+
 	var cyl_mesh  := CylinderMesh.new()
-	cyl_mesh.top_radius    = 0.30
-	cyl_mesh.bottom_radius = 0.32
-	cyl_mesh.height        = 0.85
+	cyl_mesh.top_radius    = 0.30 * unit_scale
+	cyl_mesh.bottom_radius = 0.32 * unit_scale
+	cyl_mesh.height        = 0.85 * unit_scale
 
 	var cyl_dead  := CylinderMesh.new()
-	cyl_dead.top_radius    = 0.28
-	cyl_dead.bottom_radius = 0.28
-	cyl_dead.height        = 0.22
+	cyl_dead.top_radius    = 0.28 * unit_scale
+	cyl_dead.bottom_radius = 0.28 * unit_scale
+	cyl_dead.height        = 0.22 * unit_scale
 
 	var hp_bar_mesh := BoxMesh.new()
-	hp_bar_mesh.size = Vector3(0.72, 0.06, 0.08)
+	hp_bar_mesh.size = Vector3(0.72 * unit_scale, 0.06, 0.08)
 
 	for ent in _entities:
 		var is_player: bool = bool(ent["is_player"])
@@ -3952,6 +4579,43 @@ func _update_3d_entities() -> void:
 		# Fog visibility check for enemies
 		if not is_player and not is_dead:
 			if not bool(ent.get("fog_visible", true)): continue
+
+		# Render-distance culling — drop entities outside the live chunk on
+		# big crawl maps. Players themselves are always rendered (they ARE
+		# the anchor). Inside _render_radius == 0 path, this is a no-op.
+		if not is_player and not _tile_in_render_radius(ex, ey):
+			continue
+
+		# Chests render as a small gold box. Looted chests render dimmer
+		# and lower (lid open). They short-circuit the normal entity path.
+		if bool(ent.get("is_chest", false)):
+			var chest_cx: float = float(ex) + 0.5
+			var chest_cz: float = float(ey) + 0.5
+			var looted: bool = bool(ent.get("looted", false))
+			var chest_mesh := BoxMesh.new()
+			chest_mesh.size = Vector3(0.55, 0.36 if not looted else 0.16, 0.42)
+			var chest_col: Color = Color(0.78, 0.55, 0.18) if not looted else Color(0.45, 0.36, 0.18)
+			var chest_emit: Color = Color(1.0, 0.78, 0.30) if not looted else Color(0.0, 0.0, 0.0)
+			var chest_emit_str: float = 0.6 if not looted else 0.0
+			var chest_mat := _make_mat(chest_col, 0.25, 0.50, chest_emit, chest_emit_str)
+			_make_mesh_inst(chest_mesh, chest_mat,
+				chest_cx, 0.18 if not looted else 0.08, chest_cz, _entity_root)
+			# Chest lid: a thinner box on top so the silhouette reads as a chest.
+			if not looted:
+				var lid_mesh := BoxMesh.new()
+				lid_mesh.size = Vector3(0.55, 0.10, 0.42)
+				_make_mesh_inst(lid_mesh, _make_mat(Color(0.65, 0.42, 0.14), 0.30, 0.55),
+					chest_cx, 0.41, chest_cz, _entity_root)
+				# Glint light — only on Medium/High quality. Crawl maps can
+				# have 5–8 chests; that's a lot of dynamic lights for Low.
+				if _quality != "low":
+					var glint := OmniLight3D.new()
+					glint.light_color = Color(1.0, 0.85, 0.40)
+					glint.light_energy = 0.6
+					glint.omni_range = 2.5
+					glint.position = Vector3(chest_cx, 0.6, chest_cz)
+					_entity_root.add_child(glint)
+			continue   # skip the rest of entity rendering for chests
 
 		var cx: float = float(ex) + 0.5
 		var cz: float = float(ey) + 0.5
@@ -3984,14 +4648,62 @@ func _update_3d_entities() -> void:
 			emit_col = Color(1.0, 0.30, 0.20)
 			emit_str = 0.3
 
+		# Region Map Style: soften the harsh primary tints so tokens blend
+		# with the bright daylight palette instead of clashing with grass +
+		# stone. Keeps the team-color contrast (player blue / ally green /
+		# enemy red) but lower saturation + warmer mids.
+		if _render_style == "region" and not is_dead:
+			if is_player:
+				body_col = Color(0.34, 0.58, 0.86)
+				emit_col = Color(0.50, 0.74, 0.98)
+				emit_str = 0.30
+			elif is_ally:
+				body_col = Color(0.40, 0.72, 0.46)
+				emit_col = Color(0.50, 0.85, 0.55)
+				emit_str = 0.28
+			else:
+				body_col = Color(0.78, 0.32, 0.30)
+				emit_col = Color(0.95, 0.45, 0.35)
+				emit_str = 0.22
+
 		# ── 3D procedural character model ──────────────────────────────────
-		# Team-coloured disc base sits under every entity.
+		# Team-coloured disc base sits under every entity. Scales up in
+		# region mode to match the closer camera + bigger-feeling tiles.
 		var disc := CylinderMesh.new()
-		disc.top_radius    = 0.34
-		disc.bottom_radius = 0.36
+		disc.top_radius    = 0.34 * unit_scale
+		disc.bottom_radius = 0.36 * unit_scale
 		disc.height        = 0.12
 		_make_mesh_inst(disc, _make_mat(body_col, 0.4, 0.5, emit_col, emit_str * 0.6),
 				cx, base_y + 0.06, cz, _entity_root)
+
+		# ── Kaiju trunk footprint (Colossal 4×4 dome) ──────────────────────
+		# Entities tagged `is_kaiju_trunk` with footprint_w/h carry the anchor
+		# of a multi-tile footprint. Draw a big translucent dome centered on
+		# the footprint so the Kaiju visibly occupies the full area (4×4 for
+		# Colossal, 3×3 for Gargantuan, etc).
+		if bool(ent.get("is_kaiju_trunk", false)):
+			var fw: int = int(ent.get("footprint_w", 4))
+			var fh: int = int(ent.get("footprint_h", 4))
+			var ox: int = int(ent.get("footprint_origin_x", ex))
+			var oy: int = int(ent.get("footprint_origin_y", ey))
+			# Footprint center in tile-space (inclusive of edges).
+			var fcx: float = float(ox) + float(fw) * 0.5
+			var fcz: float = float(oy) + float(fh) * 0.5
+			# Dome diameter = larger footprint edge (in tiles); height scales with it.
+			var edge_tiles: float = float(maxi(fw, fh))
+			var trunk_radius: float = edge_tiles * 0.42
+			var trunk_mesh := CylinderMesh.new()
+			trunk_mesh.top_radius    = trunk_radius * 0.8
+			trunk_mesh.bottom_radius = trunk_radius
+			trunk_mesh.height        = edge_tiles * 0.55
+			var trunk_mat := _make_mat(body_col, 0.55, 0.35, emit_col, emit_str * 0.6)
+			_make_mesh_inst(trunk_mesh, trunk_mat,
+				fcx, base_y + trunk_mesh.height * 0.5, fcz, _entity_root)
+			# Low ground-ring highlighting the full footprint square.
+			var ring := BoxMesh.new()
+			ring.size = Vector3(edge_tiles, 0.04, edge_tiles)
+			var ring_mat := _make_mat(body_col, 0.30, 0.60, emit_col, emit_str * 0.8)
+			_make_mesh_inst(ring, ring_mat, fcx, base_y + 0.02, fcz, _entity_root)
 
 		if is_dead:
 			# Dead units: flat slab token (no model)
@@ -4003,16 +4715,23 @@ func _update_3d_entities() -> void:
 			var weapon_name:  String = str(ent.get("equipped_weapon", "Unarmed"))
 			var armor_name:   String = str(ent.get("equipped_armor",  "None"))
 			var shield_name:  String = str(ent.get("equipped_shield", "None"))
+			# Sprite billboard scale. Originally 0.45 — too small relative to
+			# the cylinder fallback (height 0.85), so lineage units rendered
+			# noticeably smaller than procedural enemies that fell back to
+			# the cylinder. Bump to 0.85 so a lineage sprite reads at the
+			# same visual height as the fallback. unit_scale (1.0 classic /
+			# 1.55 region) still applies on top.
+			var sprite_scale: float = 0.85 * unit_scale
 			# Try Sprite3D billboard model first (unique lineage art)
 			var model: Node3D = CharacterModelBuilder.build_sprite_model(
-					lineage_name, weapon_name, armor_name, shield_name, 0.45, body_col)
+					lineage_name, weapon_name, armor_name, shield_name, sprite_scale, body_col)
 			if model != null:
 				model.position = Vector3(cx, base_y + 0.12, cz)
 				_entity_root.add_child(model)
 			else:
 				# Fallback cylinder if both sprite and procedural model fail
 				var mat := _make_mat(body_col, 0.35, 0.55, emit_col, emit_str)
-				_make_mesh_inst(cyl_mesh, mat, cx, base_y + 0.425, cz, _entity_root)
+				_make_mesh_inst(cyl_mesh, mat, cx, base_y + 0.425 * unit_scale, cz, _entity_root)
 
 		# Selected glow ring
 		if str(ent["id"]) == _selected_id:
@@ -4231,7 +4950,10 @@ func _on_grid_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		match event.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
-				_cam_dist = maxf(6.0, _cam_dist - 2.0)
+				# Region mode lets you zoom in much closer (matches explore's
+				# 2.0 floor); classic mode keeps the original 6.0 floor.
+				var min_dist: float = 2.0 if _render_style == "region" else 6.0
+				_cam_dist = maxf(min_dist, _cam_dist - 2.0)
 				_update_camera_pos()
 				return
 			MOUSE_BUTTON_WHEEL_DOWN:
