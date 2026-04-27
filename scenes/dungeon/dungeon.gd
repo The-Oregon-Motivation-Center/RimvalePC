@@ -4926,8 +4926,16 @@ func _update_3d_entities() -> void:
 			_make_mesh_inst(cyl_dead, _make_mat(body_col, 0.35, 0.55, emit_col, emit_str),
 					cx, base_y + 0.11, cz, _entity_root)
 		else:
-			# Build 3D model: prefer Sprite3D lineage portraits, fall back to procedural
-			var lineage_name: String = str(ent.get("lineage_name", ""))
+			# Build 3D model: prefer Sprite3D lineage portraits, fall back to procedural.
+			# Shapeshifters: when `shapeshifted == true`, render the active animal
+			# form (wolf.png, bear.png, etc.) instead of the character's normal
+			# lineage portrait. Reverting clears the flag and the original sprite
+			# loads again on next render.
+			var lineage_name: String
+			if bool(ent.get("shapeshifted", false)):
+				lineage_name = str(ent.get("shapeshift_form", ent.get("lineage_name", "")))
+			else:
+				lineage_name = str(ent.get("lineage_name", ""))
 			var weapon_name:  String = str(ent.get("equipped_weapon", "Unarmed"))
 			var armor_name:   String = str(ent.get("equipped_armor",  "None"))
 			var shield_name:  String = str(ent.get("equipped_shield", "None"))
@@ -5333,26 +5341,36 @@ func _on_grid_input(event: InputEvent) -> void:
 ## Explore-mode click → animate the party walking tile-by-tile to (tx, ty).
 ## A new click while walking re-targets to the new tile. Stops if an enemy
 ## spots the party along the way (combat begins).
+##
+## The probe step also defers fog work and uses lite-refresh so the click
+## responds without a full tile rebuild. Heavy work happens once when the
+## walk completes.
 func _try_crawl_explore_step(tx: int, ty: int) -> void:
-	# Validate the destination is reachable before kicking off the animation.
-	# (Engine returns blocked=true if there's no path so we can warn early.)
-	var probe: Dictionary = _e.crawl_step_party_once(tx, ty)
+	# Probe with deferred fog — moves one tile if reachable.
+	var probe: Dictionary = _e.crawl_step_party_once(tx, ty, true)
 	if bool(probe.get("blocked", false)) and not bool(probe.get("moved", false)):
 		var reason: String = str(probe.get("reason", ""))
 		if reason == "no path":
 			_add_log("[color=yellow]No path to that tile.[/color]")
 		return
 
-	# The probe just moved one tile — sync state and refresh the view to show
-	# the first step right away.
-	_refresh()
+	# Lite refresh — pull entity positions only, no tile rebuild.
+	_entities = _e.get_dungeon_entities()
+	_update_3d_entities()
 
-	# If that one step already triggered combat or arrived, finish here.
 	if bool(probe.get("combat_triggered", false)):
+		# Combat began on the probe step — flush fog and do full refresh.
+		if _e.has_method("crawl_finalize_explore_walk"):
+			_e.crawl_finalize_explore_walk()
 		_explore_enter_combat()
+		_refresh()
 		_update_3d_view()
 		return
 	if bool(probe.get("arrived", false)):
+		# Single-tile click target — flush fog and do full refresh.
+		if _e.has_method("crawl_finalize_explore_walk"):
+			_e.crawl_finalize_explore_walk()
+		_refresh()
 		_update_3d_view()
 		return
 
@@ -5360,7 +5378,6 @@ func _try_crawl_explore_step(tx: int, ty: int) -> void:
 	_explore_walk_target = Vector2i(tx, ty)
 	_ensure_explore_timer()
 	_explore_walk_timer.start(EXPLORE_STEP_MS / 1000.0)
-	_update_3d_view()
 
 
 ## Lazily create the timer that drives explore-mode walk animation.
@@ -5383,6 +5400,9 @@ func _explore_walk_stop() -> void:
 
 
 ## Timer tick → ask the engine to move the party one more tile toward target.
+## Uses lite-refresh + deferred fog so the per-tick cost is just an entity
+## position update, not a full tile/torch/ambience/fog rebuild. The full
+## refresh runs once at the end of the walk.
 func _on_explore_walk_tick() -> void:
 	if _explore_walk_target.x < 0:
 		_explore_walk_stop()
@@ -5390,17 +5410,34 @@ func _on_explore_walk_tick() -> void:
 	if _e == null or not _e.has_method("crawl_step_party_once"):
 		_explore_walk_stop()
 		return
+	# defer_fog=true → skip _update_fog() in the engine for the per-step call.
 	var result: Dictionary = _e.crawl_step_party_once(
-			_explore_walk_target.x, _explore_walk_target.y)
-	_refresh()
+			_explore_walk_target.x, _explore_walk_target.y, true)
+	# Lite refresh: pull entity positions only; do NOT mark _map_dirty so the
+	# 3D tile / torch / ambience meshes don't get rebuilt every tick.
+	_entities = _e.get_dungeon_entities()
+	# Only update entities (cheap); skip the full _update_3d_view rebuild.
+	_update_3d_entities()
+
+	var ended := false
 	if bool(result.get("combat_triggered", false)):
 		_explore_walk_stop()
 		_explore_enter_combat()
+		ended = true
 	elif bool(result.get("arrived", false)):
 		_explore_walk_stop()
+		ended = true
 	elif bool(result.get("blocked", false)):
 		_explore_walk_stop()
-	_update_3d_view()
+		ended = true
+
+	if ended:
+		# Flush the deferred fog work once, then do a full refresh so
+		# overlays, fog meshes, and reachable tiles all update at the end.
+		if _e.has_method("crawl_finalize_explore_walk"):
+			_e.crawl_finalize_explore_walk()
+		_refresh()
+		_update_3d_view()
 
 
 ## Combat-trigger handler — log + recompute combat overlays + banner.
@@ -5500,6 +5537,17 @@ func _check_combat_mode_transition() -> void:
 		_show_battle_banner("Battle!", Color(0.95, 0.30, 0.20))
 	elif explore_now and _was_in_combat:
 		_was_in_combat = false
+		# Full party reload — restore AP / SP / movement budget so the party
+		# is ready for the next encounter without grinding through AP regen.
+		if _e.has_method("crawl_post_battle_reload"):
+			_e.crawl_post_battle_reload()
+			# Pull fresh values; the banner will overlay on the post-reload state.
+			_entities = _e.get_dungeon_entities()
+			# Recompute valid moves so the AP overlay is correct if the player
+			# had a unit selected. (Combat just ended, but explore mode hides
+			# the green tiles anyway — this is just for if combat resumes.)
+			if _selected_id != "":
+				_valid_moves = _e.get_valid_dungeon_moves(_selected_id)
 		_show_battle_banner("Battle over!", Color(0.55, 0.95, 0.55))
 
 func _unhandled_input(event: InputEvent) -> void:

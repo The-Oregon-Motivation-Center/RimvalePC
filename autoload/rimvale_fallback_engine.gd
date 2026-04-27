@@ -8311,8 +8311,12 @@ func crawl_reachable_tiles() -> Array:
 ## Step the party ONE tile toward (tx, ty) using the BFS path. Used to drive
 ## animated movement — call repeatedly from a timer to walk the whole path.
 ##
+## When `defer_fog` is true, the expensive fog-of-war recomputation is
+## skipped. Caller should run `crawl_finalize_explore_walk()` once at the
+## end of the walk to flush the fog update.
+##
 ## Returns: {moved: bool, arrived: bool, combat_triggered: bool, blocked: bool}
-func crawl_step_party_once(tx: int, ty: int) -> Dictionary:
+func crawl_step_party_once(tx: int, ty: int, defer_fog: bool = false) -> Dictionary:
 	if not crawl_in_explore_mode():
 		return {"moved": false, "arrived": false, "combat_triggered": false,
 				"blocked": false, "reason": "not in explore mode"}
@@ -8346,12 +8350,41 @@ func crawl_step_party_once(tx: int, ty: int) -> Dictionary:
 		prev_x = fx
 		prev_y = fy
 	_try_loot_chest_at(int(leader["x"]), int(leader["y"]))
-	_update_fog()
+	# Fog recomputation is the slowest per-step operation. When deferring,
+	# skip it during the walk and flush once at the end.
+	if not defer_fog:
+		_update_fog()
 	_run_crawl_perception_pass()
 	var combat: bool = not crawl_in_explore_mode()
 	var arrived: bool = (int(leader["x"]) == tx and int(leader["y"]) == ty)
 	return {"moved": true, "arrived": arrived, "combat_triggered": combat,
 			"blocked": false, "reason": ""}
+
+
+## Flush the fog-of-war update after a walk completes. Used together with
+## crawl_step_party_once(..., defer_fog=true) to skip per-step fog work.
+func crawl_finalize_explore_walk() -> void:
+	_update_fog()
+
+
+## Full "next-phase" reload for all living players. Used when a crawl battle
+## ends and explore mode resumes — restores AP, SP, and movement budget so
+## the party is ready for the next encounter without waiting for round-by-
+## round AP regen.
+func crawl_post_battle_reload() -> void:
+	for ent in _dungeon_entities:
+		if not ent.get("is_player", false): continue
+		if ent.get("is_dead", false): continue
+		ent["ap_spent"] = 0
+		ent["move_used"] = 0
+		ent["actions_taken"] = 0
+		# Full SP refresh too — between encounters the party catches its breath.
+		if ent.has("max_sp"):
+			ent["sp"] = int(ent["max_sp"])
+		# Clear the per-round damage-transfer flag in case it was set mid-fight.
+		ent.erase("_mm_transfer_used_this_round")
+	# Refresh fog so visibility matches the post-battle position.
+	_update_fog()
 
 
 ## Walk the entire party from their current positions toward (tx, ty) one
@@ -12987,37 +13020,44 @@ func destroy_base(handle: int) -> void:
 
 ## Kaiju boss stat blocks: [name, hp, ac, ap, speed, lv, weapon, desc]
 const KAIJU_STATS: Array = [
-	["Skarn the Worldbreaker",  280, 19, 15, 3, 13, "Crushing Claw",   "Titanic stone golem. Shakes the earth."],
-	["Gorveth Deep-Drinker",    260, 17, 14, 4, 12, "Tentacle Slam",   "Ocean leviathan. Corrodes armor."],
-	["Thornspire",              300, 20, 12, 2, 14, "Spine Barrage",   "Ancient rootspawn behemoth."],
-	["Ignarath",                240, 18, 16, 5, 12, "Magma Strike",    "Volcanic lava titan."],
-	["Vex the Hollow",          270, 15, 18, 6, 13, "Void Smash",      "Planar anomaly of pure hunger."],
+	# Names match KAIJU_DEFS in kaiju_system.gd and the portrait files in
+	# assets/characters_3d (pyroclast.png, grondar.png, thalzuur.png, etc.).
+	["Pyroclast",               280, 19, 15, 3, 13, "Magma Strike",    "Volcanic firegod. Erupts on impact."],
+	["Grondar",                 300, 20, 12, 2, 14, "Crushing Claw",   "Titanic stone behemoth. Shakes the earth."],
+	["Thal'Zuur",               260, 17, 14, 4, 12, "Tentacle Slam",   "Deep-ocean leviathan. Corrodes armor."],
+	["Ny'Zorrak",               270, 15, 18, 6, 13, "Void Smash",      "Planar anomaly of pure hunger."],
+	["Mirecoast Sleeper",       290, 18, 13, 4, 13, "Spine Barrage",   "Ancient marsh-rooted horror. Toxic spores on attack."],
 	["Aegis Ultima",            350, 22, 20, 3, 13, "Arcane Cannon",   "Arcane construct / lawbringer mecha."],
 ]
 
 ## Apex boss stat blocks: [name, title, hp, ac, ap, sp, speed, lv, weapon]
+##
+## Names match the portrait files in assets/characters_3d. Stat blocks
+## reused from the prior list — themes are reassigned to fit each new
+## boss's portrait/lore.
 const APEX_STATS: Array = [
-	["Varnok",       "the Moonbound Tyrant",         180, 16, 12, 4, 5, 11, "Feral Maw"],
-	["Lady Nyssara", "the Crimson Countess",          160, 17, 14, 8, 4, 12, "Blood Lance"],
-	["Malgrin",      "the Bound",                    200, 18, 10, 10,3, 13, "Frost Lash"],
-	["Sithra",       "the Venom-Touched Hatchling",   60, 12, 16, 2, 8,  1, "Venom Bite"],
-	["Korrak",       "the Bonehowl Ravager",          90, 14, 14, 0, 6,  3, "Bone Cleaver"],
-	["Veltraxis",    "the Emberborn Duelist",        120, 15, 15, 6, 7,  5, "Flame Rapier"],
-	["Xal'Thuun",    "the Dreaming Maw",             400, 20, 20, 20,4, 20, "Reality Tear"],
-	["Braxis",       "the Ironjaw",                  110, 17, 12, 0, 5,  4, "Iron Gauntlet"],
-	["Seraphex",     "the Shattered Angel",          140, 16, 14, 8, 6,  7, "Blessed Blade"],
-	["Kor'zan",      "the Plague Harbinger",          95, 13, 12, 6, 5,  5, "Pestilence Rod"],
-	["Nex",          "the Silent",                   130, 18, 18, 0, 9,  8, "Shadow Blade"],
-	["Thornveil",    "the Rootborn",                 170, 15, 10, 4, 3,  9, "Barbed Vine"],
-	["Astridax",     "the Void Serpent",             155, 14, 14, 8, 7,  8, "Void Fang"],
-	["Ember Ryn",    "the Molten Dancer",            125, 14, 16, 6, 8,  7, "Lava Whip"],
-	["Galvorn",      "the Thunder-Crowned",          145, 15, 14, 4, 6,  8, "Storm Maul"],
-	["Phaedrix",     "the Dream Weaver",             160, 13, 12, 12,4,  9, "Mind Shard"],
-	["Krenox",       "the Forsaken",                 175, 16, 12, 0, 5, 10, "Cursed Blade"],
-	["Solvara",      "the Tide Singer",              150, 14, 14, 10,6,  9, "Tidal Staff"],
-	["Zareth",       "the Ashwalker",                135, 15, 14, 2, 7,  8, "Cinder Spear"],
-	["Morwen",       "the Shadeborn Queen",          165, 17, 14, 6, 5, 10, "Nightshade Bow"],
-	["Xeron Prime",  "the Convergence",              190, 17, 16, 8, 6, 11, "Prismatic Ray"],
+	["Varnok",                       "the Moonbound Tyrant",         180, 16, 12, 4, 5, 11, "Feral Maw"],
+	["Lady Nyssara",                 "the Crimson Countess",          160, 17, 14, 8, 4, 12, "Blood Lance"],
+	["Malgrin",                      "the Bound",                    200, 18, 10, 10,3, 13, "Frost Lash"],
+	["Sithra",                       "the Venom-Touched Hatchling",   60, 12, 16, 2, 8,  1, "Venom Bite"],
+	["Korrak",                       "the Bonehowl Ravager",          90, 14, 14, 0, 6,  3, "Bone Cleaver"],
+	["Veltraxis",                    "the Emberborn Duelist",        120, 15, 15, 6, 7,  5, "Flame Rapier"],
+	["Xal'Thuun",                    "the Dreaming Maw",             400, 20, 20, 20,4, 20, "Reality Tear"],
+	["High Null Sereth",             "the Annulled",                 140, 16, 14, 8, 6,  7, "Null Halberd"],
+	["Veyras Echo",                  "the Hollow Voice",             130, 14, 14, 6, 7,  8, "Echo Strike"],
+	["Korrin of the Forgotten Flame","the Burning Penitent",         170, 15, 14, 4, 5, 10, "Cinder Brand"],
+	["The Culled",                   "Reaper of the Dispossessed",   155, 18, 18, 0, 9,  8, "Shadow Blade"],
+	["Zorin Blackscale",             "the Draconic Sovereign",       190, 17, 16, 8, 6, 11, "Black Talon"],
+	["Thalia Darksong",              "the Mournful Aria",            145, 13, 14, 12,5,  9, "Dirge Lute"],
+	["Gorrim Ironfist",              "the Mountain's Wrath",         175, 18, 12, 0, 4, 10, "Runic Warhammer"],
+	["Seraphina Windwalker",         "the Skybound Saint",           135, 14, 16, 6, 8,  7, "Solar Lance"],
+	["Rurik Stormbringer",           "the Thunder-Crowned",          150, 15, 14, 4, 6,  8, "Storm Maul"],
+	["Lyra Moonshadow",              "the Hunter Beneath the Pines", 125, 14, 16, 4, 8,  7, "Twin Daggers"],
+	["Ilyra",                        "the Glasswright",              115, 14, 14, 10,6,  6, "Crystal Spear"],
+	["Kael",                         "the Ashwalker",                130, 15, 14, 2, 7,  8, "Cinder Spear"],
+	["Morthis the Binder",           "Warden of Forsaken Souls",     160, 16, 12, 8, 5, 10, "Soul Chain"],
+	["Kaelen the Hollow",            "the Unmade",                   165, 16, 14, 6, 5, 10, "Void Edge"],
+	["Nirael of the Glass Veil",     "the Shrouded Seer",            150, 14, 14, 10,6,  9, "Mirror Staff"],
 ]
 
 ## Militia group configs: [name, size, level, ac, weapon, ability]
