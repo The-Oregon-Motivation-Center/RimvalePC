@@ -287,6 +287,30 @@ var _torch_root:        Node3D         = null
 var _fog_root:          Node3D         = null
 var _particle_root:     Node3D         = null
 var _env_node:          WorldEnvironment = null
+# Surround visuals — large plane(s) extending past the playable area so the
+# dungeon doesn't appear to be floating in a gray void. The floor sits just
+# below playable tiles; the wall fence is a low outer ring of dark stone in
+# classic mode (skipped in region mode where the sky horizon takes over).
+var _surround_floor:    MeshInstance3D = null
+var _surround_floor_mat: StandardMaterial3D = null
+var _surround_walls:    Node3D         = null
+# Crawl-mode explore-walk animation. When the user clicks a tile in explore
+# mode, the dungeon scene drives a timer that asks the engine to move the
+# party one tile at a time, so the user can see the walk and interrupt it
+# with a new click.
+var _explore_walk_target: Vector2i      = Vector2i(-1, -1)
+var _explore_walk_timer:  Timer         = null
+const EXPLORE_STEP_MS: int              = 180   # ms per tile (region map pace)
+# Tracks combat-mode transitions so we can pop a banner ("Battle!" / "Battle
+# over!") when the crawl flips between explore and combat. False at scene
+# start; flipped true once any enemy alerts.
+var _was_in_combat: bool                = false
+var _battle_banner: Control             = null
+var _battle_banner_label: Label         = null
+var _battle_banner_tween: Tween         = null
+# Maximum camera orbit distance — set when the tabletop room is built so
+# the camera can never zoom out past the room walls.
+var _room_max_cam_dist: float          = 30.0
 var _map_dirty:         bool           = true   # full tile rebuild needed
 
 # ── Camera orbit state ────────────────────────────────────────────────────────
@@ -943,6 +967,186 @@ func _region_wall_walkable_neighbour(tx: int, ty: int) -> Vector2i:
 	return Vector2i.ZERO
 
 ## Update WorldEnvironment to match current biome palette.
+## Build the dungeon as a TABLETOP scene: the playable map sits on a wooden
+## table inside a wood-paneled DM's room. The room walls + ceiling enclose
+## the entire view, and the camera zoom range is clamped so you can never
+## see past the room.
+##
+## Coordinate system reminder:
+##   y =  0     → playable dungeon tiles
+##   y = -0.1   → tabletop surface (just under the tiles)
+##   y = -3.0   → room floor (table-leg base)
+##   y =  8.0   → room ceiling
+##
+## Sizes scale with MAP_SIZE so a 25×25 standard dungeon and a 50×50 crawl
+## both look right.
+func _build_surround_visuals() -> void:
+	if _world3d_root == null: return
+
+	# Tear down previous surround if any.
+	if _surround_floor != null and is_instance_valid(_surround_floor):
+		_surround_floor.queue_free()
+		_surround_floor = null
+	if _surround_walls != null and is_instance_valid(_surround_walls):
+		_surround_walls.queue_free()
+		_surround_walls = null
+
+	var center_x: float = float(MAP_SIZE) * 0.5
+	var center_z: float = float(MAP_SIZE) * 0.5
+
+	# Geometry budget — table extends 4 units past each edge of the play
+	# area; room extends 14 units past each edge of the table.
+	var table_margin: float    = 4.0
+	var room_margin_extra: float = 14.0
+	var table_half: float      = float(MAP_SIZE) * 0.5 + table_margin
+	var room_half: float       = table_half + room_margin_extra
+	var table_top_y: float     = -0.10
+	var table_thickness: float = 0.40
+	var room_floor_y: float    = -3.00
+	var room_ceil_y: float     = 8.00
+
+	# Container for everything room-related
+	_surround_walls = Node3D.new()
+	_surround_walls.name = "TabletopRoom"
+	_world3d_root.add_child(_surround_walls)
+
+	# ── TABLETOP — wooden plank surface the dungeon sits on.
+	var table_mesh := BoxMesh.new()
+	table_mesh.size = Vector3(table_half * 2.0, table_thickness, table_half * 2.0)
+	_surround_floor = MeshInstance3D.new()
+	_surround_floor.name = "Tabletop"
+	_surround_floor.mesh = table_mesh
+	_surround_floor.position = Vector3(center_x, table_top_y - table_thickness * 0.5, center_z)
+	_surround_floor_mat = StandardMaterial3D.new()
+	_surround_floor_mat.albedo_color = Color(0.36, 0.22, 0.12)  # warm walnut
+	_surround_floor_mat.roughness = 0.55
+	_surround_floor_mat.metallic = 0.0
+	_surround_floor.material_override = _surround_floor_mat
+	_surround_walls.add_child(_surround_floor)
+
+	# Tabletop edge trim (slightly darker beveled molding around the rim)
+	var trim_mat := StandardMaterial3D.new()
+	trim_mat.albedo_color = Color(0.22, 0.13, 0.07)
+	trim_mat.roughness = 0.50
+	var trim_h: float = 0.10
+	var trim_y: float = table_top_y + trim_h * 0.5  # sits on top edge
+	var trim_t: float = 0.30
+	for side_idx in 4:
+		var trim := MeshInstance3D.new()
+		var tm := BoxMesh.new()
+		var span: float = table_half * 2.0 + trim_t * 2.0
+		match side_idx:
+			0:  # north
+				tm.size = Vector3(span, trim_h, trim_t)
+				trim.position = Vector3(center_x, trim_y, center_z - table_half - trim_t * 0.5)
+			1:  # south
+				tm.size = Vector3(span, trim_h, trim_t)
+				trim.position = Vector3(center_x, trim_y, center_z + table_half + trim_t * 0.5)
+			2:  # west
+				tm.size = Vector3(trim_t, trim_h, span)
+				trim.position = Vector3(center_x - table_half - trim_t * 0.5, trim_y, center_z)
+			3:  # east
+				tm.size = Vector3(trim_t, trim_h, span)
+				trim.position = Vector3(center_x + table_half + trim_t * 0.5, trim_y, center_z)
+		trim.mesh = tm
+		trim.material_override = trim_mat
+		_surround_walls.add_child(trim)
+
+	# Table legs — 4 chunky boxes from tabletop down to room floor
+	var leg_mat := StandardMaterial3D.new()
+	leg_mat.albedo_color = Color(0.26, 0.16, 0.08)
+	leg_mat.roughness = 0.6
+	var leg_w: float = 0.55
+	var leg_inset: float = 1.5  # legs pulled in from the table edge
+	var leg_y: float = (table_top_y - table_thickness + room_floor_y) * 0.5
+	var leg_h: float = (table_top_y - table_thickness) - room_floor_y
+	for li in 4:
+		var leg := MeshInstance3D.new()
+		var lm := BoxMesh.new()
+		lm.size = Vector3(leg_w, leg_h, leg_w)
+		var lx: float = center_x - table_half + leg_inset if li % 2 == 0 else center_x + table_half - leg_inset
+		var lz: float = center_z - table_half + leg_inset if li < 2 else center_z + table_half - leg_inset
+		leg.mesh = lm
+		leg.position = Vector3(lx, leg_y, lz)
+		leg.material_override = leg_mat
+		_surround_walls.add_child(leg)
+
+	# ── ROOM FLOOR — wood planks beneath the table
+	var room_floor_mesh := PlaneMesh.new()
+	room_floor_mesh.size = Vector2(room_half * 2.0, room_half * 2.0)
+	var room_floor := MeshInstance3D.new()
+	room_floor.name = "RoomFloor"
+	room_floor.mesh = room_floor_mesh
+	room_floor.position = Vector3(center_x, room_floor_y, center_z)
+	var rf_mat := StandardMaterial3D.new()
+	rf_mat.albedo_color = Color(0.20, 0.13, 0.08)
+	rf_mat.roughness = 0.85
+	room_floor.material_override = rf_mat
+	_surround_walls.add_child(room_floor)
+
+	# ── ROOM WALLS — 4 walls flanking the table on each side
+	var wall_mat := StandardMaterial3D.new()
+	wall_mat.albedo_color = Color(0.34, 0.27, 0.20)  # warm tan plaster
+	wall_mat.roughness = 0.92
+	var wall_t: float = 0.40
+	var wall_h: float = room_ceil_y - room_floor_y
+	var wall_y: float = (room_ceil_y + room_floor_y) * 0.5
+	var wall_span: float = room_half * 2.0 + wall_t * 2.0
+	for wi in 4:
+		var wall := MeshInstance3D.new()
+		var wmesh := BoxMesh.new()
+		match wi:
+			0:  # north
+				wmesh.size = Vector3(wall_span, wall_h, wall_t)
+				wall.position = Vector3(center_x, wall_y, center_z - room_half - wall_t * 0.5)
+			1:  # south
+				wmesh.size = Vector3(wall_span, wall_h, wall_t)
+				wall.position = Vector3(center_x, wall_y, center_z + room_half + wall_t * 0.5)
+			2:  # west
+				wmesh.size = Vector3(wall_t, wall_h, wall_span)
+				wall.position = Vector3(center_x - room_half - wall_t * 0.5, wall_y, center_z)
+			3:  # east
+				wmesh.size = Vector3(wall_t, wall_h, wall_span)
+				wall.position = Vector3(center_x + room_half + wall_t * 0.5, wall_y, center_z)
+		wall.mesh = wmesh
+		wall.material_override = wall_mat
+		_surround_walls.add_child(wall)
+
+	# ── ROOM CEILING — wood beam ceiling
+	var ceil_mesh := PlaneMesh.new()
+	ceil_mesh.size = Vector2(room_half * 2.0, room_half * 2.0)
+	var ceil := MeshInstance3D.new()
+	ceil.name = "RoomCeiling"
+	ceil.mesh = ceil_mesh
+	ceil.position = Vector3(center_x, room_ceil_y, center_z)
+	ceil.rotation_degrees = Vector3(180.0, 0.0, 0.0)  # face downward
+	var ceil_mat := StandardMaterial3D.new()
+	ceil_mat.albedo_color = Color(0.18, 0.13, 0.08)
+	ceil_mat.roughness = 0.92
+	ceil.material_override = ceil_mat
+	_surround_walls.add_child(ceil)
+
+	# Update camera zoom clamp — keep the camera inside the room.
+	# Max distance: comfortable margin inside the room half-extent.
+	_room_max_cam_dist = room_half - 4.0
+	# If we already had a cam_dist past the new ceiling, pull it in.
+	if _cam_dist > _room_max_cam_dist:
+		_cam_dist = _room_max_cam_dist
+		if _cam3d != null:
+			_update_camera_pos()
+
+
+## Update tabletop + room material to match the current render style.
+## The classic style keeps the warm DM-room aesthetic; region style brightens
+## the room slightly for daylight feel.
+func _refresh_surround_appearance() -> void:
+	if _surround_walls == null: return
+	# In this tabletop design we keep the room's character consistent
+	# regardless of biome — it's the DM's room, not the dungeon biome.
+	# Just make sure everything is visible.
+	_surround_walls.visible = true
+
+
 func _update_biome_environment() -> void:
 	if _env_node == null: return
 	var env: Environment = _env_node.environment
@@ -992,6 +1196,7 @@ func _update_biome_environment() -> void:
 				elif child.name == "FillLight":
 					child.light_color = Color(0.75, 0.85, 1.00)
 					child.light_energy = 0.40
+		_refresh_surround_appearance()
 		return
 
 	# Classic / cavern path (unchanged):
@@ -1025,6 +1230,8 @@ func _update_biome_environment() -> void:
 				child.light_energy = 0.8 + _biome_light_energy * 0.1
 			elif child.name == "FillLight":
 				child.light_color = _biome_fog_color.lightened(0.3)
+
+	_refresh_surround_appearance()
 
 ## Spawn ambient particles based on current biome.
 func _spawn_biome_particles() -> void:
@@ -2781,6 +2988,10 @@ func _build_center_panel() -> Control:
 	_particle_root = Node3D.new(); _particle_root.name = "Particles"; _world3d_root.add_child(_particle_root)
 	_region_prop_root = Node3D.new(); _region_prop_root.name = "RegionProps"; _world3d_root.add_child(_region_prop_root)
 
+	# Build the surround — large floor plane + low wall ring extending past
+	# the playable area so the dungeon never appears as a floating island.
+	_build_surround_visuals()
+
 	return bg
 
 # ── Right panel — 3-column action menu ───────────────────────────────────────
@@ -3398,6 +3609,11 @@ func _update_3d_view() -> void:
 	if _player_moved_past_chunk_step():
 		_map_dirty = true
 	if _map_dirty:
+		# Rebuild the surround first — sizes and centers itself off the
+		# current MAP_SIZE so it matches both standard (25×25) and dungeon
+		# crawl (50×50) maps.
+		_build_surround_visuals()
+		_refresh_surround_appearance()
 		_rebuild_3d_tiles()
 		_rebuild_3d_torches()
 		_rebuild_3d_ambience()
@@ -4760,26 +4976,43 @@ func _update_3d_entities() -> void:
 			glow.position = Vector3(cx, base_y + 0.9, cz)
 			_entity_root.add_child(glow)
 
-		# HP bar (floating slab above token)
+		# HP bar (floating slab above token).
+		# Built as billboard QuadMeshes so the bar always faces the camera —
+		# rotating the camera no longer makes the bar go edge-on or appear
+		# parallel to the character's facing.
 		if not is_dead:
 			var hp: int     = int(ent["hp"])
 			var max_hp: int = maxi(1, int(ent["max_hp"]))
 			var ratio: float = clamp(float(hp) / float(max_hp), 0.0, 1.0)
-			# Background bar
-			var bar_bg_m := BoxMesh.new(); bar_bg_m.size = Vector3(0.72, 0.06, 0.08)
+			var bar_y: float = base_y + 1.05
+			# Background quad (full bar width)
+			var bar_bg_quad := QuadMesh.new()
+			bar_bg_quad.size = Vector2(0.72, 0.10)
 			var bar_bg_mat := _make_mat(Color(0.55, 0.12, 0.12))
-			_make_mesh_inst(bar_bg_m, bar_bg_mat, cx, base_y + 1.05, cz, _entity_root)
-			# Fill bar (offset so it starts at left edge)
+			bar_bg_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+			bar_bg_mat.billboard_keep_scale = true
+			bar_bg_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			bar_bg_mat.no_depth_test = true
+			bar_bg_mat.render_priority = 1
+			_make_mesh_inst(bar_bg_quad, bar_bg_mat, cx, bar_y, cz, _entity_root)
+			# Fill quad (variable width, drawn slightly in front of bg)
 			if ratio > 0.01:
 				var fill_w: float = 0.72 * ratio
-				var bar_fill_m := BoxMesh.new(); bar_fill_m.size = Vector3(fill_w, 0.06, 0.09)
+				var bar_fill_quad := QuadMesh.new()
+				bar_fill_quad.size = Vector2(fill_w, 0.10)
+				# Center-offset so the fill grows from the left edge
+				bar_fill_quad.center_offset = Vector3(-(0.72 - fill_w) * 0.5, 0.0, 0.0)
 				var hp_col: Color
 				if ratio > 0.6:   hp_col = Color(0.22, 0.72, 0.22)
 				elif ratio > 0.3: hp_col = Color(0.80, 0.65, 0.10)
 				else:             hp_col = Color(0.88, 0.18, 0.18)
 				var bar_fill_mat := _make_mat(hp_col, 0.0, 0.6, hp_col, 0.25)
-				var bar_x: float = cx - 0.36 + fill_w * 0.5
-				_make_mesh_inst(bar_fill_m, bar_fill_mat, bar_x, base_y + 1.05, cz, _entity_root)
+				bar_fill_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+				bar_fill_mat.billboard_keep_scale = true
+				bar_fill_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+				bar_fill_mat.no_depth_test = true
+				bar_fill_mat.render_priority = 2
+				_make_mesh_inst(bar_fill_quad, bar_fill_mat, cx, bar_y, cz, _entity_root)
 
 # ── Highlight overlays (move tiles, selection, target, area spell) ─────────
 func _update_3d_overlays() -> void:
@@ -4791,14 +5024,32 @@ func _update_3d_overlays() -> void:
 
 	var hl_mesh := BoxMesh.new(); hl_mesh.size = Vector3(0.92, slab_h, 0.92)
 
-	# Move highlights
-	var move_mat := _make_mat(Color(0.15, 0.85, 0.20, 0.55), 0.0, 0.5,
-		Color(0.20, 1.0, 0.30), 0.3)
-	move_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	for mv in _valid_moves:
-		var mx: float = float(int(mv["x"])) + 0.5
-		var mz: float = float(int(mv["y"])) + 0.5
-		_make_mesh_inst(hl_mesh, move_mat, mx, slab_y, mz, _overlay_root)
+	# Move highlights — different rendering depending on mode.
+	# Combat: green slabs on AP-reachable tiles only.
+	# Explore: subtle blue tint on every reachable tile (party walks freely).
+	var in_explore: bool = (_e != null and _e.has_method("crawl_in_explore_mode")
+							and _e.crawl_in_explore_mode())
+	if in_explore:
+		# Soft blue tint on every reachable floor tile so the player sees
+		# clearly where they can walk in explore mode.
+		var explore_mat := _make_mat(Color(0.30, 0.55, 0.95, 0.20), 0.0, 0.4,
+			Color(0.50, 0.75, 1.00), 0.10)
+		explore_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		var reachable: Array = []
+		if _e.has_method("crawl_reachable_tiles"):
+			reachable = _e.crawl_reachable_tiles()
+		for v in reachable:
+			var mx: float = float(int(v.x)) + 0.5
+			var mz: float = float(int(v.y)) + 0.5
+			_make_mesh_inst(hl_mesh, explore_mat, mx, slab_y, mz, _overlay_root)
+	else:
+		var move_mat := _make_mat(Color(0.15, 0.85, 0.20, 0.55), 0.0, 0.5,
+			Color(0.20, 1.0, 0.30), 0.3)
+		move_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		for mv in _valid_moves:
+			var mx: float = float(int(mv["x"])) + 0.5
+			var mz: float = float(int(mv["y"])) + 0.5
+			_make_mesh_inst(hl_mesh, move_mat, mx, slab_y, mz, _overlay_root)
 
 	# Pending move highlight
 	if not _pending_move.is_empty():
@@ -4954,10 +5205,13 @@ func _on_grid_input(event: InputEvent) -> void:
 				# 2.0 floor); classic mode keeps the original 6.0 floor.
 				var min_dist: float = 2.0 if _render_style == "region" else 6.0
 				_cam_dist = maxf(min_dist, _cam_dist - 2.0)
+				_cam_dist = minf(_room_max_cam_dist, _cam_dist)
 				_update_camera_pos()
 				return
 			MOUSE_BUTTON_WHEEL_DOWN:
-				_cam_dist = minf(55.0, _cam_dist + 2.0)
+				# Cap zoom-out at the tabletop room's wall — never let the
+				# camera escape the room.
+				_cam_dist = minf(_room_max_cam_dist, _cam_dist + 2.0)
 				_update_camera_pos()
 				return
 			MOUSE_BUTTON_RIGHT:
@@ -5058,6 +5312,14 @@ func _on_grid_input(event: InputEvent) -> void:
 		_select_entity(str(clicked_ent["id"]))
 		return
 
+	# Crawl Explore Mode — when in a 50×50 crawl dungeon and no enemies are
+	# alerted, click anywhere walkable to walk the whole party there. AP is
+	# not consumed. If detection triggers along the way, the engine flips
+	# back to normal AP-based combat at the moment the first enemy spots us.
+	if _e != null and _e.has_method("crawl_in_explore_mode") and _e.crawl_in_explore_mode():
+		_try_crawl_explore_step(tx, ty)
+		return
+
 	for m in _valid_moves:
 		if int(m["x"]) == tx and int(m["y"]) == ty:
 			_pending_move = {"x": tx, "y": ty}
@@ -5067,6 +5329,178 @@ func _on_grid_input(event: InputEvent) -> void:
 				_move_confirm_btn.grab_focus()
 			_update_3d_view()
 			return
+
+## Explore-mode click → animate the party walking tile-by-tile to (tx, ty).
+## A new click while walking re-targets to the new tile. Stops if an enemy
+## spots the party along the way (combat begins).
+func _try_crawl_explore_step(tx: int, ty: int) -> void:
+	# Validate the destination is reachable before kicking off the animation.
+	# (Engine returns blocked=true if there's no path so we can warn early.)
+	var probe: Dictionary = _e.crawl_step_party_once(tx, ty)
+	if bool(probe.get("blocked", false)) and not bool(probe.get("moved", false)):
+		var reason: String = str(probe.get("reason", ""))
+		if reason == "no path":
+			_add_log("[color=yellow]No path to that tile.[/color]")
+		return
+
+	# The probe just moved one tile — sync state and refresh the view to show
+	# the first step right away.
+	_refresh()
+
+	# If that one step already triggered combat or arrived, finish here.
+	if bool(probe.get("combat_triggered", false)):
+		_explore_enter_combat()
+		_update_3d_view()
+		return
+	if bool(probe.get("arrived", false)):
+		_update_3d_view()
+		return
+
+	# Otherwise queue tile-by-tile animation toward (tx, ty) on a timer.
+	_explore_walk_target = Vector2i(tx, ty)
+	_ensure_explore_timer()
+	_explore_walk_timer.start(EXPLORE_STEP_MS / 1000.0)
+	_update_3d_view()
+
+
+## Lazily create the timer that drives explore-mode walk animation.
+func _ensure_explore_timer() -> void:
+	if _explore_walk_timer != null and is_instance_valid(_explore_walk_timer):
+		return
+	_explore_walk_timer = Timer.new()
+	_explore_walk_timer.one_shot = false
+	_explore_walk_timer.wait_time = EXPLORE_STEP_MS / 1000.0
+	_explore_walk_timer.timeout.connect(_on_explore_walk_tick)
+	add_child(_explore_walk_timer)
+
+
+## Stop the explore-walk animation (called on a new click, combat trigger, or
+## arrival).
+func _explore_walk_stop() -> void:
+	_explore_walk_target = Vector2i(-1, -1)
+	if _explore_walk_timer != null and is_instance_valid(_explore_walk_timer):
+		_explore_walk_timer.stop()
+
+
+## Timer tick → ask the engine to move the party one more tile toward target.
+func _on_explore_walk_tick() -> void:
+	if _explore_walk_target.x < 0:
+		_explore_walk_stop()
+		return
+	if _e == null or not _e.has_method("crawl_step_party_once"):
+		_explore_walk_stop()
+		return
+	var result: Dictionary = _e.crawl_step_party_once(
+			_explore_walk_target.x, _explore_walk_target.y)
+	_refresh()
+	if bool(result.get("combat_triggered", false)):
+		_explore_walk_stop()
+		_explore_enter_combat()
+	elif bool(result.get("arrived", false)):
+		_explore_walk_stop()
+	elif bool(result.get("blocked", false)):
+		_explore_walk_stop()
+	_update_3d_view()
+
+
+## Combat-trigger handler — log + recompute combat overlays + banner.
+func _explore_enter_combat() -> void:
+	_add_log("[color=red]A creature spots the party! Combat begins.[/color]")
+	if _selected_id != "":
+		_valid_moves = _e.get_valid_dungeon_moves(_selected_id)
+	_was_in_combat = true   # mark up so transition checker doesn't double-pop
+	_show_battle_banner("Battle!", Color(0.95, 0.30, 0.20))
+
+
+## Lazily build a CanvasLayer with a centered, fade-in/fade-out banner used
+## for "Battle!" and "Battle over!" announcements when the crawl-dungeon
+## flips between explore and combat modes.
+func _ensure_battle_banner() -> void:
+	if _battle_banner != null and is_instance_valid(_battle_banner):
+		return
+	var layer := CanvasLayer.new()
+	layer.layer = 90  # well above gameplay UI
+	add_child(layer)
+
+	_battle_banner = Control.new()
+	_battle_banner.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_battle_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_battle_banner.modulate = Color(1, 1, 1, 0)
+	layer.add_child(_battle_banner)
+
+	# Centered backdrop strip behind the label
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_HCENTER_WIDE)
+	bg.offset_left = 0
+	bg.offset_right = 0
+	bg.offset_top = -56
+	bg.offset_bottom = 56
+	bg.anchor_top = 0.5
+	bg.anchor_bottom = 0.5
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_battle_banner.add_child(bg)
+
+	_battle_banner_label = Label.new()
+	_battle_banner_label.set_anchors_preset(Control.PRESET_CENTER)
+	_battle_banner_label.anchor_left = 0.5
+	_battle_banner_label.anchor_right = 0.5
+	_battle_banner_label.anchor_top = 0.5
+	_battle_banner_label.anchor_bottom = 0.5
+	_battle_banner_label.offset_left = -260
+	_battle_banner_label.offset_right = 260
+	_battle_banner_label.offset_top = -40
+	_battle_banner_label.offset_bottom = 40
+	_battle_banner_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_battle_banner_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_battle_banner_label.add_theme_font_size_override("font_size", 56)
+	_battle_banner_label.add_theme_color_override("font_color", Color(1, 1, 1))
+	_battle_banner_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_battle_banner_label.add_theme_constant_override("outline_size", 6)
+	_battle_banner_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_battle_banner.add_child(_battle_banner_label)
+
+
+## Pop the banner with the given text, colored accent, then fade away.
+func _show_battle_banner(text: String, color: Color) -> void:
+	_ensure_battle_banner()
+	_battle_banner_label.text = text
+	_battle_banner_label.add_theme_color_override("font_color", color)
+	if _battle_banner_tween != null and _battle_banner_tween.is_valid():
+		_battle_banner_tween.kill()
+	_battle_banner.modulate = Color(1, 1, 1, 0)
+	_battle_banner_tween = create_tween()
+	# Fade in fast, hold, then fade out.
+	_battle_banner_tween.tween_property(_battle_banner, "modulate:a", 1.0, 0.18)
+	_battle_banner_tween.tween_interval(1.4)
+	_battle_banner_tween.tween_property(_battle_banner, "modulate:a", 0.0, 0.45)
+
+
+## Detect explore↔combat transitions and pop the appropriate banner. Called
+## from _refresh() so any state change picks it up — combat starting from a
+## perception alert OR ending because the last enemy just died.
+func _check_combat_mode_transition() -> void:
+	if _e == null or not _e.has_method("crawl_in_explore_mode"):
+		return
+	var explore_now: bool = _e.crawl_in_explore_mode()
+	var in_combat_now: bool = (_e.has_method("get_dungeon_round") and not explore_now)
+	# Only relevant inside crawl dungeons. Outside crawl, don't fire banners.
+	var crawl_active: bool = false
+	if "_crawl_active" in _e:
+		crawl_active = bool(_e._crawl_active)
+	if not crawl_active:
+		_was_in_combat = false
+		return
+	if in_combat_now and not _was_in_combat:
+		_was_in_combat = true
+		# Battle banner already shown by _explore_enter_combat when the click
+		# triggered combat. Showing here too would double up; only show if
+		# we became combat-mode through some other path (e.g. enemy entered
+		# perception range during enemy phase).
+		_show_battle_banner("Battle!", Color(0.95, 0.30, 0.20))
+	elif explore_now and _was_in_combat:
+		_was_in_combat = false
+		_show_battle_banner("Battle over!", Color(0.55, 0.95, 0.55))
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
@@ -5877,6 +6311,7 @@ func _refresh() -> void:
 	_elevation = _e.get_dungeon_elevation_map()
 	_round_label.text = "Round %d" % _e.get_dungeon_round()
 	_map_dirty = true   # elevation/terrain may have changed — rebuild tiles
+	_check_combat_mode_transition()
 	_update_3d_view()
 	_update_entity_card()
 	_update_roster()

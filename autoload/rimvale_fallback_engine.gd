@@ -4702,7 +4702,10 @@ func _dung_spawn_summon(caster_id: String, creature_name: String, creature_level
 		"id":           summon_id,
 		"name":         creature_name,
 		"handle":       -1,
-		"lineage_name": "Summon",
+		# lineage_name drives the sprite lookup. We pass the actual creature
+		# name so the renderer finds e.g. arcane_minion.png, chaos_creature.png,
+		# radiant_guardian.png, shadow_minion.png, phantom.png, undead_servant.png.
+		"lineage_name": creature_name,
 		"x": spawn_x, "y": spawn_y, "z": 0,
 		"is_player":   true,
 		"is_friendly": true,
@@ -4839,7 +4842,10 @@ func _dung_cast_summon_creature(caster: Dictionary, spell_name: String, build: D
 		"id":           summon_id,
 		"name":         creature_name,
 		"handle":       -1,
-		"lineage_name": "Summon",
+		# lineage_name drives the sprite lookup. We pass the actual creature
+		# name so the renderer finds e.g. arcane_minion.png, chaos_creature.png,
+		# radiant_guardian.png, shadow_minion.png, phantom.png, undead_servant.png.
+		"lineage_name": creature_name,
 		"x": spawn_x, "y": spawn_y, "z": 0,
 		"is_player":   true,
 		"is_friendly": true,
@@ -8179,6 +8185,239 @@ func _propagate_alert(source: Dictionary) -> void:
 			ent["is_alerted"] = true
 			ent["last_seen_x"] = source.get("last_seen_x", -1)
 			ent["last_seen_y"] = source.get("last_seen_y", -1)
+
+## ─────────────────────────────────────────────────────────────────────────────
+## DUNGEON CRAWL — Explore mode
+## ─────────────────────────────────────────────────────────────────────────────
+## When all enemies in a crawl dungeon are still unalerted, the party can
+## walk freely (no AP cost, party moves together) — same feel as a region
+## map. The instant any enemy detects the party, the game transitions
+## automatically into the existing tactical AP-based combat.
+
+## Returns true when the player can move freely as a group. False during
+## combat (any alerted enemy alive on the map).
+func crawl_in_explore_mode() -> bool:
+	if not _crawl_active:
+		return false
+	for e in _dungeon_entities:
+		if e.get("is_player", false): continue
+		if e.get("is_friendly", false): continue
+		if e.get("is_dead", false): continue
+		if e.get("is_chest", false): continue
+		if bool(e.get("is_alerted", false)):
+			return false
+	return true
+
+## BFS pathfind from (fx,fy) to (tx,ty) through walkable floor tiles.
+## Returns the full path as an Array of Vector2i (excluding the start tile),
+## or empty Array if unreachable.
+##
+## Treats the LEADER's current tile as occupied by themselves (so they can
+## leave it). Followers' tiles are ignored — they chain-shift behind the
+## leader so they aren't real obstructions.
+func _crawl_pathfind(fx: int, fy: int, tx: int, ty: int) -> Array:
+	if fx == tx and fy == ty:
+		return []
+	if _dung_tile(tx, ty) != TILE_FLOOR:
+		return []
+	# BFS — fast enough for any 50×50 map (max 2500 nodes).
+	var came_from: Dictionary = {}
+	var visited: Dictionary = {}
+	var queue: Array = []
+	var start_key: Vector2i = Vector2i(fx, fy)
+	queue.append(start_key)
+	visited[start_key] = true
+	var found: bool = false
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		if cur.x == tx and cur.y == ty:
+			found = true
+			break
+		# 4-neighbour orthogonal expansion
+		var neighbours: Array = [
+			Vector2i(cur.x + 1, cur.y),
+			Vector2i(cur.x - 1, cur.y),
+			Vector2i(cur.x, cur.y + 1),
+			Vector2i(cur.x, cur.y - 1),
+		]
+		for n in neighbours:
+			if visited.has(n): continue
+			if _dung_tile(n.x, n.y) != TILE_FLOOR: continue
+			# Block on enemies/chests but allow walking through allies (they
+			# chain-shift) and the destination tile.
+			var blocker = _dung_entity_at(n.x, n.y)
+			if blocker != null:
+				if blocker.get("is_chest", false) and not (n.x == tx and n.y == ty):
+					# Allow stepping onto a chest only if it's the target.
+					continue
+				if not blocker.get("is_player", false) \
+						and not blocker.get("is_friendly", false) \
+						and not blocker.get("is_dead", false):
+					# Enemy in the way — block.
+					continue
+			visited[n] = true
+			came_from[n] = cur
+			queue.append(n)
+	if not found:
+		return []
+	# Reconstruct path from target back to start, then reverse.
+	var path: Array = []
+	var node: Vector2i = Vector2i(tx, ty)
+	while node != start_key:
+		path.append(node)
+		node = came_from[node]
+	path.reverse()
+	return path
+
+## Set of all tiles reachable from the party leader (used for the explore-mode
+## highlight overlay). Returns Array[Vector2i].
+func crawl_reachable_tiles() -> Array:
+	if not crawl_in_explore_mode():
+		return []
+	var leader: Dictionary = {}
+	for ent in _dungeon_entities:
+		if not ent.get("is_player", false): continue
+		if ent.get("is_dead", false): continue
+		leader = ent
+		break
+	if leader.is_empty():
+		return []
+	var fx: int = int(leader["x"])
+	var fy: int = int(leader["y"])
+	var visited: Dictionary = {Vector2i(fx, fy): true}
+	var queue: Array = [Vector2i(fx, fy)]
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		var neighbours: Array = [
+			Vector2i(cur.x + 1, cur.y),
+			Vector2i(cur.x - 1, cur.y),
+			Vector2i(cur.x, cur.y + 1),
+			Vector2i(cur.x, cur.y - 1),
+		]
+		for n in neighbours:
+			if visited.has(n): continue
+			if _dung_tile(n.x, n.y) != TILE_FLOOR: continue
+			var blocker = _dung_entity_at(n.x, n.y)
+			if blocker != null:
+				if not blocker.get("is_player", false) \
+						and not blocker.get("is_friendly", false) \
+						and not blocker.get("is_dead", false) \
+						and not blocker.get("is_chest", false):
+					continue
+			visited[n] = true
+			queue.append(n)
+	return visited.keys()
+
+## Step the party ONE tile toward (tx, ty) using the BFS path. Used to drive
+## animated movement — call repeatedly from a timer to walk the whole path.
+##
+## Returns: {moved: bool, arrived: bool, combat_triggered: bool, blocked: bool}
+func crawl_step_party_once(tx: int, ty: int) -> Dictionary:
+	if not crawl_in_explore_mode():
+		return {"moved": false, "arrived": false, "combat_triggered": false,
+				"blocked": false, "reason": "not in explore mode"}
+	var party: Array = []
+	for ent in _dungeon_entities:
+		if not ent.get("is_player", false): continue
+		if ent.get("is_dead", false): continue
+		party.append(ent)
+	if party.is_empty():
+		return {"moved": false, "arrived": false, "combat_triggered": false,
+				"blocked": true, "reason": "no living players"}
+	var leader: Dictionary = party[0]
+	var followers: Array = party.slice(1)
+	if int(leader["x"]) == tx and int(leader["y"]) == ty:
+		return {"moved": false, "arrived": true, "combat_triggered": false,
+				"blocked": false, "reason": "already there"}
+	var path: Array = _crawl_pathfind(int(leader["x"]), int(leader["y"]), tx, ty)
+	if path.is_empty():
+		return {"moved": false, "arrived": false, "combat_triggered": false,
+				"blocked": true, "reason": "no path"}
+	var step: Vector2i = path[0]
+	var prev_x: int = int(leader["x"])
+	var prev_y: int = int(leader["y"])
+	leader["x"] = step.x
+	leader["y"] = step.y
+	for f in followers:
+		var fx: int = int(f["x"])
+		var fy: int = int(f["y"])
+		f["x"] = prev_x
+		f["y"] = prev_y
+		prev_x = fx
+		prev_y = fy
+	_try_loot_chest_at(int(leader["x"]), int(leader["y"]))
+	_update_fog()
+	_run_crawl_perception_pass()
+	var combat: bool = not crawl_in_explore_mode()
+	var arrived: bool = (int(leader["x"]) == tx and int(leader["y"]) == ty)
+	return {"moved": true, "arrived": arrived, "combat_triggered": combat,
+			"blocked": false, "reason": ""}
+
+
+## Walk the entire party from their current positions toward (tx, ty) one
+## step at a time. Followers chain-follow the leader's previous tiles.
+## Stops if any enemy gets alerted (combat begins) or path is blocked.
+##
+## Returns:
+##   {steps_taken: int, combat_triggered: bool, blocked: bool, reason: String}
+func crawl_step_party_to(tx: int, ty: int) -> Dictionary:
+	if not crawl_in_explore_mode():
+		return {"steps_taken": 0, "combat_triggered": false, "blocked": false,
+				"reason": "not in explore mode"}
+
+	# Build leader + followers list (ordered by id for stable chain).
+	var party: Array = []
+	for ent in _dungeon_entities:
+		if not ent.get("is_player", false): continue
+		if ent.get("is_dead", false): continue
+		party.append(ent)
+	if party.is_empty():
+		return {"steps_taken": 0, "combat_triggered": false, "blocked": true,
+				"reason": "no living players"}
+	var leader: Dictionary = party[0]
+	var followers: Array = party.slice(1)
+
+	# BFS pathfind from the leader to the target — handles walls and twists.
+	var path: Array = _crawl_pathfind(int(leader["x"]), int(leader["y"]), tx, ty)
+	if path.is_empty():
+		return {"steps_taken": 0, "combat_triggered": false, "blocked": true,
+				"reason": "no path"}
+
+	var steps: int = 0
+	var combat_triggered: bool = false
+
+	for step_v in path:
+		var step: Vector2i = step_v
+		# Chain-shift: leader takes new tile; each follower takes the previous
+		# tile of the entity ahead of them in the party.
+		var prev_x: int = int(leader["x"])
+		var prev_y: int = int(leader["y"])
+		leader["x"] = step.x
+		leader["y"] = step.y
+		for f in followers:
+			var fx: int = int(f["x"])
+			var fy: int = int(f["y"])
+			f["x"] = prev_x
+			f["y"] = prev_y
+			prev_x = fx
+			prev_y = fy
+		steps += 1
+
+		# Auto-loot chests the leader just stepped on.
+		_try_loot_chest_at(int(leader["x"]), int(leader["y"]))
+
+		# Refresh fog and detection.
+		_update_fog()
+		_run_crawl_perception_pass()
+
+		# Did combat just trigger?
+		if not crawl_in_explore_mode():
+			combat_triggered = true
+			break
+
+	return {"steps_taken": steps, "combat_triggered": combat_triggered,
+			"blocked": false, "reason": ""}
+
 
 ## When the player walks onto a chest tile, transfer its loot to the stash.
 ## Marks the chest looted; the renderer will draw a different (open) state.
@@ -13008,7 +13247,8 @@ func start_dungeon_crawl(player_handles, enemy_level: int, terrain_style: int,
 	# Re-scatter every enemy to the outer ring of the 50×50 map BEFORE the
 	# player can see them. This is what makes Crawl feel like exploration
 	# instead of a 25-mob ambush at the doorway.
-	_redistribute_crawl_enemies(15)
+	# 95% of enemies must be at least 25 tiles away; 5% can ambush closer.
+	_redistribute_crawl_enemies(25, 0.05, 8)
 
 	# Spawn additional crawl enemies — the larger map needs more density.
 	# Pull encounters from the same builder used by start_dungeon, just tag
@@ -13023,14 +13263,15 @@ func start_dungeon_crawl(player_handles, enemy_level: int, terrain_style: int,
 
 ## Walks every non-player, non-friendly, non-chest entity and teleports them
 ## to a random walkable tile whose Manhattan distance from EVERY player is
-## at least `min_dist`. Falls back to the entity's current spot only if no
-## valid distant tile can be found in 200 attempts (rare).
+## at least `min_dist`. A small `ambush_chance` (per enemy) instead uses the
+## smaller `ambush_min_dist` — those become the rare close-up ambushes.
 ##
 ## Called once at the end of start_dungeon_crawl so the standard-encounter
 ## spawn (which clusters near the player anchor) ends up dispersed across
 ## the 50×50 map. Without this, opening a crawl drops you straight into a
 ## point-blank ambush.
-func _redistribute_crawl_enemies(min_dist: int) -> void:
+func _redistribute_crawl_enemies(min_dist: int,
+		ambush_chance: float = 0.0, ambush_min_dist: int = 8) -> void:
 	# Snapshot player positions.
 	var player_positions: Array = []
 	for ent in _dungeon_entities:
@@ -13050,6 +13291,12 @@ func _redistribute_crawl_enemies(min_dist: int) -> void:
 		if bool(ent.get("is_chest", false)):      continue
 		if bool(ent.get("is_kaiju", false)):      continue   # bosses keep their pos
 
+		# Roll per-enemy: most enemies use the strict min_dist; a small
+		# percentage become "ambush" enemies allowed in closer.
+		var this_min: int = min_dist
+		if ambush_chance > 0.0 and rng.randf() < ambush_chance:
+			this_min = ambush_min_dist
+
 		var placed: bool = false
 		for attempt in range(200):
 			var tx: int = rng.randi_range(2, MAP_SIZE - 3)
@@ -13065,7 +13312,7 @@ func _redistribute_crawl_enemies(min_dist: int) -> void:
 			# Min-distance from every player
 			var ok: bool = true
 			for pp in player_positions:
-				if absi(tx - pp.x) + absi(ty - pp.y) < min_dist:
+				if absi(tx - pp.x) + absi(ty - pp.y) < this_min:
 					ok = false
 					break
 			if not ok:
@@ -13095,9 +13342,12 @@ func _spawn_crawl_extra_enemies(enemy_level: int, n: int) -> void:
 		attempts += 1
 		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
 		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
-		# Outer ring: at least 18 tiles from any player.
+		# Distance gate: 95% require at least 25 tiles from the player anchor;
+		# 5% become "ambush" spawns allowed as close as 8 tiles.
 		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
-		if dist < 18:
+		var ambush: bool = (rng.randf() < 0.05)
+		var min_dist: int = 8 if ambush else 25
+		if dist < min_dist:
 			continue
 		# Walkable check
 		var idx: int = ty * MAP_SIZE + tx

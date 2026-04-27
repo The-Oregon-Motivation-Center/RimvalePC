@@ -660,16 +660,19 @@ func build_sprite_model(lineage_name: String, weapon_name: String = "None",
 	sprite.transparent = true
 	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
 
-	# Size the sprite to fit nicely on a tile (~0.9 units wide max)
-	# The sprite's pixel_size converts pixels → world units
+	# Size the sprite to fit nicely on a tile.
+	# Width must NEVER exceed a tile (1 unit) or the billboard quad clips
+	# into adjacent wall tiles. Height can grow with model_scale for the
+	# region-map style's larger units.
+	var max_tile_width: float = 0.95   # stay just inside the 1.0 tile bound
 	var tex_w: float = float(tex.get_width())
 	var tex_h: float = float(tex.get_height())
-	var desired_height: float = 0.95 * model_scale  # ~0.95 world units tall at scale 1
+	var desired_height: float = 0.95 * model_scale
 	sprite.pixel_size = desired_height / tex_h
-	# Cap width so wide sprites don't overflow tiles
+	# Hard cap on world-space width — relative to TILE size, not model_scale.
 	var actual_w: float = tex_w * sprite.pixel_size
-	if actual_w > 0.85 * model_scale:
-		sprite.pixel_size = (0.85 * model_scale) / tex_w
+	if actual_w > max_tile_width:
+		sprite.pixel_size = max_tile_width / tex_w
 
 	# Vertical offset: center the sprite so feet touch ground
 	sprite.offset = Vector2(0, tex_h * 0.5)
