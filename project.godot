@@ -25,6 +25,7 @@ config/icon="res://icon.svg"
 
 RimvaleAPI="*res://autoload/rimvale_engine_singleton.gd"
 GameState="*res://autoload/game_state.gd"
+MagicItemData="*res://autoload/magic_item_data.gd"
 RimvaleColors="*res://autoload/rimvale_colors.gd"
 RimvaleUtils="*res://autoload/rimvale_utils.gd"
 CharacterModelBuilder="*res://autoload/character_model_builder.gd"

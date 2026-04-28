@@ -1263,10 +1263,13 @@ func _update_biome_environment() -> void:
 	_refresh_surround_appearance()
 
 ## Spawn ambient particles based on current biome.
+## Disabled — particles felt like floating clutter everywhere and caused lag.
+## We still clear old particles below in case a save-game has them attached.
 func _spawn_biome_particles() -> void:
 	if _particle_root == null: return
 	for c in _particle_root.get_children():
 		c.queue_free()
+	return  # no biome particles spawned
 
 	var half: float = MAP_SIZE * 0.5
 	var center: Vector3 = Vector3(half, 4.0, half)
@@ -4702,6 +4705,12 @@ func _rebuild_3d_ambience() -> void:
 	else:
 		for c in ambience_root.get_children():
 			c.queue_free()
+
+	# Ambient particles disabled — they were creating "floating dust everywhere"
+	# in dungeons and dungeon crawls and added significant per-rebuild cost.
+	# Existing particle emitters were just freed above, so this early-return
+	# leaves the AmbienceRoot empty.
+	return
 
 	if _map.is_empty(): return
 

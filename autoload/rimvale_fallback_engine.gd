@@ -1907,6 +1907,20 @@ func get_item_details(handle: int, item_name: String) -> PackedStringArray:
 func _format_item_details(item_name: String) -> PackedStringArray:
 	# UI layout: [rarity, cur_hp, max_hp, cost, item_type, mech_fields..., description]
 	if not _ITEM_REGISTRY.has(item_name):
+		# Fall back to the GMG-derived MagicItemData catalogue so the shop
+		# and inventory can render full info for the 200+ added items.
+		if typeof(MagicItemData) != TYPE_NIL and MagicItemData.ALL_MAGIC_ITEMS.has(item_name):
+			var rarity: String = MagicItemData.rarity_of(item_name)
+			var desc: String = MagicItemData.description_of(item_name)
+			# Rough rarity-based pricing tier (PHB-ish): Common 50, Uncommon 250,
+			# Rare 1000, Very Rare 5000, Legendary 25000.
+			var price: int = 50
+			match rarity:
+				"Uncommon":  price = 250
+				"Rare":      price = 1000
+				"Very Rare": price = 5000
+				"Legendary": price = 25000
+			return PackedStringArray([rarity, "20", "20", str(price), "General", desc])
 		return PackedStringArray(["Mundane", "0", "0", "0", "General", "Unknown item."])
 	var d = _ITEM_REGISTRY[item_name]
 	var raw_type: String = str(d[0])
@@ -2002,7 +2016,12 @@ func _parse_armor_weight_class(desc: String) -> String:
 	return "Light"
 
 func _parse_magic_rarity(item_name: String) -> String:
-	# Derive magic rarity. Default to Common for the small baseline items.
+	# First, the GMG catalogue authoritative lookup.
+	if typeof(MagicItemData) != TYPE_NIL:
+		var r: String = MagicItemData.rarity_of(item_name)
+		if r != "":
+			return r
+	# Fall back to substring sniffing for any rare hand-named items.
 	if item_name.find("Legendary") >= 0: return "Legendary"
 	if item_name.find("Very Rare") >= 0: return "Very Rare"
 	if item_name.find("Rare") >= 0: return "Rare"
@@ -2230,14 +2249,25 @@ const _MAGIC_ITEM_EFFECTS: Dictionary = {
 	"Traveler's Chalice":      {"poison_resist": 2, "rest_heal": 1},
 }
 
+## Resolve a magic-item effect dict, preferring the local hand-tuned table
+## and falling back to the auto-generated MagicItemData catalogue so all
+## 200+ GMG items contribute their effects.
+func _resolve_item_effects(item_name: String) -> Dictionary:
+	if _MAGIC_ITEM_EFFECTS.has(item_name):
+		return _MAGIC_ITEM_EFFECTS[item_name]
+	if typeof(MagicItemData) != TYPE_NIL:
+		return MagicItemData.effects_of(item_name)
+	return {}
+
 ## Sum all passive bonuses from ATTUNED magic items in a character's inventory.
 func _magic_item_bonus(handle: int, stat_key: String) -> int:
 	if not _chars.has(handle): return 0
 	var attuned: Array = _chars[handle].get("attuned", [])
 	var total: int = 0
 	for item_name in attuned:
-		if _MAGIC_ITEM_EFFECTS.has(item_name):
-			total += int(_MAGIC_ITEM_EFFECTS[item_name].get(stat_key, 0))
+		var eff: Dictionary = _resolve_item_effects(item_name)
+		if eff.has(stat_key):
+			total += int(eff[stat_key])
 	return total
 
 ## Check if character has an ATTUNED magic item with a boolean flag.
@@ -2245,9 +2275,9 @@ func _magic_item_has_flag(handle: int, flag: String) -> bool:
 	if not _chars.has(handle): return false
 	var attuned: Array = _chars[handle].get("attuned", [])
 	for item_name in attuned:
-		if _MAGIC_ITEM_EFFECTS.has(item_name):
-			if bool(_MAGIC_ITEM_EFFECTS[item_name].get(flag, false)):
-				return true
+		var eff: Dictionary = _resolve_item_effects(item_name)
+		if bool(eff.get(flag, false)):
+			return true
 	return false
 
 ## Attunement cost by rarity (PHB: Common 1, Uncommon 2, Rare 3, Very Rare 4, Legendary 5).
@@ -2492,7 +2522,20 @@ func get_all_registry_general_items() -> PackedStringArray:
 	return PackedStringArray(out)
 
 func get_all_registry_magic_items() -> PackedStringArray:
-	return _MAGIC_ITEM_NAMES
+	# Combine the small static list with the GMG-derived MagicItemData catalogue
+	# so the shop sees every magic item, not just the originally-wired 32.
+	var seen: Dictionary = {}
+	var out: Array = []
+	for n in _MAGIC_ITEM_NAMES:
+		if not seen.has(n):
+			seen[n] = true
+			out.append(n)
+	if Engine.has_singleton("MagicItemData") or typeof(MagicItemData) != TYPE_NIL:
+		for n in MagicItemData.all_names():
+			if not seen.has(n):
+				seen[n] = true
+				out.append(n)
+	return PackedStringArray(out)
 
 func get_all_registry_mundane_items() -> PackedStringArray:
 	return _MUNDANE_ITEM_NAMES

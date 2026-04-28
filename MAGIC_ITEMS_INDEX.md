@@ -1,0 +1,265 @@
+# Rimvale Magic Items — Master Index
+
+Pulled from `Lumen movies/GMG Rimvale V0.942.txt`. 
+✓ = effect already coded in `_MAGIC_ITEM_EFFECTS` (engine)
+✗ = no engine effect yet — needs wiring
+
+## Common (31)
+
+- ✓ Amberglow Pendant
+- ✗ Amulet of comfort ± 1
+- ✓ Aether-Touched Lens
+- ✓ Anvilstone
+- ✓ Arcane Stitching Kit
+- ✓ Ashcloak Thread
+- ✓ Babelstone Charm
+- ✓ Binding Nail
+- ✓ Candle of Clarity
+- ✓ Candle of Echoes
+- ✓ Cleansing Stone
+- ✓ Cradleleaf Poultice
+- ✓ Dagger of the Last Word
+- ✓ Dowsing Rod
+- ✓ Dustveil Cloak
+- ✓ Echoing Rift Stone
+- ✓ Flickerflame Matchbox
+- ✓ Forager’s Pouch
+- ✓ Glass of Truth
+- ✓ Glowroot Bandage
+- ✗ Glyphbound Scrollcase
+- ✓ Mender’s Thread
+- ✓ Messenger Feather
+- ✓ Mothwing Brooch
+- ✓ Needle of Silence
+- ✓ Pebble of Echoes
+- ✓ Shadow Sovereign’s Coin
+- ✓ Scent Masker
+- ✓ Silent Bell
+- ✓ Smoke Puff
+- ✓ Traveler’s Chalice
+
+## Uncommon (54)
+
+- ✗ Aberrant Flex Band
+- ✗ Amulet of simple weapons
+- ✗ Arcane Prosthetic Core
+- ✗ Argentmask Circlet
+- ✗ Armorweaver’s Thread
+- ✗ Automaton Servant Token
+- ✗ Bag of Tricks
+- ✗ Bands of the Unseen Bond
+- ✗ Blacksmith’s Ember
+- ✗ Boneclatter Chimes
+- ✗ Bonewind Flute
+- ✗ Boots of the Gale Walker
+- ✗ Breathweaver Mask
+- ✗ Chillwarden’s Shield
+- ✗ Cinderbite Fang
+- ✗ Cloak of comfort ± 2
+- ✗ Cosmic Quill
+- ✗ Cryptbone Dagger
+- ✗ Dimensional Satchel
+- ✗ Echoforge Spade
+- ✗ Echoing Stone
+- ✗ Ember of the Sacred Flame
+- ✗ Eternal Flame
+- ✗ Fluxglass Shard
+- ✗ Fragmented Mirror
+- ✗ Frostvein Pick
+- ✗ Glass Shard of Exile
+- ✗ Glimmerstone Band
+- ✗ Gravity-Twisted Boots
+- ✗ Gravpulse Boots
+- ✗ Gullet Mime’s Mask
+- ✗ Harmony's Lyre
+- ✗ Ironroot Bracers
+- ✗ Mantle of the Dreaming Tide
+- ✗ Moss-Eaten Satchel
+- ✗ Nullfield Capsule
+- ✗ Preserver’s Flask
+- ✗ Quill of Living Ink
+- ✗ Ring of Shield
+- ✗ Shadowgrasp Ring
+- ✗ Silent Step Boots
+- ✗ Silvermask of Silence
+- ✗ Skyward Harness
+- ✗ Sootscale Anklet
+- ✗ Starlit Lens
+- ✗ Stormbound Cloak
+- ✗ Tethercoil Bracer
+- ✗ The Breathless Cloak
+- ✗ Tide’s Token
+- ✗ Umbral Lens
+- ✗ Veyra's Whisper
+- ✗ Wandering Shepherd’s Crook
+- ✗ Whispering Wind
+- ✗ Wyrmglass Lens
+
+## Rare (50)
+
+- ✗ Arena Champion’s Band
+- ✗ Arena Champion’s Gauntlets
+- ✗ Banker’s Pocket Vault
+- ✗ Banner of the Victor
+- ✗ Beacon of Hope
+- ✗ Bilecrawler Husk Armor upgrade
+- ✗ Blood Spawn Talisman
+- ✗ Blood-Cinder Ring
+- ✗ Builder’s Runehammer
+- ✗ Chameleon’s Veil
+- ✗ Chrono-Knuckle
+- ✗ Duststep Feet
+- ✗ Echo frame Arm
+- ✗ Echoplate Patch
+- ✗ Eclipse Lantern
+- ✗ Feyglass Monocle
+- ✗ Forgefire Hammer
+- ✗ Fragmented Crown
+- ✗ Gilded Artisan Hand
+- ✗ Goldenfield Sickle
+- ✗ Gravetide Medallion
+- ✗ Guardian's Shield
+- ✗ Hero's Mantle
+- ✗ Horde-Breaker’s Horn
+- ✗ Ironseed Pod
+- ✗ Living Pathway Sandals
+- ✗ Mask of the Shifting Face
+- ✗ Maw-String
+- ✗ Modular Arcane Limb Array
+- ✗ Molten Emberstone
+- ✗ Paladin’s Last Stand
+- ✗ Pulsegrip Gauntlet
+- ✗ Reality Shard
+- ✗ Ring of comfort ± 3
+- ✗ Runeblade Arm
+- ✗ Seed of Breath
+- ✗ Sentinel’s Runebound Armor
+- ✗ Skybound Anklets
+- ✗ Spine of Oathbreakers
+- ✗ Starweave Gloves
+- ✗ Stasis Jar
+- ✗ Stormrunner Legs
+- ✗ Temporal Hourglass
+- ✗ Titanbone Greaves
+- ✗ Unity's Embrace
+- ✗ Veil of Shadows
+- ✗ Void Arm
+- ✗ Void threaded Gloves
+- ✗ Webspinner’s Gauntlets
+- ✗ Weirkin’s Pocket Protection
+
+## Very Rare (20)
+
+- ✗ Absolute Amulet of Comfort
+- ✗ Arachnid Ascension Frame
+- ✗ Atmospheric Prism
+- ✗ Bloodstained Laurel
+- ✗ Celestial Wing Harness
+- ✗ Chaos Blade
+- ✗ Druid’s Grove Staff
+- ✗ Echofield Beacon
+- ✗ Fang of the Forgotten Beast
+- ✗ Glacierforged Blade
+- ✗ Manifestation Mirror
+- ✗ Item Value
+- ✗ Mantle of the Riftwalker
+- ✗ Necrotic Lantern
+- ✗ Oracle’s Data Shard
+- ✗ Prime Eden Blossom
+- ✗ Starforge Tablet
+- ✗ Soulglass Circlet
+- ✗ Tombwarden’s Shield
+- ✗ Verdant Core
+
+## Legendary (69)
+
+- ✗ Blade of the Last Duel
+- ✗ Crown of the First Dawn
+- ✗ Crown of the Shattered Realms
+- ✗ Erylon’s Echo
+- ✗ Gauntlets of the Titan’s Grasp
+- ✗ Heart of the Leviathan
+- ✗ Mantle of the Dreaming Tide
+- ✗ Phoenix Feather Cloak
+- ✗ Starbound Compass
+- ✗ Titanforge Spine
+- ✗ Vaultstone Aegis
+- ✗ Veil of the Forgotten Queen
+- ✗ Astral Bloom Harness
+- ✗ Bloodwright Talon
+- ✗ Embercoil Limb
+- ✗ Gloomshard Eye
+- ✗ Gravetide Spine
+- ✗ Ironhowl Jaw
+- ✗ Pulsegrip Gauntlet
+- ✗ Sirenlink Visor
+- ✗ Starweft Veil
+- ✗ Stormbound Ankles
+- ✗ Voidweft Halo
+- ✗ Whisperlace Fingers
+- ✗ Wyrmcoil Spine
+- ✗ Ashdrop Vial
+- ✗ Atmoskin
+- ✗ Bileburst Capsule
+- ✗ Binding Oil
+- ✗ Binding Resin
+- ✗ Bloodroot Draught
+- ✗ Boneveil Charm
+- ✗ Chrono-Touched Thread
+- ✗ Crystalfade Dust
+- ✗ Crypt Dust Vial
+- ✗ Echoed Feather
+- ✗ Echoflame Scroll
+- ✗ Emberveil Charm
+- ✗ Erylon's Fragment
+- ✗ Frostbite Token
+- ✗ Frostveil Capsule
+- ✗ Glimmershade Ink
+- ✗ Gravebloom Petal
+- ✗ Gravetide Coin
+- ✗ Ironhowl Powder
+- ✗ Lanternseed Capsule
+- ✗ Leviathan’s Breath Pearl
+- ✗ Leyline Storm Vial
+- ✗ Mirrorsteel Flake
+- ✗ Molten Fang Extract
+- ✗ Phantomstep Draught
+- ✗ Reforge Token
+- ✗ Riftcall Capsule
+- ✗ Riftstone Chip
+- ✗ Sanctified Ember
+- ✗ Sanctified Inkdrop
+- ✗ Sanctumroot Elixir
+- ✗ Savior's Tear
+- ✗ Starshard Infusion
+- ✗ Stormthread Tangle
+- ✗ Soulthread Knot
+- ✗ Sparklebrand Salve
+- ✗ Stormcall Fang
+- ✗ Sunflare Bead
+- ✗ Tideglass Potion
+- ✗ Tombwarden’s Whisper
+- ✗ Vaultstone Barrier Token
+- ✗ Voidglass Shard
+- ✗ Voidglass Vial
+
+## Specialty (15)
+
+- ✗ Arcane Baton
+- ✗ Arcane Pistol
+- ✗ Arcane Rifle
+- ✗ Arcane Motorcycle
+- ✗ Arcane Quad
+- ✗ Arcane Sedan
+- ✗ Arcane Rover
+- ✗ Arcane Juggernaut
+- ✗ Uses 2 ST per shot
+- ✗ Arcane Copter
+- ✗ Arcane Skimmer
+- ✗ Arcane Catamaran
+- ✗ Arcane Barge
+- ✗ Arcane Diver
+- ✗ Arcane Drifter
+
+---
+**Coverage: 29 wired / 239 total — 210 still need engine effects.**
