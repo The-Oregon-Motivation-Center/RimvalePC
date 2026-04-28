@@ -294,6 +294,12 @@ var _env_node:          WorldEnvironment = null
 var _surround_floor:    MeshInstance3D = null
 var _surround_floor_mat: StandardMaterial3D = null
 var _surround_walls:    Node3D         = null
+# Material cache. _make_mat() is called thousands of times per rebuild on
+# a 50×50 crawl map, with most calls producing near-identical materials
+# (slight color jitter etc.). The cache quantises the parameters and
+# returns a shared StandardMaterial3D, dropping allocations from ~5000
+# down to a few dozen per rebuild.
+var _mat_cache: Dictionary = {}
 # Crawl-mode explore-walk animation. When the user clicks a tile in explore
 # mode, the dungeon scene drives a timer that asks the engine to move the
 # party one tile at a time, so the user can see the walk and interrupt it
@@ -455,9 +461,32 @@ func _first_3d_build() -> void:
 	_sync_viewport_size()
 	if _cam3d != null:
 		_cam3d.make_current()
+		_center_camera_on_party()   # frame the party, not the map's centre
 		_update_camera_pos()
 	_map_dirty = true
 	_update_3d_view()
+
+
+## Set _cam_target_offset so the camera looks at the party's average tile
+## position instead of the map centre. Called once after the dungeon loads.
+func _center_camera_on_party() -> void:
+	if _entities == null or _entities.is_empty():
+		return
+	var sum_x: float = 0.0
+	var sum_z: float = 0.0
+	var count: int = 0
+	for ent in _entities:
+		if not bool(ent.get("is_player", false)): continue
+		if bool(ent.get("is_dead", false)): continue
+		sum_x += float(int(ent["x"])) + 0.5
+		sum_z += float(int(ent["y"])) + 0.5
+		count += 1
+	if count == 0:
+		return
+	var avg_x: float = sum_x / float(count)
+	var avg_z: float = sum_z / float(count)
+	var half: float = float(MAP_SIZE) * 0.5
+	_cam_target_offset = Vector3(avg_x - half, 0.0, avg_z - half)
 
 ## No-op — viewport uses a fixed internal resolution with stretch=true.
 func _sync_viewport_size() -> void:
@@ -2936,17 +2965,21 @@ func _build_center_panel() -> Control:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color  = Color(0.12, 0.08, 0.20)
 	env.ambient_light_energy = 0.6
-	env.glow_enabled         = true
+	# GPU-expensive post-effects scale with quality. SSAO and fog aerial
+	# perspective are full-screen passes — cheapest to disable on Low.
+	var hi_quality: bool = (_quality == "high")
+	var med_or_higher: bool = (_quality != "low")
+	env.glow_enabled         = med_or_higher
 	env.glow_intensity       = 0.6
 	env.glow_bloom           = 0.15
 	env.glow_blend_mode      = Environment.GLOW_BLEND_MODE_ADDITIVE
-	env.ssao_enabled         = true
+	env.ssao_enabled         = hi_quality
 	env.ssao_radius          = 0.8
 	env.ssao_intensity       = 1.4
 	env.fog_enabled          = true
 	env.fog_light_color      = Color(0.04, 0.02, 0.08)
 	env.fog_density          = 0.02
-	env.fog_aerial_perspective = 0.3
+	env.fog_aerial_perspective = 0.3 if med_or_higher else 0.0
 	_env_node.environment = env
 	_world3d_root.add_child(_env_node)
 
@@ -3633,17 +3666,35 @@ func _update_3d_view() -> void:
 # ── Material helpers ──────────────────────────────────────────────────────────
 func _make_mat(col: Color, metallic: float = 0.0, roughness: float = 0.85,
 			   emission: Color = Color.BLACK, emission_energy: float = 0.0) -> StandardMaterial3D:
+	# Quantise inputs to a coarse grid so near-identical materials share one
+	# StandardMaterial3D instance. The visual difference at this granularity
+	# is imperceptible but the perf savings are huge on 50×50 maps.
+	var ar: int = int(col.r * 32.0)
+	var ag: int = int(col.g * 32.0)
+	var ab: int = int(col.b * 32.0)
+	var aa: int = int(col.a * 16.0)
+	var er: int = int(emission.r * 32.0)
+	var eg: int = int(emission.g * 32.0)
+	var eb: int = int(emission.b * 32.0)
+	var ee: int = int(emission_energy * 8.0)
+	var mt: int = int(metallic * 16.0)
+	var rg: int = int(roughness * 16.0)
+	var key: String = "%d_%d_%d_%d|%d_%d_%d_%d|%d_%d" % [
+		ar, ag, ab, aa, er, eg, eb, ee, mt, rg
+	]
+	if _mat_cache.has(key):
+		return _mat_cache[key]
 	var m := StandardMaterial3D.new()
 	m.albedo_color    = col
 	m.metallic        = metallic
 	m.roughness       = roughness
-	# Auto-enable alpha transparency when colour has partial transparency
 	if col.a < 0.999:
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	if emission_energy > 0.0:
 		m.emission_enabled = true
 		m.emission         = emission
 		m.emission_energy_multiplier = emission_energy
+	_mat_cache[key] = m
 	return m
 
 func _make_mesh_inst(mesh: Mesh, mat: StandardMaterial3D,
@@ -5416,8 +5467,17 @@ func _on_explore_walk_tick() -> void:
 	# Lite refresh: pull entity positions only; do NOT mark _map_dirty so the
 	# 3D tile / torch / ambience meshes don't get rebuilt every tick.
 	_entities = _e.get_dungeon_entities()
-	# Only update entities (cheap); skip the full _update_3d_view rebuild.
-	_update_3d_entities()
+	# Detect wall-break: if the map tile data changed this step (a wall got
+	# converted to floor), do a one-tick full rebuild so the broken wall
+	# disappears visually. Otherwise stay on the cheap entity-only path.
+	var new_map: PackedInt32Array = _e.get_dungeon_map()
+	var map_changed: bool = _map_changed(new_map)
+	if map_changed:
+		_map = new_map
+		_map_dirty = true
+		_update_3d_view()
+	else:
+		_update_3d_entities()
 
 	var ended := false
 	if bool(result.get("combat_triggered", false)):
@@ -5575,7 +5635,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 
 		# ── Camera pan with WASD / Arrow keys ────────────────────────────────
+		# Q / E rotate the camera yaw (Q = clockwise, E = counter-clockwise).
 		var pan_speed: float = 1.5
+		var yaw_step: float = 15.0
 		var yaw_r: float = deg_to_rad(_cam_yaw)
 		# Forward/back are relative to camera yaw so W always moves "into" the screen
 		var forward := Vector3(sin(yaw_r), 0.0, cos(yaw_r))
@@ -5594,6 +5656,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_D, KEY_RIGHT:
 				_cam_target_offset += right_dir * pan_speed
 				panned = true
+			KEY_Q:
+				_cam_yaw -= yaw_step    # clockwise (camera orbits the other way)
+				_update_camera_pos()
+				get_viewport().set_input_as_handled()
+				return
+			KEY_E:
+				_cam_yaw += yaw_step    # counter-clockwise
+				_update_camera_pos()
+				get_viewport().set_input_as_handled()
+				return
 			KEY_HOME:
 				# Reset camera to map centre
 				_cam_target_offset = Vector3.ZERO
@@ -6356,13 +6428,42 @@ func _auto_select_first() -> void:
 func _refresh() -> void:
 	_entities  = _e.get_dungeon_entities()
 	_fog       = _e.get_dungeon_fog()
-	_elevation = _e.get_dungeon_elevation_map()
+	var new_elev: Array = _e.get_dungeon_elevation_map()
+	var new_map: PackedInt32Array = _e.get_dungeon_map()
+	# Rebuild the (expensive) tile meshes only when the actual terrain has
+	# changed. _refresh() is called after every player action — without
+	# this guard, a single melee attack would rebuild 5000+ meshes on a
+	# 50×50 map. Cheap O(n) compare vs the rebuild.
+	if _elevation_changed(new_elev) or _map_changed(new_map):
+		_map_dirty = true
+	_elevation = new_elev
+	_map       = new_map
 	_round_label.text = "Round %d" % _e.get_dungeon_round()
-	_map_dirty = true   # elevation/terrain may have changed — rebuild tiles
 	_check_combat_mode_transition()
 	_update_3d_view()
 	_update_entity_card()
 	_update_roster()
+
+
+## Compare new elevation to cached. Returns true if any tile differs.
+func _elevation_changed(new_elev: Array) -> bool:
+	if _elevation == null or _elevation.size() != new_elev.size():
+		return true
+	for i in range(new_elev.size()):
+		if int(new_elev[i]) != int(_elevation[i]):
+			return true
+	return false
+
+
+## Compare new map to cached. Returns true if any tile type differs (covers
+## walls being broken / converted to floor in explore mode).
+func _map_changed(new_map: PackedInt32Array) -> bool:
+	if _map == null or _map.size() != new_map.size():
+		return true
+	for i in range(new_map.size()):
+		if _map[i] != new_map[i]:
+			return true
+	return false
 
 func _update_entity_card() -> void:
 	var ent: Dictionary = _get_entity(_selected_id)

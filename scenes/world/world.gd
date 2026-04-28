@@ -2244,6 +2244,8 @@ func _build_dungeon_tab(parent: Control) -> void:
 		["Mob Encounter",     Color(0.75, 0.44, 0.25, 1.0)],
 		["Custom Monster",    Color(0.80, 0.20, 0.80, 1.0)],
 		["🗺 Dungeon Crawl",  Color(0.30, 0.55, 0.40, 1.0)],
+		["🏰 Siege Warfare",  Color(0.65, 0.40, 0.20, 1.0)],
+		["🔍 Search & Find",  Color(0.40, 0.30, 0.65, 1.0)],
 	]
 	_dd_type_btns.clear()
 	for i in range(type_data.size()):
@@ -2505,6 +2507,30 @@ func _dd_rebuild_config() -> void:
 				clbl.text = "Enemy Level: %d" % _dd_enemy_level)
 			crow.add_child(cslider)
 			_dd_config_panel.add_child(crow)
+		8: # Search & Find
+			var sf_info = RimvaleUtils.label(
+				"Extended 50×50 dungeon with a single GOAL CHEST hidden somewhere. "
+				+ "Loot the chest to win — defeating enemies is optional. Detection AI "
+				+ "and chest scatter same as Dungeon Crawl.",
+				11, RimvaleColors.TEXT_GRAY)
+			sf_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_dd_config_panel.add_child(sf_info)
+			var sf_row = HBoxContainer.new()
+			sf_row.add_theme_constant_override("separation", 8)
+			var sf_lbl = RimvaleUtils.label("Enemy Level: %d" % _dd_enemy_level, 13, RimvaleColors.TEXT_WHITE)
+			sf_lbl.custom_minimum_size = Vector2(150, 0)
+			sf_row.add_child(sf_lbl)
+			var sf_slider = HSlider.new()
+			sf_slider.min_value = 1
+			sf_slider.max_value = 15
+			sf_slider.step = 1
+			sf_slider.value = _dd_enemy_level
+			sf_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			sf_slider.value_changed.connect(func(v: float) -> void:
+				_dd_enemy_level = int(v)
+				sf_lbl.text = "Enemy Level: %d" % _dd_enemy_level)
+			sf_row.add_child(sf_slider)
+			_dd_config_panel.add_child(sf_row)
 		7: # Siege Warfare
 			var info = RimvaleUtils.label(
 				"Assault a fortified position. Break through walls defended by organized forces.",
@@ -2607,6 +2633,11 @@ func _dd_launch() -> void:
 			RimvaleAPI.engine.start_dungeon_crawl(handles, _dd_enemy_level, _dd_terrain_style)
 		7: # Siege (no UI yet; legacy code path)
 			RimvaleAPI.engine.start_siege_dungeon(handles, _dd_siege_tier, _dd_terrain_style)
+		8: # Search & Find — crawl-style dungeon with a goal chest objective
+			if RimvaleAPI.engine.has_method("start_dungeon_search_and_find"):
+				RimvaleAPI.engine.start_dungeon_search_and_find(handles, _dd_enemy_level, _dd_terrain_style)
+			else:
+				RimvaleAPI.engine.start_dungeon_crawl(handles, _dd_enemy_level, _dd_terrain_style)
 	# Spawn recruited allies into the dungeon as friendly entities
 	if GameState.recruited_allies.size() > 0:
 		RimvaleAPI.engine.spawn_allies(GameState.recruited_allies)

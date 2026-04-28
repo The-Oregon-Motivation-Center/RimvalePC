@@ -8208,19 +8208,99 @@ func crawl_in_explore_mode() -> bool:
 			return false
 	return true
 
-## BFS pathfind from (fx,fy) to (tx,ty) through walkable floor tiles.
+## True if (x, y) is walkable for explore-mode pathfinding.
+##
+## When `allow_breakable` is true (the fallback pass), the path may also
+## include wall, obstacle, AND void tiles — those will be auto-converted to
+## floor when stepped on. This lets the party escape generation flaws where
+## the dungeon doesn't fill the whole map.
+##
+## Tiles outside the map bounds are never walkable.
+func _crawl_tile_walkable(x: int, y: int, is_flying: bool, allow_breakable: bool = false) -> bool:
+	if x < 0 or y < 0 or x >= MAP_SIZE or y >= MAP_SIZE:
+		return false
+	var t: int = _dung_tile(x, y)
+	if t == TILE_FLOOR:
+		return true
+	if is_flying and t != TILE_VOID:
+		return true   # flying handles walls; void still requires fill
+	if allow_breakable:
+		# Floor/wall/obstacle/void can all be entered in the fallback pass
+		# (walls + obstacles are smashed; void is "bridged"/filled in).
+		return true
+	return false
+
+
+## Map of breakable-wall HP keyed by tile index. Walls default to 4 HP.
+## Set as side-effect during pathfinding/stepping. AC 0 means any attack
+## hits automatically; the party always lands one full attack when stepping
+## onto a wall (4 damage from any weapon kills a 4-HP wall in one swing).
+var _wall_hp_by_idx: Dictionary = {}
+
+## Search-and-find dungeon mode. When active, victory triggers when the
+## party loots the goal chest (regardless of remaining enemies). Defeat
+## still requires the whole party to die. Set by start_dungeon_search_and_find.
+var _dungeon_search_active: bool = false
+var _dungeon_search_goal_found: bool = false
+var _dungeon_search_goal_item: String = ""
+
+## Step onto a breakable / fillable tile — instantly converts it to floor.
+##  - TILE_WALL / TILE_OBSTACLE: smashed (AC 0, 4 HP — any party attack one-shots)
+##  - TILE_VOID: bridged/filled (party places a plank, etc.)
+##
+## Returns a log line describing the action.
+func _crawl_break_wall_at(x: int, y: int) -> String:
+	if x < 0 or y < 0 or x >= MAP_SIZE or y >= MAP_SIZE:
+		return ""
+	var idx: int = y * MAP_SIZE + x
+	if idx < 0 or idx >= _dungeon_map.size():
+		return ""
+	var t: int = _dungeon_map[idx]
+	if t == TILE_FLOOR:
+		return ""
+	_wall_hp_by_idx[idx] = 0
+	_dungeon_map[idx] = TILE_FLOOR
+	# Also make sure elevation is sensible — void tiles default to elev 0
+	# (pit) which is impassable for most movement code; bump to 1 (normal).
+	if _dungeon_elevation.size() == _dungeon_map.size():
+		if int(_dungeon_elevation[idx]) <= 0:
+			_dungeon_elevation[idx] = 1
+	if t == TILE_WALL:
+		return "Smashed through a wall."
+	if t == TILE_OBSTACLE:
+		return "Cleared an obstacle."
+	return "Bridged a gap."
+
+## BFS pathfind from (fx,fy) to (tx,ty). Honors flying and breakable walls.
+##
+## Tries a floor-only path first (preferred — no wall-smashing). If that
+## fails, retries allowing breakable walls (TILE_WALL, TILE_OBSTACLE) on
+## the path — those will be auto-destroyed when stepped onto.
+##
 ## Returns the full path as an Array of Vector2i (excluding the start tile),
 ## or empty Array if unreachable.
-##
-## Treats the LEADER's current tile as occupied by themselves (so they can
-## leave it). Followers' tiles are ignored — they chain-shift behind the
-## leader so they aren't real obstructions.
 func _crawl_pathfind(fx: int, fy: int, tx: int, ty: int) -> Array:
 	if fx == tx and fy == ty:
 		return []
-	if _dung_tile(tx, ty) != TILE_FLOOR:
+	var party_flying: bool = false
+	for ent in _dungeon_entities:
+		if not ent.get("is_player", false): continue
+		if ent.get("is_dead", false): continue
+		if bool(ent.get("is_flying", false)):
+			party_flying = true
+			break
+	# Try floor-only first.
+	var path: Array = _crawl_pathfind_internal(fx, fy, tx, ty, party_flying, false)
+	if not path.is_empty():
+		return path
+	# Fallback: allow path through breakable walls / obstacles.
+	return _crawl_pathfind_internal(fx, fy, tx, ty, party_flying, true)
+
+
+func _crawl_pathfind_internal(fx: int, fy: int, tx: int, ty: int,
+		party_flying: bool, allow_breakable: bool) -> Array:
+	if not _crawl_tile_walkable(tx, ty, party_flying, allow_breakable):
 		return []
-	# BFS — fast enough for any 50×50 map (max 2500 nodes).
 	var came_from: Dictionary = {}
 	var visited: Dictionary = {}
 	var queue: Array = []
@@ -8233,7 +8313,6 @@ func _crawl_pathfind(fx: int, fy: int, tx: int, ty: int) -> Array:
 		if cur.x == tx and cur.y == ty:
 			found = true
 			break
-		# 4-neighbour orthogonal expansion
 		var neighbours: Array = [
 			Vector2i(cur.x + 1, cur.y),
 			Vector2i(cur.x - 1, cur.y),
@@ -8242,25 +8321,20 @@ func _crawl_pathfind(fx: int, fy: int, tx: int, ty: int) -> Array:
 		]
 		for n in neighbours:
 			if visited.has(n): continue
-			if _dung_tile(n.x, n.y) != TILE_FLOOR: continue
-			# Block on enemies/chests but allow walking through allies (they
-			# chain-shift) and the destination tile.
+			if not _crawl_tile_walkable(n.x, n.y, party_flying, allow_breakable): continue
 			var blocker = _dung_entity_at(n.x, n.y)
 			if blocker != null:
 				if blocker.get("is_chest", false) and not (n.x == tx and n.y == ty):
-					# Allow stepping onto a chest only if it's the target.
 					continue
 				if not blocker.get("is_player", false) \
 						and not blocker.get("is_friendly", false) \
 						and not blocker.get("is_dead", false):
-					# Enemy in the way — block.
 					continue
 			visited[n] = true
 			came_from[n] = cur
 			queue.append(n)
 	if not found:
 		return []
-	# Reconstruct path from target back to start, then reverse.
 	var path: Array = []
 	var node: Vector2i = Vector2i(tx, ty)
 	while node != start_key:
@@ -8270,7 +8344,8 @@ func _crawl_pathfind(fx: int, fy: int, tx: int, ty: int) -> Array:
 	return path
 
 ## Set of all tiles reachable from the party leader (used for the explore-mode
-## highlight overlay). Returns Array[Vector2i].
+## highlight overlay). Honors flying — flying leaders can reach over walls.
+## Returns Array[Vector2i].
 func crawl_reachable_tiles() -> Array:
 	if not crawl_in_explore_mode():
 		return []
@@ -8282,6 +8357,14 @@ func crawl_reachable_tiles() -> Array:
 		break
 	if leader.is_empty():
 		return []
+	# Honor any party member's flying — same rule as pathfinding.
+	var party_flying: bool = false
+	for ent in _dungeon_entities:
+		if not ent.get("is_player", false): continue
+		if ent.get("is_dead", false): continue
+		if bool(ent.get("is_flying", false)):
+			party_flying = true
+			break
 	var fx: int = int(leader["x"])
 	var fy: int = int(leader["y"])
 	var visited: Dictionary = {Vector2i(fx, fy): true}
@@ -8296,7 +8379,7 @@ func crawl_reachable_tiles() -> Array:
 		]
 		for n in neighbours:
 			if visited.has(n): continue
-			if _dung_tile(n.x, n.y) != TILE_FLOOR: continue
+			if not _crawl_tile_walkable(n.x, n.y, party_flying): continue
 			var blocker = _dung_entity_at(n.x, n.y)
 			if blocker != null:
 				if not blocker.get("is_player", false) \
@@ -8338,6 +8421,12 @@ func crawl_step_party_once(tx: int, ty: int, defer_fog: bool = false) -> Diction
 		return {"moved": false, "arrived": false, "combat_triggered": false,
 				"blocked": true, "reason": "no path"}
 	var step: Vector2i = path[0]
+	# If the next tile isn't floor (wall, obstacle, or void), smash/fill it
+	# to floor before stepping on. AC 0 / 4 HP → any party attack one-shots
+	# walls and obstacles; void gets bridged with a plank/board.
+	var step_t: int = _dung_tile(step.x, step.y)
+	if step_t != TILE_FLOOR:
+		_crawl_break_wall_at(step.x, step.y)
 	var prev_x: int = int(leader["x"])
 	var prev_y: int = int(leader["y"])
 	leader["x"] = step.x
@@ -8470,7 +8559,13 @@ func _try_loot_chest_at(tx: int, ty: int) -> void:
 			picked.append(str(item_name))
 		ent["inventory"] = []
 		ent["looted"] = true
-		# Combat log so the player gets feedback.
+		# Search-and-find: mark goal-found if this is the goal chest.
+		# That flips check_dungeon_outcome() to "victory" on next check.
+		if bool(ent.get("is_goal_chest", false)):
+			_dungeon_search_goal_found = true
+			var goal: String = str(ent.get("goal_item", _dungeon_search_goal_item))
+			_combat_log = "Found %s! The objective is complete." % goal
+			return
 		if picked.size() > 0:
 			_combat_log = "Opened %s — found %s." % [str(ent.get("name", "Treasure Chest")), ", ".join(picked)]
 		else:
@@ -8545,12 +8640,18 @@ func check_dungeon_outcome() -> String:
 			alive_players += 1
 		elif bool(ent.get("is_friendly", false)):
 			pass  # allies don't count as enemies
+		elif bool(ent.get("is_chest", false)):
+			pass  # chests aren't enemies
 		else:
 			alive_enemies += 1
-	if alive_enemies == 0:
-		return "victory"
 	if alive_players == 0:
 		return "defeat"
+	# Search-and-find: looting the goal chest is a victory regardless of
+	# remaining enemies. Otherwise normal "kill them all" rule.
+	if _dungeon_search_active and _dungeon_search_goal_found:
+		return "victory"
+	if alive_enemies == 0:
+		return "victory"
 	return "ongoing"
 
 ## Returns outcome data dict on victory: {xp, gold, items}.
@@ -13254,8 +13355,100 @@ func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> 
 ##
 ## Internally this delegates to `start_dungeon()` for the heavy lifting,
 ## then post-processes the entity list to add the alert state and chests.
+## Possible objective items for search-and-find dungeons.
+## Random one is picked per dungeon and placed in the goal chest.
+const SEARCH_GOAL_ITEMS: Array = [
+	"The Lost Artifact",
+	"Sealed Tome of Riftcraft",
+	"Crown of the Forgotten King",
+	"Heartstone of the Mire",
+	"The Whispering Idol",
+	"Phial of First Light",
+	"Sigil of the Vanishing Order",
+	"The Pilgrim's Locket",
+	"Charter of the Hollow Pact",
+	"Ash-Etched Map",
+]
+
+## Search-and-find dungeon — same generation as Dungeon Crawl, but with a
+## single GOAL CHEST containing the objective item placed at a far-away
+## tile. Victory triggers the moment the party loots that chest, even if
+## enemies remain. Optional `goal_item_override` lets a quest pin a name.
+func start_dungeon_search_and_find(player_handles, enemy_level: int,
+		terrain_style: int, extra_enemies: int = 5,
+		goal_item_override: String = "") -> void:
+	# Spin up a normal crawl first.
+	start_dungeon_crawl(player_handles, enemy_level, terrain_style, extra_enemies)
+	# Layer the search-and-find state on top.
+	_dungeon_search_active     = true
+	_dungeon_search_goal_found = false
+	if goal_item_override != "":
+		_dungeon_search_goal_item = goal_item_override
+	else:
+		_dungeon_search_goal_item = SEARCH_GOAL_ITEMS[randi() % SEARCH_GOAL_ITEMS.size()]
+	_dungeon_encounter_name = "Search & Find: %s" % _dungeon_search_goal_item
+	_spawn_search_goal_chest()
+
+
+## Place a uniquely-tagged chest on a far floor tile. Falls back to any
+## floor tile if no distant one is available. Used by search-and-find.
+func _spawn_search_goal_chest() -> void:
+	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)):
+			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
+			break
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var best: Vector2i = Vector2i(-1, -1)
+	var best_dist: int = -1
+	for attempt in range(400):
+		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+		var idx: int = ty * MAP_SIZE + tx
+		if idx < 0 or idx >= _dungeon_map.size(): continue
+		if _dungeon_map[idx] != TILE_FLOOR: continue
+		if _dung_occupied(tx, ty): continue
+		var d: int = absi(tx - anchor.x) + absi(ty - anchor.y)
+		if d > best_dist:
+			best_dist = d
+			best = Vector2i(tx, ty)
+	if best.x < 0: return
+	_dungeon_entities.append({
+		"id":         "goal_chest",
+		"name":       "Lost Treasure",
+		"handle":     -1,
+		"is_player":  false,
+		"is_friendly": false,
+		"is_dead":    false,
+		"is_flying":  false,
+		"is_chest":   true,
+		"is_goal_chest": true,
+		"goal_item":  _dungeon_search_goal_item,
+		"x": best.x, "y": best.y, "z": 0,
+		"hp":   1, "max_hp": 1,
+		"ap":   0, "max_ap": 0,
+		"sp":   0, "max_sp": 0,
+		"ac":   0,
+		"speed": 0,
+		"ap_spent": 0, "move_used": 0,
+		"equipped_weapon": "None",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":  [_dungeon_search_goal_item],
+		"looted":     false,
+	})
+
+
 func start_dungeon_crawl(player_handles, enemy_level: int, terrain_style: int,
 		extra_enemies: int = 5) -> void:
+	# Reset search-and-find state — pure crawl mode doesn't use it.
+	_dungeon_search_active     = false
+	_dungeon_search_goal_found = false
+	_dungeon_search_goal_item  = ""
+
 	# Switch global map size BEFORE start_dungeon runs so its fog/elevation
 	# arrays size correctly. _crawl_active gates the start_dungeon reset.
 	_crawl_active = true
