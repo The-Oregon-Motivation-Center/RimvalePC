@@ -733,6 +733,86 @@ func _load_sprite_portrait(lineage_name: String) -> Texture2D:
 	return null
 
 
+const VEHICLE_SPRITE_BASE := "res://assets/vehicles_3d/"
+
+## Build a Sprite3D billboard for a vehicle. Used on the region map when the
+## party has deployed a vehicle — replaces the team's character token. Falls
+## back to a coloured rounded box when no `vehicle_<slug>.png` asset exists
+## yet so the gameplay still works while images are pending.
+func build_vehicle_sprite_model(vehicle_name: String, model_scale: float = 1.4) -> Node3D:
+	var root := Node3D.new()
+	root.name = "VehicleModel_%s" % vehicle_name.replace(" ", "_").replace("'", "")
+
+	var tex: Texture2D = _load_vehicle_sprite(vehicle_name)
+	if tex != null:
+		var sprite := Sprite3D.new()
+		sprite.texture = tex
+		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		sprite.shaded = true
+		sprite.double_sided = true
+		sprite.transparent = true
+		sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_OPAQUE_PREPASS
+		var max_tile_width: float = 0.95
+		var tex_w: float = float(tex.get_width())
+		var tex_h: float = float(tex.get_height())
+		var desired_height: float = 0.95 * model_scale
+		sprite.pixel_size = desired_height / tex_h
+		if tex_w * sprite.pixel_size > max_tile_width:
+			sprite.pixel_size = max_tile_width / tex_w
+		sprite.offset = Vector2(0, tex_h * 0.5)
+		root.add_child(sprite)
+	else:
+		# Placeholder — coloured rounded box with a label until images ship.
+		var box := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.85, 0.45, 0.55)
+		box.mesh = bm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.85, 0.65, 0.20)
+		mat.metallic = 0.3
+		mat.roughness = 0.4
+		box.material_override = mat
+		box.position.y = 0.3
+		root.add_child(box)
+		# Floating label so debug builds can see which vehicle is deployed.
+		var lbl := Label3D.new()
+		lbl.text = vehicle_name
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.font_size = 24
+		lbl.outline_size = 6
+		lbl.modulate = Color(1.0, 0.95, 0.6)
+		lbl.position.y = 0.95
+		root.add_child(lbl)
+
+	# Subtle accent light so the vehicle pops at night
+	var rim := OmniLight3D.new()
+	rim.light_color = Color(1.0, 0.85, 0.45)
+	rim.light_energy = 0.6
+	rim.omni_range = 0.9
+	rim.position.y = 0.5
+	root.add_child(rim)
+
+	return root
+
+
+## Load the billboard texture for a vehicle. Uses VEHICLE_SPRITE_BASE +
+## "vehicle_<slug>.png" naming convention.
+func _load_vehicle_sprite(vehicle_name: String) -> Texture2D:
+	var key: String = "vehicle_" + vehicle_name.to_lower().replace(" ", "_") \
+		.replace("-", "_").replace("'", "")
+	var path: String = VEHICLE_SPRITE_BASE + key + ".png"
+	if ResourceLoader.exists(path):
+		var res = load(path)
+		if res is Texture2D:
+			return res as Texture2D
+	var abs_path: String = ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(abs_path):
+		var img := Image.load_from_file(abs_path)
+		if img != null:
+			return ImageTexture.create_from_image(img)
+	return null
+
+
 ## Convenience: build sprite model from a character handle.
 func build_sprite_for_handle(handle: int, team_color: Color = Color.WHITE) -> Node3D:
 	var e = RimvaleAPI.engine

@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://bu0iqe65r2g4j"
+path="res://.godot/imported/corridor-wide.obj-a792e7ce35eb7e55be4fd9e245dd7eea.mesh"
+
+[deps]
+
+files=["res://.godot/imported/corridor-wide.obj-a792e7ce35eb7e55be4fd9e245dd7eea.mesh"]
+
+source_file="res://fantasy-town-kit/modular-dungeon-kit/Models/OBJ format/corridor-wide.obj"
+dest_files=["res://.godot/imported/corridor-wide.obj-a792e7ce35eb7e55be4fd9e245dd7eea.mesh", "res://.godot/imported/corridor-wide.obj-a792e7ce35eb7e55be4fd9e245dd7eea.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

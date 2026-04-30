@@ -264,13 +264,14 @@ func create_character(name: String, lineage: String, age: int) -> int:
 		"id":         "char_%d" % h,
 		"level":      1,
 		"xp":         0,
-		"xp_req":     100,
+		"xp_req":     10,    # see _xp_required_for_level()
 		"hp":         20, "max_hp":  20,
 		"ap":         10, "max_ap":  10,
 		"sp":         6,  "max_sp":  6,
 		"ac":         10,
 		"speed":      6,
 		"weapon":     "None",
+		"offhand":    "None",   # off-hand weapon for Twin Fang dual wielding
 		"armor":      "None",
 		"shield":     "None",
 		"light":      "None",
@@ -297,6 +298,16 @@ func create_character(name: String, lineage: String, age: int) -> int:
 func destroy_character(handle: int) -> void:
 	_chars.erase(handle)
 
+## XP required to advance from `level` to `level+1`.
+## Curve: 10 XP at level 1, doubling each level, capped at 1000 XP per level.
+##   L1=10  L2=20  L3=40  L4=80  L5=160  L6=320  L7=640  L8+=1000
+func _xp_required_for_level(level: int) -> int:
+	var lvl: int = maxi(1, level)
+	# Clamp the bit-shift to avoid overflow at very high levels.
+	var shift: int = mini(lvl - 1, 30)
+	var req: int = 10 * (1 << shift)
+	return mini(1000, req)
+
 func fuse_characters(target: int, sacrifice: int) -> void:
 	if not _chars.has(target) or not _chars.has(sacrifice):
 		return
@@ -307,7 +318,7 @@ func fuse_characters(target: int, sacrifice: int) -> void:
 	while t["xp"] >= t["xp_req"]:
 		t["xp"] -= t["xp_req"]
 		t["level"] += 1
-		t["xp_req"] = t["level"] * 100
+		t["xp_req"] = _xp_required_for_level(t["level"])
 	recalculate_derived_stats(target)
 	destroy_character(sacrifice)
 
@@ -327,6 +338,14 @@ func get_character_id(handle: int) -> String:
 
 func get_character_lineage_name(handle: int) -> String:
 	return _chars.get(handle, {}).get("lineage", "Unknown")
+
+
+## Debug helper: subtract years from a character's stored base age. Effective
+## age (which game_day adds to) shifts down by the same amount. Clamped at 1.
+func dec_character_age(handle: int, years: int) -> void:
+	if not _chars.has(handle) or years <= 0: return
+	var c: Dictionary = _chars[handle]
+	c["age"] = maxi(1, int(c.get("age", 25)) - years)
 
 func get_character_age(handle: int) -> int:
 	if not _chars.has(handle): return 0
@@ -353,7 +372,17 @@ func get_character_xp(handle: int) -> int:
 	return _chars.get(handle, {}).get("xp", 0)
 
 func get_character_xp_required(handle: int) -> int:
-	return _chars.get(handle, {}).get("xp_req", 100)
+	if not _chars.has(handle): return 10
+	var c: Dictionary = _chars[handle]
+	# Always derive from the formula (10 doubling each level, capped at 1000).
+	# A stored xp_req is no longer trusted — any save written before the
+	# curve was last tuned would otherwise carry stale values forever.
+	# Update the stored field so the live dict and the formula stay in sync
+	# (useful for any direct readers).
+	var fresh: int = _xp_required_for_level(int(c.get("level", 1)))
+	if int(c.get("xp_req", -1)) != fresh:
+		c["xp_req"] = fresh
+	return fresh
 
 func get_character_hp(handle: int) -> int:
 	return _chars.get(handle, {}).get("hp", 20)
@@ -444,10 +473,14 @@ func add_xp(handle: int, amount: int, level_limit: int) -> void:
 	if not _chars.has(handle): return
 	var c = _chars[handle]
 	c["xp"] += amount
+	# Always recompute the threshold from the current formula. Reading the
+	# stored xp_req directly would let stale saves (e.g. characters created
+	# before the curve was last tuned) get stuck below their real threshold.
+	c["xp_req"] = _xp_required_for_level(int(c.get("level", 1)))
 	while c["xp"] >= c["xp_req"] and c["level"] < level_limit:
 		c["xp"] -= c["xp_req"]
 		c["level"] += 1
-		c["xp_req"] = c["level"] * 100
+		c["xp_req"] = _xp_required_for_level(c["level"])
 		recalculate_derived_stats(handle)
 
 func add_gold(handle: int, amount: int) -> void:
@@ -484,6 +517,21 @@ func short_rest(handle: int) -> void:
 	# Safeguard: reset SR charges (T2 advantage, T5 HP regen)
 	c.erase("_sg_adv_used")
 	c.erase("_sg_regen_used")
+	# Combat-feat per-SR trackers
+	c.erase("_ttb_sr_used")          # Turn the Blade reactions
+	c.erase("_mp_combat_train_used") # Martial Prowess T1 attack-double
+	c.erase("_iwm_block_used")       # Improvised Weapon Mastery T2 block
+	c.erase("_fc_sr_used")           # Fury's Call enrage uses
+	c.erase("_ae_graze_used")        # Assassin's Execution T1 graze on miss
+	c.erase("_la_shatter_sr_used")   # Linebreaker's Aim Shattershot uses
+	c.erase("_dp_parry_used")        # Duelist's Path 1/SR feint/bastion
+	# Reset per-short-rest magic item cooldowns
+	var sr_to_erase: Array = []
+	for k in c.keys():
+		if str(k).begins_with("_mi_sr_"):
+			sr_to_erase.append(k)
+	for k in sr_to_erase:
+		c.erase(k)
 
 func long_rest(handle: int) -> void:
 	if not _chars.has(handle): return
@@ -502,6 +550,75 @@ func long_rest(handle: int) -> void:
 	c.erase("_sg_reroll_used")
 	c.erase("_sg_adv_used")
 	c.erase("_sg_regen_used")
+	# Weapon Mastery: long rest is when a character can re-pick their mastered
+	# weapons. Mark a flag the level-up / loadout UI checks to surface a
+	# "Choose mastered weapons" prompt.
+	c["wm_can_rechoose"] = true
+	# Dawn HP regen from attuned magic items (per GMG: Common 1, Uncommon 2,
+	# Rare 3, Very Rare 4, Legendary 5 HP per dawn — fixed per item rarity).
+	# Long rest already restores HP to max above; this only matters when the
+	# wearer was somehow over-max from buffs, but we still apply it as a
+	# distinct effect for any future "wake up at dawn" hooks (e.g. waking
+	# during a dungeon long rest).
+	# Reset per-rest cooldown flags so once-per-(long|short)-rest items can fire again.
+	var to_erase: Array = []
+	for k in c.keys():
+		var ks: String = str(k)
+		if ks.begins_with("_mi_lr_") or ks.begins_with("_mi_sr_") or ks.begins_with("_mi_day_"):
+			to_erase.append(k)
+	for k in to_erase:
+		c.erase(k)
+
+
+# ── Weapon Mastery — chosen-weapons API ──────────────────────────────────────
+## Tier → number of weapons that can be mastered.
+const WM_SLOT_COUNT: Dictionary = {1: 2, 2: 4, 3: 6}
+
+## How many weapon-mastery slots a character has based on their feat tier.
+## Returns 0 if they don't have the feat.
+func get_weapon_mastery_slots(handle: int) -> int:
+	if not _chars.has(handle): return 0
+	var feats: Dictionary = _chars[handle].get("feats", {})
+	var t: int = int(feats.get("Weapon Mastery", 0))
+	return int(WM_SLOT_COUNT.get(t, 0))
+
+## Returns the array of weapon names this character has chosen for mastery.
+func get_mastered_weapons(handle: int) -> Array:
+	if not _chars.has(handle): return []
+	return Array(_chars[handle].get("mastered_weapons", []))
+
+## Replace the character's mastered-weapons list. Caller is responsible for
+## validating that count <= get_weapon_mastery_slots() and that names are
+## proficient weapons. The list is capped at the current slot count just to
+## be safe.
+func set_mastered_weapons(handle: int, names: Array) -> void:
+	if not _chars.has(handle): return
+	var slots: int = get_weapon_mastery_slots(handle)
+	var clean: Array = []
+	for n in names:
+		if str(n) == "" or str(n) == "None": continue
+		if str(n) in clean: continue
+		clean.append(str(n))
+		if clean.size() >= slots: break
+	_chars[handle]["mastered_weapons"] = clean
+	_chars[handle]["wm_can_rechoose"] = false   # consume the long-rest re-pick
+
+## True when a character has just long-rested and hasn't yet committed their
+## mastered weapons since (used by the UI to nag the player to pick).
+func can_rechoose_mastered_weapons(handle: int) -> bool:
+	if not _chars.has(handle): return false
+	if get_weapon_mastery_slots(handle) <= 0: return false
+	return bool(_chars[handle].get("wm_can_rechoose", true))
+
+## Is the currently-equipped weapon one of this character's mastered set?
+## Used by combat to gate the hit/dmg bonus on "wielding a mastered weapon".
+func is_wielding_mastered_weapon(handle: int) -> bool:
+	if get_weapon_mastery_slots(handle) <= 0: return false
+	var c: Dictionary = _chars[handle]
+	var current: String = str(c.get("weapon", ""))
+	if current == "" or current == "None": return false
+	var mastered: Array = Array(c.get("mastered_weapons", []))
+	return current in mastered
 
 func rest_party(handles: PackedInt64Array) -> bool:
 	for h in handles:
@@ -591,6 +708,27 @@ func recalculate_derived_stats(handle: int) -> void:
 	new_hp += _magic_item_bonus(handle, "hp_bonus")
 	new_sp += _magic_item_bonus(handle, "sp_bonus")
 	new_ap += _magic_item_bonus(handle, "ap_bonus")
+	# Stat-score bonuses bleed into the derived pools (Titanforge Spine +4 STR/VIT,
+	# Ironroot Bracers, Gauntlets of the Titan's Grasp, Stormbound Ankles +SPD, etc.)
+	# str_bonus → AP (matches PHB AP = 3 + STR)
+	# vit_bonus → HP (per-level multiplier)
+	# div_bonus → SP (Spell Points)
+	# spd_bonus → handled directly in _compute_ac since Speed is AC-relevant
+	# int_bonus → handled in roll_skill_check for INT-stat checks
+	new_ap += _magic_item_bonus(handle, "str_bonus")
+	new_hp += _magic_item_bonus(handle, "vit_bonus") * lv  # VIT contributes per-level
+	new_sp += _magic_item_bonus(handle, "div_bonus")
+	# Floor STR to 10 if Gauntlets of the Titan's Grasp (or similar) are attuned
+	# and the wearer's natural STR is below 10. We model this by topping up AP to
+	# the value it would have at STR 10 if applicable.
+	if _magic_item_has_flag(handle, "str_floor_10") and str_v < 10:
+		new_ap += (10 - str_v)
+	# "While active" max-AP penalty for items the player has toggled on
+	# (Forgefire Hammer ignite mode -3, Aberrant Flex Band stretch mode -2,
+	# Crown of the First Dawn -5, etc.)
+	new_ap = maxi(1, new_ap - _magic_item_active_ap_penalty(handle))
+	# Cursed/penalty items that REDUCE max AP while attuned (Bilecrawler Husk -2)
+	new_ap = maxi(1, new_ap - _magic_item_bonus(handle, "curse_max_ap_penalty"))
 
 	# ── Attunement SP cost — reduces max SP per PHB ──────────────────────────
 	new_sp = maxi(0, new_sp - get_attunement_sp_committed(handle))
@@ -687,6 +825,14 @@ func spend_feat_point(handle: int, feat_name: String, tier: int) -> bool:
 	c["feat_pts"] -= 1
 	if not c.has("feats"): c["feats"] = {}
 	c["feats"][feat_name] = tier
+	# Recalculate derived stats so AC / HP / AP / SP updates immediately when a
+	# defensive feat is taken (Unarmored Master T1 → 2×SPD AC, Iron Vitality →
+	# +VIT HP scaling, Martial Focus → +STR AP scaling, Arcane Wellspring →
+	# +DIV SP scaling, Titanic Bastion T2 → +STR AC, Evasive Ward → AC bonus,
+	# Unyielding Defender, Tower Shield, etc.). Without this the player's
+	# numbers stay at the pre-feat values until something else triggers
+	# recalc (a level up, equipping/unequipping, etc.).
+	recalculate_derived_stats(handle)
 	return true
 
 func is_proficient_in_saving_throw(handle: int, stat_type: int) -> bool:
@@ -845,6 +991,14 @@ func roll_skill_check(handle: int, skill_id: int, stat_id: int) -> PackedStringA
 		var stat_names: Array = ["str","spd","itl","div","vit","chr"]
 		if stat_id >= 0 and stat_id < stat_names.size():
 			stat_bonus = int(c.get(stat_names[stat_id], 0)) / 4
+			# Magic-item stat bonuses fold into the relevant stat's check
+			# (Stormbound Ankles +2 SPD, Wyrmcoil Spine +X stat, etc.)
+			match stat_id:
+				0: stat_bonus += _magic_item_bonus(handle, "str_bonus")
+				1: stat_bonus += _magic_item_bonus(handle, "spd_bonus")
+				2: stat_bonus += _magic_item_bonus(handle, "int_bonus")
+				3: stat_bonus += _magic_item_bonus(handle, "div_bonus")
+				4: stat_bonus += _magic_item_bonus(handle, "vit_bonus")
 		# Favored skills grant advantage (roll twice, take higher)
 		if is_favored_skill(handle, skill_id):
 			var roll2: int = randi_range(1, 20)
@@ -1436,6 +1590,12 @@ const _WEAPON_EXACT: Array = [
 	"Rapier", "Scimitar", "Trident", "Warhammer", "War Pick", "Whip",
 	"Blowgun", "Hand Crossbow", "Heavy Crossbow", "Longbow", "Heavy Sling",
 	"Musket", "Pistol",
+	# Magic weapons (full registry entries above; effects live in MagicItemData)
+	"+1 Sword", "Forgefire Hammer", "Builder's Runehammer", "Cinderbite Fang",
+	"Cryptbone Dagger", "Glacierforged Blade", "Goldenfield Sickle",
+	"Frostvein Pick", "Spine of Oathbreakers", "Maw-String", "Arcane Baton",
+	"Arcane Pistol", "Arcane Rifle", "Glass Shard of Exile",
+	"Fang of the Forgotten Beast", "Chaos Blade", "Blade of the Last Duel",
 ]
 
 ## Exact light source names
@@ -1616,6 +1776,7 @@ func equip_item(handle: int, item_name: String) -> void:
 		c["shield"] = item_name
 		_init_dur.call("shield", item_name)
 		c["ac"]     = _compute_ac(handle)
+		_sync_dungeon_entity_equipment(handle)
 		return
 
 	# 2. Exact name check for armor
@@ -1623,6 +1784,7 @@ func equip_item(handle: int, item_name: String) -> void:
 		c["armor"] = item_name
 		_init_dur.call("armor", item_name)
 		c["ac"]    = _compute_ac(handle)
+		_sync_dungeon_entity_equipment(handle)
 		return
 
 	# 3. Exact name check for weapons
@@ -1630,30 +1792,84 @@ func equip_item(handle: int, item_name: String) -> void:
 		c["weapon"]          = item_name
 		c["equipped_weapon"] = item_name
 		_init_dur.call("weapon", item_name)
+		_sync_dungeon_entity_equipment(handle)
 		return
 
 	# 4. Exact name check for light sources
 	if item_name in _LIGHT_EXACT:
 		c["light"] = item_name
+		_sync_dungeon_entity_equipment(handle)
 		return
 
-	# 5. Keyword fallback for custom/modded items
-	if "shield" in w or "buckler" in w:
+	# 5. Keyword fallback for custom/modded items.
+	# 5a. If the item is registered in _ITEM_REGISTRY, trust its declared type
+	#     so e.g. Vaultstone Aegis (registered as Armor) lands in shield/armor
+	#     based on whether the name contains "Shield".
+	if _ITEM_REGISTRY.has(item_name):
+		var reg_type: String = str(_ITEM_REGISTRY[item_name][0])
+		if reg_type == "Armor":
+			if "shield" in w or "aegis" in w or "buckler" in w:
+				c["shield"] = item_name
+				_init_dur.call("shield", item_name)
+			else:
+				c["armor"] = item_name
+				_init_dur.call("armor", item_name)
+			c["ac"] = _compute_ac(handle)
+			_sync_dungeon_entity_equipment(handle)
+			return
+		if reg_type == "Weapon":
+			c["weapon"]          = item_name
+			c["equipped_weapon"] = item_name
+			_init_dur.call("weapon", item_name)
+			_sync_dungeon_entity_equipment(handle)
+			return
+		if reg_type == "Misc" and ("lantern" in w or "torch" in w or "candle" in w or "lamp" in w):
+			c["light"] = item_name
+			_sync_dungeon_entity_equipment(handle)
+			return
+	# 5b. Generic keyword fallback (covers magic items not in the registry)
+	if "shield" in w or "aegis" in w or "buckler" in w:
 		c["shield"] = item_name
 		_init_dur.call("shield", item_name)
 		c["ac"]     = _compute_ac(handle)
-	elif "armor" in w or "mail" in w or "robe" in w or "vest" in w or \
+	elif "armor" in w or "armour" in w or "mail" in w or "robe" in w or "vest" in w or \
 		 "plate" in w or "breastplate" in w or "padded" in w or "splint" in w or \
-		 "leather" in w or "hide" in w or "studded" in w:
+		 "leather" in w or "hide" in w or "studded" in w or "runebound" in w or "husk" in w:
 		c["armor"] = item_name
 		_init_dur.call("armor", item_name)
 		c["ac"]    = _compute_ac(handle)
-	elif "torch" in w or "lantern" in w or "candle" in w or "lamp" in w:
+	elif "torch" in w or "lantern" in w or "candle" in w or "lamp" in w or "flame" in w:
 		c["light"] = item_name
 	else:
 		c["weapon"]          = item_name
 		c["equipped_weapon"] = item_name
 		_init_dur.call("weapon", item_name)
+	_sync_dungeon_entity_equipment(handle)
+
+## Sync the in-combat dungeon entity's equipment fields from _chars[handle].
+## Without this, items equipped mid-dungeon don't take effect until the next
+## dungeon load because get_dungeon_entities() returns a duplicate of the
+## stale _dungeon_entities list.
+func _sync_dungeon_entity_equipment(handle: int) -> void:
+	if not _chars.has(handle): return
+	var c: Dictionary = _chars[handle]
+	for ent in _dungeon_entities:
+		if int(ent.get("handle", -1)) == handle:
+			ent["weapon"]           = str(c.get("weapon", "None"))
+			ent["equipped_weapon"]  = str(c.get("weapon", "None"))
+			ent["armor"]            = str(c.get("armor",  "None"))
+			ent["equipped_armor"]   = str(c.get("armor",  "None"))
+			ent["shield"]           = str(c.get("shield", "None"))
+			ent["equipped_shield"]  = str(c.get("shield", "None"))
+			ent["light"]            = str(c.get("light",  "None"))
+			ent["equipped_light"]   = str(c.get("light",  "None"))
+			ent["ac"]               = int(c.get("ac",     ent.get("ac", 10)))
+			# Carry over durability fields too so mid-combat HP bars on gear stay accurate.
+			for key in ["weapon_hp", "armor_hp", "shield_hp",
+						"weapon_destroyed", "armor_destroyed", "shield_destroyed"]:
+				if c.has(key):
+					ent[key] = c[key]
+			break
 
 ## PHB armor AC with Speed modifier.
 ## Light armor: base + Speed (no cap).
@@ -1741,6 +1957,10 @@ func _compute_ac(handle: int) -> int:
 	var spd_v: int = int(s_arr[1]) if s_arr.size() > 1 else 1
 	var str_v: int = int(s_arr[0]) if s_arr.size() > 0 else 1
 	var vit_v: int = int(s_arr[3]) if s_arr.size() > 3 else 1
+	# Magic-item stat bonuses fold in here (Stormbound Ankles +2 SPD, etc.)
+	spd_v += _magic_item_bonus(handle, "spd_bonus")
+	str_v += _magic_item_bonus(handle, "str_bonus")
+	vit_v += _magic_item_bonus(handle, "vit_bonus")
 	var armor: String  = c.get("armor",  "None")
 	var shield: String = c.get("shield", "None")
 	var feats: Dictionary = c.get("feats", {})
@@ -1801,12 +2021,22 @@ func _compute_ac(handle: int) -> int:
 		base_ac += 1  # T2: +1 AC with shields
 
 	# Evasive Ward: T1 +1 AC when unarmored or light armor
+	# T2 +2 AC (cumulative from tier value)
+	# T3: while in Light Armor, add 2× Speed score to AC (overrides the
+	# +tier bonus for light-armored wearers; unarmored wearers fall under
+	# Unarmored Master which is a separate feat and already gives 2×SPD).
 	var ew_t: int = int(feats.get("Evasive Ward", 0))
 	if ew_t >= 1:
 		var a_low2: String = armor.to_lower()
-		var is_light_or_none: bool = is_unarmed or "leather" in a_low2 or "padded" in a_low2 or "hide" in a_low2 or "studded" in a_low2
+		var in_light: bool = "leather" in a_low2 or "padded" in a_low2 or "studded" in a_low2
+		var is_light_or_none: bool = is_unarmed or in_light or "hide" in a_low2
 		if is_light_or_none:
 			base_ac += mini(ew_t, 3)
+		# T3 bonus: light armor only — additional Speed score so the total
+		# Speed contribution is 2×SPD (the armor formula contributed 1×SPD
+		# already in _armor_ac_with_speed for light armor).
+		if ew_t >= 3 and in_light:
+			base_ac += spd_v
 
 	# Magic item AC bonuses (Binding Nail +1, Mothwing Brooch +1, etc.)
 	base_ac += _magic_item_bonus(handle, "ac")
@@ -1824,6 +2054,34 @@ func unequip_item(handle: int, slot: int) -> void:
 		1: c["armor"]  = "None";  c["ac"] = _compute_ac(handle)
 		2: c["shield"] = "None";  c["ac"] = _compute_ac(handle)
 		3: c["light"]  = "None"
+		4: c["offhand"] = "None"   # Twin Fang off-hand
+	_sync_dungeon_entity_equipment(handle)
+
+## Equip an off-hand weapon for Twin Fang dual wielding. Requires the Twin
+## Fang feat at any tier; before T2 the dual-strike action costs +1 AP.
+## Replaces any existing off-hand weapon. Returns "" on success or an error.
+func equip_offhand_weapon(handle: int, weapon_name: String) -> String:
+	if not _chars.has(handle):
+		return "Character not found."
+	var c: Dictionary = _chars[handle]
+	var feats: Dictionary = c.get("feats", {})
+	if int(feats.get("Twin Fang", 0)) < 1:
+		return "Requires the Twin Fang feat (at least T1) to dual wield."
+	# Verify the item is in their inventory and is a weapon
+	if weapon_name not in c.get("items", []):
+		return "%s is not in your inventory." % weapon_name
+	# Twin Fang T4 lifts the heavy-weapon restriction; before T4 the
+	# off-hand must be a one-handed weapon (heuristic: ban the obvious
+	# two-handed weapons by name).
+	if int(feats.get("Twin Fang", 0)) < 4:
+		var w_low: String = weapon_name.to_lower()
+		if "great" in w_low or "maul" in w_low or "longbow" in w_low \
+				or "crossbow" in w_low or "musket" in w_low \
+				or "halberd" in w_low or "glaive" in w_low \
+				or "pike" in w_low or "lance" in w_low:
+			return "%s is two-handed; Twin Fang T4 required to dual wield it." % weapon_name
+	c["offhand"] = weapon_name
+	return ""
 
 func use_consumable(handle: int, item_name: String) -> String:
 	if not _chars.has(handle): return "No character."
@@ -1836,6 +2094,91 @@ func use_consumable(handle: int, item_name: String) -> String:
 	items.erase(item_name)
 	return result
 
+## Apply the one-shot effect of a GMG one-time-use magic item from
+## MagicItemData. Called from _apply_consumable_effect when a one_time_use
+## flag is detected. Items handled here should have effects keys like
+## heal_bonus, sp_bonus, fire_resist (temporary), or a known item-name case.
+##
+## The item is removed from inventory by the caller (use_consumable() pops it).
+func _apply_one_time_magic_effect(c: Dictionary, item_name: String, mi_eff: Dictionary) -> String:
+	var hp: int     = int(c.get("hp", 0))
+	var max_hp: int = int(c.get("max_hp", 1))
+	var sp: int     = int(c.get("sp", 0))
+	var max_sp: int = int(c.get("max_sp", 1))
+	var name_: String = str(c.get("name", "???"))
+
+	# Per-item bespoke effects — handful of the most-used potions/talismans.
+	match item_name:
+		"Savior's Tear":
+			var heal: int = _roll_dice(4, 8) + 4
+			c["hp"] = mini(max_hp, hp + heal)
+			# Remove a major condition
+			var conds: Array = c.get("conditions", [])
+			for major in ["poisoned", "paralyzed", "stunned", "frightened"]:
+				if major in conds:
+					conds.erase(major); break
+			c["conditions"] = conds
+			return "%s drinks a Savior's Tear — heals %d HP and clears one major condition." % [name_, heal]
+		"Bloodroot Draught":
+			var heal: int = _roll_dice(2, 8)
+			c["hp"] = mini(max_hp, hp + heal)
+			var bd_conds: Array = c.get("conditions", [])
+			if "exhausted" not in bd_conds: bd_conds.append("exhausted")
+			c["conditions"] = bd_conds
+			return "%s drinks the Bloodroot Draught — restored %d HP, but exhaustion sets in." % [name_, heal]
+		"Erylon's Fragment":
+			var gain: int = _roll_dice(2, 4) + 2
+			c["sp"] = mini(max_sp + gain, sp + gain)   # CAN exceed max
+			return "%s consumes Erylon's Fragment — regains %d SP (may exceed max)." % [name_, gain]
+		"Soulthread Knot":
+			var gain: int = _roll_dice(1, 4)
+			c["sp"] = mini(max_sp, sp + gain)
+			return "%s burns the Soulthread Knot — regains %d SP." % [name_, gain]
+		"Starshard Infusion":
+			c["starshard_buff"] = 4   # +1d4 INT-based for 10 minutes
+			return "%s drinks a Starshard Infusion — +1d4 to Intellect checks for 10 minutes." % name_
+		"Ironhowl Powder":
+			c["ironhowl_buff"] = 4   # +1d4 STR for 1 minute, then exhaustion
+			c["ironhowl_exhaust_pending"] = true
+			return "%s inhales Ironhowl Powder — +1d4 to Strength checks/melee for 1 minute (exhaustion after)." % name_
+		"Sanctified Ember":
+			c["sanctified_buff"] = 1   # resist radiant + fire 1 min
+			return "%s consumes a Sanctified Ember — resistance to radiant and fire for 1 minute." % name_
+		"Phantomstep Draught", "Riftstone Chip", "Voidglass Shard":
+			# Teleport-style consumables — flag for the dungeon UI to pick up.
+			c["pending_teleport_30"] = true
+			return "%s readies %s — teleport up to 30 ft on your next move." % [name_, item_name]
+		"Tideglass Potion":
+			c["tideglass_buff"] = 60   # 1 hour swim/breathe
+			return "%s drinks a Tideglass Potion — swim speed and breathe underwater for 1 hour." % name_
+		"Atmoskin":
+			c["atmoskin_buff"] = 60
+			return "%s dons an Atmoskin mask — vacuum/toxic immunity for 1 hour." % name_
+		"Sunflare Bead", "Lanternseed Capsule":
+			# Flash item — flag for dungeon UI; out of combat just describe.
+			return "%s primes the %s — area-light burst readied." % [name_, item_name]
+		"Boneveil Charm":
+			c["boneveil_buff"] = 1   # invisible to undead 1 min
+			return "%s activates the Boneveil Charm — invisible to undead for 1 minute." % name_
+		"Tombwarden's Whisper":
+			c["next_save_auto_succeed"] = "fear_charm"
+			return "%s reads the Tombwarden's Whisper — auto-success on next fear/charm save." % name_
+
+	# Generic fallback: heal_bonus / sp_bonus from the effects dict.
+	var msg_parts: PackedStringArray = []
+	if mi_eff.has("heal_bonus"):
+		var h: int = int(mi_eff["heal_bonus"])
+		c["hp"] = mini(max_hp, hp + h)
+		msg_parts.append("+%d HP" % h)
+	if mi_eff.has("sp_bonus"):
+		var s: int = int(mi_eff["sp_bonus"])
+		c["sp"] = mini(max_sp, sp + s)
+		msg_parts.append("+%d SP" % s)
+	if msg_parts.is_empty():
+		# Generic single-use flavor — successful consumption with no measurable effect
+		return "%s uses %s." % [name_, item_name]
+	return "%s consumes %s — %s." % [name_, item_name, ", ".join(msg_parts)]
+
 ## Core consumable effect logic shared between inventory and dungeon combat.
 func _apply_consumable_effect(c: Dictionary, item_name: String) -> String:
 	var hp: int     = int(c.get("hp", 0))
@@ -1845,6 +2188,16 @@ func _apply_consumable_effect(c: Dictionary, item_name: String) -> String:
 	var ap: int     = int(c.get("ap", 0))
 	var max_ap: int = int(c.get("max_ap", 6))
 	var name_: String = str(c.get("name", "???"))
+
+	# ── One-time-use magic items from MagicItemData ──────────────────────────
+	# These are the GMG one-time-use items (Bloodroot Draught, Savior's Tear,
+	# Sunflare Bead, etc.) that aren't in the legacy match table below. We
+	# check the item's effects dict for canned outcomes — heal/sp gain from
+	# heal_bonus + sp_bonus values, an active spec for combat actives, etc.
+	if MagicItemData != null and MagicItemData.ALL_MAGIC_ITEMS.has(item_name):
+		var mi_eff: Dictionary = MagicItemData.ALL_MAGIC_ITEMS[item_name].get("effects", {})
+		if bool(mi_eff.get("one_time_use", false)):
+			return _apply_one_time_magic_effect(c, item_name, mi_eff)
 
 	match item_name:
 		"Potion of Healing":
@@ -1920,7 +2273,34 @@ func _format_item_details(item_name: String) -> PackedStringArray:
 				"Rare":      price = 1000
 				"Very Rare": price = 5000
 				"Legendary": price = 25000
-			return PackedStringArray([rarity, "20", "20", str(price), "General", desc])
+			var mi_eff: Dictionary = MagicItemData.ALL_MAGIC_ITEMS[item_name].get("effects", {})
+			# Determine item_type from name keywords so the inventory's Equip
+			# button surfaces for magical equipment (Sentinel's Runebound Armor,
+			# Tombwarden's Shield, Forgefire Hammer, Eternal Flame torch, etc.).
+			var ui_type: String = "General"
+			var nm: String = item_name.to_lower()
+			if bool(mi_eff.get("one_time_use", false)):
+				ui_type = "Consumable"
+			elif "shield" in nm or "aegis" in nm or "buckler" in nm:
+				ui_type = "Shield"
+			elif "armor" in nm or "armour" in nm or "plate" in nm or "mail" in nm:
+				# Filter out items that just mention armor in their flavor (e.g.
+				# "Echoplate Patch" is a repair item, not wearable armor).
+				if "patch" not in nm and "ember" not in nm and "thread" not in nm:
+					ui_type = "Armor"
+			elif "lantern" in nm or "torch" in nm or "candle" in nm or "flame" in nm \
+					or "matchbox" in nm:
+				if "blossom" not in nm and "matches" not in nm:
+					ui_type = "Light"
+			elif "sword" in nm or "blade" in nm or "dagger" in nm or "fang" in nm \
+					or "hammer" in nm or "axe" in nm or "mace" in nm or "spear" in nm \
+					or "pick" in nm or "sickle" in nm or "scythe" in nm or "rifle" in nm \
+					or "pistol" in nm or "bow" in nm or "crossbow" in nm or "baton" in nm \
+					or "staff" in nm or "knuckle" in nm or "fist" in nm or "spine" in nm \
+					or "talon" in nm or "claw" in nm or "whip" in nm or "flail" in nm \
+					or "halberd" in nm or "glaive" in nm or "lance" in nm:
+				ui_type = "Weapon"
+			return PackedStringArray([rarity, "20", "20", str(price), ui_type, desc])
 		return PackedStringArray(["Mundane", "0", "0", "0", "General", "Unknown item."])
 	var d = _ITEM_REGISTRY[item_name]
 	var raw_type: String = str(d[0])
@@ -2063,6 +2443,35 @@ const _ITEM_REGISTRY: Dictionary = {
 	"Silent Bell":             ["Magic", 50,  "A bell that makes no sound except in the user's mind. +1 Stealth, +1 Perception."],
 	"Smoke Puff":              ["Magic", 50,  "A small ball that creates a 5ft cloud of obscuring smoke. +1 Stealth."],
 	"Traveler's Chalice":      ["Magic", 50,  "A cup that purifies any water poured into it. +2 Poison Resist, +1 HP restored on rest."],
+
+	# --- Magic Weapons (registered as full Weapons so equip + damage flow works) ---
+	# Effects (typed bonus damage, resistances, etc.) live in MagicItemData.effects.
+	"+1 Sword":             ["Weapon", 250,  "An enchanted longsword. 1d8/1d10 Slashing. Versatile (1d10), +1 hit/dmg."],
+	"Forgefire Hammer":     ["Weapon", 1200, "Warhammer that glows with the embers of the Forge of Creation. 1d8/1d10 Bludgeoning. Versatile (1d10). +1d6 fire damage on hit."],
+	"Builder's Runehammer": ["Weapon", 1100, "Warhammer inlaid with stonemind runes. 1d8/1d10 Bludgeoning. Versatile (1d10)."],
+	"Cinderbite Fang":      ["Weapon", 220,  "Volcanic-glass dagger. 1d4 Piercing. Light, Finesse, Thrown (20/60). +1d4 fire damage on hit."],
+	"Cryptbone Dagger":     ["Weapon", 220,  "Bone dagger cold to the touch. 1d4 Piercing. Light, Finesse, Thrown (20/60). +1d4 necrotic damage on hit."],
+	"Glacierforged Blade":  ["Weapon", 4500, "Ice-rimed sword forged in giant strongholds. 1d8/1d10 Slashing. Versatile (1d10). +2d6 cold damage on hit."],
+	"Goldenfield Sickle":   ["Weapon", 950,  "Glimmering harvest blade. 1d4 Slashing. Light, Finesse. +1d4 radiant damage to beasts."],
+	"Frostvein Pick":       ["Weapon", 950,  "Glacial-steel war pick. 1d8/1d10 Piercing. Versatile (1d10)."],
+	"Spine of Oathbreakers":["Weapon", 1000, "Coiled segmented spine, can be a quarterstaff. 1d8 Bludgeoning. Versatile (1d8). +1d6 vs oath-breakers."],
+	"Maw-String":           ["Weapon", 1000, "Silver chain of tiny mouths used as a reach weapon. 1d6 Piercing. Reach, Finesse."],
+	"Arcane Baton":         ["Weapon", 250,  "Force-channeling police baton. 2d6 Force. Light, Finesse."],
+	"Arcane Pistol":        ["Weapon", 300,  "Force-channeling sidearm. 3d6 Force. Range (90/180), Light."],
+	"Arcane Rifle":         ["Weapon", 800,  "Long-range force rifle. 3d10 Force. Range (160/320), Two-Handed, Heavy."],
+	"Glass Shard of Exile": ["Weapon", 200,  "Razor desert-glass fragment. 1d4 Slashing. Light, Finesse, Thrown (20/60)."],
+	"Fang of the Forgotten Beast": ["Weapon", 4500, "Jagged predator fang. 1d4 Piercing. Light, Finesse. +1d6 necrotic damage on hit."],
+	"Chaos Blade":          ["Weapon", 4500, "A dagger that disrupts magic. 1d4 Piercing. Light, Finesse, Thrown (20/60)."],
+	"Blade of the Last Duel": ["Weapon", 25000, "Sentient longsword that craves battle. 1d8/1d10 Slashing. Versatile (1d10), +2 hit/dmg."],
+	# Magical Shields — registered as Armor (the engine groups shields under armor type)
+	"Vaultstone Aegis":      ["Armor", 25000, "+4 Tower Shield carved from unbreakable vaultstone. AC +4. Heavy."],
+	"Tombwarden's Shield":   ["Armor", 5000,  "Grave-iron shield. AC +2 (+3 vs undead)."],
+	"Chillwarden's Shield":  ["Armor", 800,   "Frost-rimmed shield. Standard Shield. AC +2."],
+	"Guardian's Shield":     ["Armor", 1500,  "Magic-absorbing shield. Standard Shield. AC +2."],
+	"Paladin's Last Stand":  ["Armor", 1500,  "Holy +1 shield. AC +3 (standard) or +3 (tower) — pick at attune."],
+	# Magical body armor (frost-crystal runeset, husk plating)
+	"Sentinel's Runebound Armor":      ["Armor", 4500, "Armor inlaid with frost-crystal. Heavy/Plate-class. AC 18. Cold resist + advantage on saves vs frozen/slowed."],
+	"Bilecrawler Husk Armor upgrade":  ["Armor", 2500, "Armor crafted from Bilecrawler exoskeletons. Medium/Hide-class. AC 14 + SPD (max 2). Acid + poison resistance."],
 	# --- Consumables ---
 	"Potion of Healing":       ["Consumable", 50,  "Restores 10 hit points."],
 	"Lesser Potion of Healing":["Consumable", 25,  "Restores 5 hit points."],
@@ -2259,13 +2668,97 @@ func _resolve_item_effects(item_name: String) -> Dictionary:
 		return MagicItemData.effects_of(item_name)
 	return {}
 
+## Apex-tier-aware effects resolver. For an Apex item, merges all tier blocks
+## up to and including the wearer's current attuned tier. For non-Apex items,
+## returns the same as _resolve_item_effects(). Always pass a valid handle.
+func _resolve_effects_for_handle(handle: int, item_name: String) -> Dictionary:
+	var base: Dictionary = _resolve_item_effects(item_name)
+	if not bool(base.get("requires_apex_tiered", false)):
+		return base
+	# Apex item: merge tiers 1..N where N is the wearer's current tier (0..5)
+	var tier: int = apex_get_tier(handle, item_name)
+	if tier <= 0:
+		return {"requires_apex_tiered": true}   # zero-tier = no powers yet
+	var tier_data: Dictionary = base.get("tiers", {})
+	var merged: Dictionary = {"requires_apex_tiered": true}
+	for t in range(1, tier + 1):
+		var t_eff: Dictionary = tier_data.get(t, {})
+		for key in t_eff.keys():
+			# For numeric stacking keys, sum across tiers; for the rest, last
+			# tier wins (so an active spec defined at a higher tier replaces
+			# a lower one, etc.).
+			if typeof(t_eff[key]) == TYPE_INT and typeof(merged.get(key, 0)) == TYPE_INT:
+				merged[key] = int(merged.get(key, 0)) + int(t_eff[key])
+			elif typeof(t_eff[key]) == TYPE_ARRAY and typeof(merged.get(key, [])) == TYPE_ARRAY:
+				var combined: Array = []
+				combined.append_array(merged.get(key, []))
+				combined.append_array(t_eff[key])
+				merged[key] = combined
+			else:
+				merged[key] = t_eff[key]
+	return merged
+
+# ── Apex item tier API ──────────────────────────────────────────────────────
+
+## Returns true if item is flagged as Apex-tiered in MagicItemData.
+func is_apex_item(item_name: String) -> bool:
+	var eff: Dictionary = _resolve_item_effects(item_name)
+	return bool(eff.get("requires_apex_tiered", false))
+
+## Current Apex attunement tier for this handle/item, or 0 if not attuned.
+func apex_get_tier(handle: int, item_name: String) -> int:
+	if not _chars.has(handle): return 0
+	var tiers: Dictionary = _chars[handle].get("apex_tiers", {})
+	return int(tiers.get(item_name, 0))
+
+## Set the Apex tier for this item. Tier 0 = unattune. Each tier costs 1 SP
+## (cumulative), so going from T2 → T4 commits 2 more SP.
+##
+## Returns "" on success or an error message string.
+func apex_set_tier(handle: int, item_name: String, new_tier: int) -> String:
+	if not _chars.has(handle): return "Character not found."
+	if not is_apex_item(item_name):
+		return "Not an Apex item."
+	new_tier = clampi(new_tier, 0, 5)
+	var c: Dictionary = _chars[handle]
+	# Make sure character has it in inventory if attuning
+	if new_tier > 0 and item_name not in c.get("items", []):
+		return "Item not in inventory."
+	var tiers: Dictionary = c.get("apex_tiers", {})
+	var cur_tier: int = int(tiers.get(item_name, 0))
+	if new_tier == cur_tier:
+		return ""   # no-op
+	# SP commitment changes by (new - cur). Going up requires SP available.
+	var delta: int = new_tier - cur_tier
+	if delta > 0:
+		var current_max_sp: int = int(c.get("max_sp", 0))
+		if delta > current_max_sp:
+			return "Not enough max SP. Need %d, have %d." % [delta, current_max_sp]
+	# Apply
+	if new_tier == 0:
+		tiers.erase(item_name)
+		var attuned: Array = c.get("attuned", [])
+		attuned.erase(item_name)
+		c["attuned"] = attuned
+	else:
+		tiers[item_name] = new_tier
+		var attuned: Array = c.get("attuned", [])
+		if item_name not in attuned:
+			attuned.append(item_name)
+		c["attuned"] = attuned
+	c["apex_tiers"] = tiers
+	recalculate_derived_stats(handle)
+	return ""
+
 ## Sum all passive bonuses from ATTUNED magic items in a character's inventory.
+## Uses _resolve_effects_for_handle so Apex items contribute only their
+## currently-unlocked tier effects.
 func _magic_item_bonus(handle: int, stat_key: String) -> int:
 	if not _chars.has(handle): return 0
 	var attuned: Array = _chars[handle].get("attuned", [])
 	var total: int = 0
 	for item_name in attuned:
-		var eff: Dictionary = _resolve_item_effects(item_name)
+		var eff: Dictionary = _resolve_effects_for_handle(handle, item_name)
 		if eff.has(stat_key):
 			total += int(eff[stat_key])
 	return total
@@ -2275,14 +2768,179 @@ func _magic_item_has_flag(handle: int, flag: String) -> bool:
 	if not _chars.has(handle): return false
 	var attuned: Array = _chars[handle].get("attuned", [])
 	for item_name in attuned:
-		var eff: Dictionary = _resolve_item_effects(item_name)
+		var eff: Dictionary = _resolve_effects_for_handle(handle, item_name)
 		if bool(eff.get(flag, false)):
 			return true
 	return false
 
+## Roll all dmg_dice_bonus arrays from attuned magic items and sum the result.
+## Each dmg_dice_bonus entry is [count, sides, type_string] — the type is for
+## flavour only at the moment; damage is added flat to the strike. Items only
+## contribute if the wielder is attuned AND, where the item is a weapon, it is
+## the equipped weapon (so a +1d6 fire dagger doesn't bonus while you swing a
+## different weapon).
+func _magic_item_dice_total(handle: int) -> int:
+	if not _chars.has(handle): return 0
+	var c: Dictionary = _chars[handle]
+	var attuned: Array = c.get("attuned", [])
+	if attuned.is_empty(): return 0
+	var equipped_weapon: String = str(c.get("weapon", ""))
+	var total: int = 0
+	for item_name in attuned:
+		var eff: Dictionary = _resolve_effects_for_handle(handle, item_name)
+		var requires_wield: bool = bool(eff.get("requires_wielded", false))
+		if requires_wield and item_name != equipped_weapon:
+			continue
+		var dice_list: Array = eff.get("dmg_dice_bonus", [])
+		for d in dice_list:
+			if typeof(d) == TYPE_ARRAY and d.size() >= 2:
+				total += _roll_dice(int(d[0]), int(d[1]))
+	return total
+
+## Resolve the "active" sub-dict for an item from MagicItemData.
+## Returns {} if no active is defined. Non-Apex items return their static
+## active block; for backwards compatibility this signature ignores tier
+## merging — use _magic_item_get_active_for_handle for Apex tier-aware lookup.
+func _magic_item_get_active(item_name: String) -> Dictionary:
+	if MagicItemData == null: return {}
+	var entry: Dictionary = MagicItemData.ALL_MAGIC_ITEMS.get(item_name, {})
+	var eff: Dictionary = entry.get("effects", {})
+	var active = eff.get("active", null)
+	if active == null or typeof(active) != TYPE_DICTIONARY: return {}
+	return active
+
+## Apex-tier aware active resolver. Returns the active spec from the
+## currently-unlocked highest tier of an Apex item, or the static active
+## for non-Apex items. Returns {} if no active is available yet.
+func _magic_item_get_active_for_handle(handle: int, item_name: String) -> Dictionary:
+	var eff: Dictionary = _resolve_effects_for_handle(handle, item_name)
+	var active = eff.get("active", null)
+	if active == null or typeof(active) != TYPE_DICTIONARY: return {}
+	return active
+
+## Cooldown key per item — used to mark "used this short/long rest".
+func _magic_item_cd_key(cd: String, item_name: String) -> String:
+	var slug: String = item_name.to_lower().replace(" ", "_").replace("'", "")
+	if cd == "long_rest" or cd == "day": return "_mi_lr_" + slug
+	if cd == "short_rest": return "_mi_sr_" + slug
+	return ""
+
+## Whether an item's active is currently on cooldown for this entity.
+func _magic_item_on_cooldown(ent: Dictionary, item_name: String, cd: String) -> bool:
+	var key: String = _magic_item_cd_key(cd, item_name)
+	if key == "": return false
+	return bool(ent.get(key, false))
+
+## Mark an item's active as used; the cooldown clears next short/long rest.
+func _magic_item_mark_used(ent: Dictionary, item_name: String, cd: String) -> void:
+	var key: String = _magic_item_cd_key(cd, item_name)
+	if key == "": return
+	ent[key] = true
+	var handle: int = int(ent.get("handle", -1))
+	if handle >= 0 and _chars.has(handle):
+		_chars[handle][key] = true   # persist to character sheet so it survives sessions
+
+## Get/set toggle state for "while active" items (Forgefire Hammer ignite, etc.)
+func _magic_item_is_toggled(handle: int, item_name: String) -> bool:
+	if not _chars.has(handle): return false
+	var toggles: Dictionary = _chars[handle].get("mi_active_toggles", {})
+	return bool(toggles.get(item_name, false))
+
+func _magic_item_set_toggle(handle: int, item_name: String, on: bool) -> void:
+	if not _chars.has(handle): return
+	var toggles: Dictionary = _chars[handle].get("mi_active_toggles", {})
+	if on:
+		toggles[item_name] = true
+	else:
+		toggles.erase(item_name)
+	_chars[handle]["mi_active_toggles"] = toggles
+	recalculate_derived_stats(handle)
+
+## Sum the max-AP penalties from items the wearer currently has toggled on.
+## Used by recalc_derived_stats so "while active" items reduce max AP correctly.
+func _magic_item_active_ap_penalty(handle: int) -> int:
+	if not _chars.has(handle): return 0
+	var toggles: Dictionary = _chars[handle].get("mi_active_toggles", {})
+	var total: int = 0
+	for item_name in toggles.keys():
+		var act: Dictionary = _magic_item_get_active_for_handle(handle, item_name)
+		total += int(act.get("active_max_ap_penalty", 0))
+	return total
+
+## Apply post-hit curse effects to the wielder of a cursed magic weapon.
+## Called after a successful hit lands. Returns a log suffix describing any
+## curse damage taken so the combat log can echo it. Currently handles:
+##   * curse_self_half_dmg_dealt: take half of the damage just dealt as
+##     typed self-damage (Blood-Cinder Ring → fire to wielder).
+##   * Per-item special crit triggers (Blade of the Last Duel possession)
+##     are handled in their own dispatch block.
+func _apply_post_hit_curses(atk_ent: Dictionary, dmg_dealt: int) -> String:
+	var atk_h: int = int(atk_ent.get("handle", -1))
+	if atk_h < 0 or not _chars.has(atk_h): return ""
+	var c: Dictionary = _chars[atk_h]
+	var equipped: String = str(c.get("weapon", ""))
+	var attuned: Array = c.get("attuned", [])
+	var notes: PackedStringArray = []
+	for item_name in attuned:
+		var eff: Dictionary = _resolve_effects_for_handle(atk_h, item_name)
+		# Half-damage-back curse (only fires for the wielded weapon)
+		if eff.has("curse_self_half_dmg_dealt") and item_name == equipped:
+			var dmg_type: String = str(eff["curse_self_half_dmg_dealt"])
+			var self_dmg: int = maxi(1, dmg_dealt / 2)
+			# Apply through resistances for symmetry, then cap to current HP-1
+			self_dmg = _apply_magic_resistances(atk_ent, self_dmg, dmg_type)
+			self_dmg = mini(self_dmg, maxi(0, int(atk_ent.get("hp", 1)) - 1))
+			if self_dmg > 0:
+				_dung_reduce_hp(atk_ent, self_dmg)
+				notes.append("%s suffers %d %s from %s's curse" % [
+					atk_ent["name"], self_dmg, dmg_type, item_name])
+	if notes.is_empty(): return ""
+	return " — " + ", ".join(notes)
+
+## Apply curse damage to the wielder when an item's active ability fires.
+## (Ironseed Pod 1d4 piercing per use, Manifestation Mirror 1d10 psychic on
+## fail, Fluxglass Shard 1d4 psychic per 30 ft moved, etc.)
+func _apply_active_use_curse(ent: Dictionary, item_name: String) -> String:
+	var atk_h: int = int(ent.get("handle", -1))
+	if atk_h < 0 or not _chars.has(atk_h): return ""
+	var eff: Dictionary = _resolve_effects_for_handle(atk_h, item_name)
+	var d: Array = eff.get("curse_self_dmg_on_active", [])
+	if d.is_empty() or d.size() < 3: return ""
+	var rolled: int = _roll_dice(int(d[0]), int(d[1]))
+	var dmg_type: String = str(d[2])
+	rolled = mini(rolled, maxi(0, int(ent.get("hp", 1)) - 1))
+	if rolled <= 0: return ""
+	_dung_reduce_hp(ent, rolled)
+	return " (%s — %s takes %d %s from %s)" % [
+		"curse", ent["name"], rolled, dmg_type, item_name]
+
+## Apply resistance flags from attuned magic items + entity-level resistances.
+## Returns the (possibly halved) damage. dmg_type is normalised to lowercase.
+## Stacks half-only-once per type to avoid double-halving from multiple items.
+func _apply_magic_resistances(ent: Dictionary, dmg: int, dmg_type: String) -> int:
+	if dmg <= 0 or dmg_type.is_empty(): return dmg
+	var dt: String = dmg_type.to_lower().strip_edges()
+	var flag_key: String = dt + "_resist"
+	# Player attuned items
+	var handle: int = int(ent.get("handle", -1))
+	if handle >= 0 and _chars.has(handle):
+		if _magic_item_has_flag(handle, flag_key):
+			return maxi(1, dmg / 2)
+		# Generic blanket resistances (Hero's Mantle = "magical_dmg_resist")
+		if dt in ["fire", "cold", "lightning", "thunder", "force", "necrotic",
+				  "radiant", "psychic", "acid", "poison"] \
+				and _magic_item_has_flag(handle, "magical_dmg_resist"):
+			return maxi(1, dmg / 2)
+	return dmg
+
 ## Attunement cost by rarity (PHB: Common 1, Uncommon 2, Rare 3, Very Rare 4, Legendary 5).
-## The cost permanently reduces max SP while attuned.
+## The cost permanently reduces max SP while attuned. For Apex items the
+## cost is the *current* tier (1-5), so this returns 5 as the cap — callers
+## that need the actual committed cost should query apex_get_tier and
+## subtract any difference.
 func _attunement_cost_for_item(item_name: String) -> int:
+	if is_apex_item(item_name):
+		return 5   # the maximum possible commitment; per-handle cost = current tier
 	var details: PackedStringArray = get_registry_item_details(item_name)
 	if details.size() < 1: return 0
 	var rarity: String = str(details[0])
@@ -2319,18 +2977,58 @@ func get_attunement_sp_committed(handle: int) -> int:
 	if not _chars.has(handle): return 0
 	var total: int = 0
 	for item_name in _chars[handle].get("attuned", []):
-		total += _attunement_cost_for_item(item_name)
+		# Apex items: actual SP committed = current tier (1-5), not the cap.
+		if is_apex_item(item_name):
+			total += apex_get_tier(handle, item_name)
+		else:
+			total += _attunement_cost_for_item(item_name)
+	# Vehicle attunements share the same SP pool as magic items.
+	total += get_vehicle_attunement_sp_committed(handle)
 	return total
 
 ## Attune a magic item. Returns "" on success or an error message string.
+## True if the item name corresponds to one of the specialty vehicles. Used
+## to route the attunement flow correctly: vehicles attune as vehicles (per
+## character), not as magic items. Also catches treasure / shop entries that
+## land vehicles in a character's inventory as magic items by mistake.
+func is_vehicle_item(item_name: String) -> bool:
+	if VehicleData != null and VehicleData.ALL_VEHICLES.has(item_name):
+		return true
+	if MagicItemData != null and MagicItemData.ALL_MAGIC_ITEMS.has(item_name):
+		var eff: Dictionary = MagicItemData.ALL_MAGIC_ITEMS[item_name].get("effects", {})
+		if bool(eff.get("requires_vehicle_subsystem", false)):
+			return true
+	return false
+
 func attune_item(handle: int, item_name: String) -> String:
 	if not _chars.has(handle): return "Character not found."
 	var c = _chars[handle]
 	if item_name not in c.get("items", []):
 		return "Item not in inventory."
+	# Vehicles attune as vehicles, not as items. Auto-register in the garage
+	# if it isn't there yet (shop/loot delivers vehicles as magic items;
+	# this one-line route takes care of moving them to the vehicle subsystem).
+	if is_vehicle_item(item_name):
+		if not GameState.owned_vehicles.has(item_name):
+			GameState.acquire_vehicle(item_name)
+		# Strip from inventory so it can't double as a magic item from now on.
+		var inv: Array = c.get("items", [])
+		inv.erase(item_name)
+		c["items"] = inv
+		# If a previous run mis-attuned it as a magic item, clean that up too.
+		var att_list: Array = c.get("attuned", [])
+		if item_name in att_list:
+			att_list.erase(item_name)
+			c["attuned"] = att_list
+		return attune_vehicle(handle, item_name)
 	if item_name in c.get("attuned", []):
 		return "Already attuned."
-	if not _MAGIC_ITEM_EFFECTS.has(item_name):
+	# Accept either the legacy in-engine effects table OR the broader
+	# MagicItemData autoload (the 235-entry GMG catalogue). Without the
+	# MagicItemData branch, items wired up only through that catalogue
+	# (e.g. Arcane Rifle) get wrongly rejected as "non-magical".
+	if not _MAGIC_ITEM_EFFECTS.has(item_name) \
+			and not MagicItemData.ALL_MAGIC_ITEMS.has(item_name):
 		return "This item has no magical properties to attune."
 	var cost: int = _attunement_cost_for_item(item_name)
 	if cost <= 0:
@@ -2344,6 +3042,127 @@ func attune_item(handle: int, item_name: String) -> String:
 	c["attuned"].append(item_name)
 	recalculate_derived_stats(handle)
 	return ""
+
+## SP cost to attune to a vehicle, per rarity. Vehicles cost the same SP
+## as a magic item of the same rarity (Common 1, Uncommon 2, Rare 3,
+## Very Rare 4, Legendary 5).
+func _attunement_cost_for_vehicle(name: String) -> int:
+	if VehicleData == null: return 0
+	var stats: Dictionary = VehicleData.get_stats(name)
+	match str(stats.get("rarity", "Common")):
+		"Common":    return 1
+		"Uncommon":  return 2
+		"Rare":      return 3
+		"Very Rare": return 4
+		"Legendary": return 5
+	return 0
+
+## True if this character is attuned to a specific vehicle.
+func is_attuned_to_vehicle(handle: int, name: String) -> bool:
+	if not _chars.has(handle): return false
+	var atv: Dictionary = _chars[handle].get("attuned_vehicles", {})
+	return bool(atv.get(name, false))
+
+## Total SP this character has committed to vehicle attunements.
+func get_vehicle_attunement_sp_committed(handle: int) -> int:
+	if not _chars.has(handle): return 0
+	var atv: Dictionary = _chars[handle].get("attuned_vehicles", {})
+	var total: int = 0
+	for v_name in atv.keys():
+		if bool(atv[v_name]):
+			total += _attunement_cost_for_vehicle(str(v_name))
+	return total
+
+## Attune a character to an owned vehicle. Returns "" on success or error.
+## The vehicle must already be in the player's garage (GameState.owned_vehicles).
+func attune_vehicle(handle: int, name: String) -> String:
+	if not _chars.has(handle): return "Character not found."
+	if not GameState.owned_vehicles.has(name):
+		return "%s isn't in your garage." % name
+	var c: Dictionary = _chars[handle]
+	var atv: Dictionary = c.get("attuned_vehicles", {})
+	if bool(atv.get(name, false)):
+		return "Already attuned."
+	var cost: int = _attunement_cost_for_vehicle(name)
+	if cost <= 0: return "Vehicle has no rarity tier."
+	var current_max_sp: int = int(c.get("max_sp", 0))
+	if cost > current_max_sp:
+		return "Not enough max SP. Need %d, have %d." % [cost, current_max_sp]
+	atv[name] = true
+	c["attuned_vehicles"] = atv
+	recalculate_derived_stats(handle)
+	return ""
+
+## End vehicle attunement; refunds the SP commitment.
+func unattune_vehicle(handle: int, name: String) -> String:
+	if not _chars.has(handle): return "Character not found."
+	var c: Dictionary = _chars[handle]
+	var atv: Dictionary = c.get("attuned_vehicles", {})
+	if not bool(atv.get(name, false)):
+		return "Not attuned."
+	atv.erase(name)
+	c["attuned_vehicles"] = atv
+	recalculate_derived_stats(handle)
+	return ""
+
+## Walks every character, scoops any vehicles found in their inventory or
+## magic-item attunement list, and registers them properly: adds the vehicle
+## to GameState.owned_vehicles and moves the attunement (if any) into the
+## per-character attuned_vehicles map. Idempotent — call it whenever the
+## garage is opened or a save is loaded so legacy state heals automatically.
+func sync_vehicles_from_characters() -> int:
+	if VehicleData == null: return 0
+	var migrated: int = 0
+	for h in _chars.keys():
+		var c: Dictionary = _chars[h]
+		var items: Array = c.get("items", [])
+		var attuned_items: Array = c.get("attuned", [])
+		var atv: Dictionary = c.get("attuned_vehicles", {})
+		# 1. Vehicle in inventory → move to garage, drop from items.
+		var to_remove_items: Array = []
+		for item_name in items:
+			if is_vehicle_item(item_name):
+				to_remove_items.append(item_name)
+				if not GameState.owned_vehicles.has(item_name):
+					GameState.acquire_vehicle(item_name)
+				migrated += 1
+		for item_name in to_remove_items:
+			items.erase(item_name)
+		# 2. Vehicle in attuned[] → move to attuned_vehicles + garage.
+		var to_remove_attuned: Array = []
+		for item_name in attuned_items:
+			if is_vehicle_item(item_name):
+				to_remove_attuned.append(item_name)
+				if not GameState.owned_vehicles.has(item_name):
+					GameState.acquire_vehicle(item_name)
+				atv[item_name] = true
+				migrated += 1
+		for item_name in to_remove_attuned:
+			attuned_items.erase(item_name)
+		c["items"] = items
+		c["attuned"] = attuned_items
+		c["attuned_vehicles"] = atv
+		if not to_remove_attuned.is_empty():
+			recalculate_derived_stats(int(h))
+	return migrated
+
+## Union of every vehicle attuned to any active-team character. Used by the
+## region-map dropdown to list the usable vehicles. Self-heals: any vehicle
+## still living in a character's items[]/attuned[] from before the vehicle
+## subsystem existed gets pulled into the proper garage on read.
+func get_team_attuned_vehicles() -> Array:
+	sync_vehicles_from_characters()
+	var out: Dictionary = {}
+	for h in GameState.active_team:
+		var ih: int = int(h)
+		if ih < 0 or not _chars.has(ih): continue
+		var atv: Dictionary = _chars[ih].get("attuned_vehicles", {})
+		for v_name in atv.keys():
+			if bool(atv[v_name]):
+				out[str(v_name)] = true
+	var names: Array = out.keys()
+	names.sort()
+	return names
 
 ## End attunement to a magic item. Restores max SP.
 func unattune_item(handle: int, item_name: String) -> String:
@@ -5526,7 +6345,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			for enemy in adj:
 				var dmg: int = randi_range(1, 10) + str_score * 2
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 				total_dmg += dmg
 			return _dung_ok("%s unleashes Iron Tempest! Hit %d enemies for %d total damage!" % [caster["name"], adj.size(), total_dmg], 3, 0)
 		"cataclysmic_leap":
@@ -5538,7 +6357,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			for enemy in adj:
 				var dmg: int = randi_range(1, 8) + str_score
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 				else: _dung_add_condition(enemy, "prone")
 			return _dung_ok("%s performs Cataclysmic Leap! %d enemies hit and knocked prone!" % [caster["name"], adj.size()], 2, 0)
 		"gravity_shatter":
@@ -5549,7 +6368,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			for enemy in adj:
 				var dmg: int = randi_range(2, 12) + div_score
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 				else: _dung_add_condition(enemy, "stunned")
 			return _dung_ok("%s shatters gravity! %d enemies hit and stunned!" % [caster["name"], adj.size()], 3, 0)
 		"howl_of_the_forgotten":
@@ -5561,7 +6380,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 				_dung_add_condition(enemy, "frightened")
 				var dmg: int = randi_range(1, 6) + div_score
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 			return _dung_ok("%s howls! %d enemies frightened!" % [caster["name"], adj.size()], 2, 0)
 		"phantom_legion":
 			if not feats.has("Phantom Legion"): return _dung_fail("Missing Phantom Legion.")
@@ -5583,7 +6402,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			for enemy in adj:
 				var dmg: int = heal / 2
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 			return _dung_ok("%s pulses soulflare! Healed %d HP, damaged %d enemies!" % [caster["name"], heal, adj.size()], 2, 0)
 		"stormbound_mantle":
 			if not feats.has("Stormbound Mantle"): return _dung_fail("Missing Stormbound Mantle.")
@@ -5631,7 +6450,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 				enemy["ac"] = maxi(5, int(enemy["ac"]) - 5)
 				var dmg: int = randi_range(1, 8) + div_score
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true
 			return _dung_ok("%s surges with Runebreaker! %d enemies stripped of defenses!" % [caster["name"], adj.size()], 3, 0)
 		"soulbrand":
 			if not feats.has("Soulbrand"): return _dung_fail("Missing Soulbrand.")
@@ -5657,7 +6476,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 				enemy["ac"] = maxi(5, int(enemy["ac"]) - 3)
 				var dmg: int = randi_range(1, 10) + div_score
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 			return _dung_ok("%s brands enemies with void! %d cursed!" % [caster["name"], adj.size()], 2, 0)
 		"worldbreaker_step":
 			if not feats.has("Worldbreaker Step"): return _dung_fail("Missing Worldbreaker Step.")
@@ -5667,7 +6486,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			for enemy in adj:
 				var dmg: int = randi_range(3, 18) + int(_chars[ch].get("stats", [1,1,1,1,1])[0]) * 2
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 				else: _dung_add_condition(enemy, "prone")
 			return _dung_ok("%s shatters the ground! %d enemies devastated!" % [caster["name"], adj.size()], 3, 0)
 		"blood_of_the_ancients":
@@ -5731,7 +6550,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 				_dung_add_condition(enemy, "burning")
 				var dmg: int = randi_range(2, 12) + div_score * 2
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 			caster["regen_per_turn"] = div_score
 			return _dung_ok("%s erupts in Seraphic Flame! %d enemies burned, regen %d/turn!" % [caster["name"], adj.size(), div_score], 3, 0)
 		"fey_lords_pact":
@@ -5768,7 +6587,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 				_dung_add_condition(enemy, "stunned")
 				var dmg: int = randi_range(2, 12) + int(_chars[ch].get("stats", [1,1,1,1,1])[2]) * 3
 				_dung_reduce_hp(enemy, dmg)
-				if int(enemy["hp"]) <= 0: enemy["is_dead"] = true; enemy["conditions"].clear()
+				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
 			return _dung_ok("%s opens the Psychic Maw! %d enemies stunned and mind-crushed!" % [caster["name"], adj.size()], 3, 0)
 		"kaiju_core_integration":
 			if not feats.has("Kaiju Core Integration"): return _dung_fail("Missing Kaiju Core Integration.")
@@ -5833,7 +6652,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 					if absi(int(adj["x"]) - int(caster["x"])) <= 1 and absi(int(adj["y"]) - int(caster["y"])) <= 1:
 						if not bool(adj.get("is_player", false)):
 							_dung_reduce_hp(adj, arc_dmg)
-							if adj["hp"] == 0: adj["is_dead"] = true; adj["conditions"].clear()
+							if adj["hp"] == 0 and not bool(adj.get("is_player", false)): adj["is_dead"] = true; adj["conditions"].clear()
 							arc_count += 1
 				return _dung_ok("%s discharges Arc-Light Surge! %d lightning to %d creatures!" % [caster["name"], arc_dmg, arc_count], 1, 0)
 			return _dung_fail("Arc-Light Surge already used this rest.")
@@ -5880,7 +6699,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 				if adj_enemies.size() > 0:
 					var rand_tgt = adj_enemies[randi() % adj_enemies.size()]
 					_dung_reduce_hp(rand_tgt, rand_dmg)
-					if rand_tgt["hp"] == 0: rand_tgt["is_dead"] = true; rand_tgt["conditions"].clear()
+					if rand_tgt["hp"] == 0 and not bool(rand_tgt.get("is_player", false)): rand_tgt["is_dead"] = true; rand_tgt["conditions"].clear()
 					return _dung_ok("%s channels Chaos Flow! Random spell hits %s for %d damage!" % [caster["name"], rand_tgt["name"], rand_dmg], 1, 0)
 				return _dung_ok("%s channels Chaos Flow but no targets found!" % caster["name"], 1, 0)
 			return _dung_fail("Chaos Flow already used this rest.")
@@ -5895,7 +6714,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 					if absi(int(adj["x"]) - int(caster["x"])) <= 1 and absi(int(adj["y"]) - int(caster["y"])) <= 1:
 						var emb_dmg: int = _roll_dice(1, 6)
 						_dung_reduce_hp(adj, emb_dmg)
-						if adj["hp"] == 0: adj["is_dead"] = true; adj["conditions"].clear()
+						if adj["hp"] == 0 and not bool(adj.get("is_player", false)): adj["is_dead"] = true; adj["conditions"].clear()
 						ember_count += 1
 				return _dung_ok("%s leaves a trail of embers! %d enemies burned!" % [caster["name"], ember_count], 1, 0)
 			return _dung_fail("Emberwake already used this rest.")
@@ -6102,7 +6921,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 					if bool(adj.get("is_player", false)): continue
 					if absi(int(adj["x"]) - int(caster["x"])) <= 1 and absi(int(adj["y"]) - int(caster["y"])) <= 1:
 						_dung_reduce_hp(adj, shear_dmg)
-						if adj["hp"] == 0: adj["is_dead"] = true; adj["conditions"].clear()
+						if adj["hp"] == 0 and not bool(adj.get("is_player", false)): adj["is_dead"] = true; adj["conditions"].clear()
 						sheared += 1
 				return _dung_ok("%s phases through matter! %d psychic damage to %d enemies!" % [caster["name"], shear_dmg, sheared], 1, 0)
 			return _dung_fail("Astral Shear already used this rest.")
@@ -6134,7 +6953,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 					if absi(int(adj["x"]) - int(caster["x"])) <= 1 and absi(int(adj["y"]) - int(caster["y"])) <= 1:
 						if not bool(adj.get("is_player", false)):
 							_dung_reduce_hp(adj, ar_dmg)
-							if adj["hp"] == 0: adj["is_dead"] = true; adj["conditions"].clear()
+							if adj["hp"] == 0 and not bool(adj.get("is_player", false)): adj["is_dead"] = true; adj["conditions"].clear()
 						elif adj.get("id", "") != caster_id:
 							adj["hp"] = mini(int(adj["max_hp"]), int(adj["hp"]) + ar_dmg)
 				return _dung_ok("%s leaves an arcane residue zone! 1d6 to enemies, heals allies!" % caster["name"], 1, 0)
@@ -6444,7 +7263,7 @@ func dung_revert_shapeshift(entity_id: String, excess_damage: int = 0) -> Dictio
 	var msg: String = "%s reverts to normal form." % ent["name"]
 	if excess_damage > 0:
 		msg += " (%d excess damage carried over!)" % excess_damage
-	if int(ent["hp"]) <= 0:
+	if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 		ent["is_dead"] = true
 		msg += " %s has fallen!" % ent["name"]
 	return _dung_ok(msg, 0, 0)
@@ -6490,6 +7309,18 @@ func _dung_reduce_hp(ent: Dictionary, dmg: int) -> String:
 	# If this is a construct structure entity that just hit 0 HP, mark as destroyed
 	if int(ent["hp"]) == 0 and bool(ent.get("is_construct", false)):
 		_dung_mark_construct_destroyed(ent)
+	# Player characters dropping to 0 HP enter the dying state instead of
+	# being instantly killed — they roll death saves at the start of every
+	# subsequent round (see _do_death_save). 3 successes stabilize them,
+	# 3 failures kill them and route to the cemetery.
+	if (int(ent["hp"]) == 0
+			and bool(ent.get("is_player", false))
+			and not bool(ent.get("is_dead", false))
+			and not bool(ent.get("is_dying", false))
+			and not bool(ent.get("is_construct", false))):
+		ent["is_dying"] = true
+		ent["death_save_successes"] = 0
+		ent["death_save_failures"] = 0
 	return ss_msg
 
 ## Mark a construct as destroyed in its caster's _active_constructs list.
@@ -6602,7 +7433,7 @@ func _dung_execute_creature_ability(ent: Dictionary, ability: Dictionary,
 			parts.append("damage below threshold (%d < %d)" % [dmg, threshold])
 		else:
 			_dung_reduce_hp(target, dmg)
-			if int(target["hp"]) == 0:
+			if int(target["hp"]) == 0 and not bool(target.get("is_player", false)):
 				target["is_dead"] = true
 				target["conditions"].clear()
 			var th: int = int(target.get("handle", -1))
@@ -6631,8 +7462,7 @@ func creature_take_damage(handle: int, amount: int) -> int:
 	if not _combat_creatures.has(handle): return 0
 	var cr = _combat_creatures[handle]
 	_dung_reduce_hp(cr, amount)
-	if int(cr["hp"]) == 0:
-		cr["is_dead"] = true
+	if int(cr["hp"]) == 0 and not bool(cr.get("is_player", false)): cr["is_dead"] = true
 	return int(cr["hp"])
 
 func destroy_creature(handle: int) -> void:
@@ -6772,20 +7602,20 @@ func _generate_creature_loot(level: int) -> Array:
 		   "crossbow" in item_lower or "sling" in item_lower or "dart" in item_lower:
 			item_category = "weapons"
 		elif "armor" in item_lower or "plate" in item_lower or "chain" in item_lower or \
-		     "leather" in item_lower or "padded" in item_lower or "scale" in item_lower or \
-		     "studded" in item_lower or "breastplate" in item_lower or "shield" in item_lower or \
-		     "splint" in item_lower or "hide" in item_lower or "half plate" in item_lower:
+			 "leather" in item_lower or "padded" in item_lower or "scale" in item_lower or \
+			 "studded" in item_lower or "breastplate" in item_lower or "shield" in item_lower or \
+			 "splint" in item_lower or "hide" in item_lower or "half plate" in item_lower:
 			item_category = "armor"
 		elif "potion" in item_lower or "ether" in item_lower or "adrenaline" in item_lower or \
-		     "revive" in item_lower or "draught" in item_lower:
+			 "revive" in item_lower or "draught" in item_lower:
 			item_category = "magic"
 		elif "gem" in item_lower or "stone" in item_lower or "crystal" in item_lower or \
-		     "diamond" in item_lower or "emerald" in item_lower or "ruby" in item_lower or \
-		     "sapphire" in item_lower:
+			 "diamond" in item_lower or "emerald" in item_lower or "ruby" in item_lower or \
+			 "sapphire" in item_lower:
 			item_category = "gems"
 		elif "herb" in item_lower or "root" in item_lower or "leaf" in item_lower or \
-		     "petal" in item_lower or "flower" in item_lower or "poultice" in item_lower or \
-		     "grass" in item_lower:
+			 "petal" in item_lower or "flower" in item_lower or "poultice" in item_lower or \
+			 "grass" in item_lower:
 			item_category = "herbs"
 
 		# Apply regional modifier for category
@@ -6919,8 +7749,7 @@ func _cbt_find(cid: String) -> Dictionary:
 ## Apply damage to a combatant and sync back to source store.
 func _cbt_damage(target: Dictionary, dmg: int) -> void:
 	_dung_reduce_hp(target, dmg)
-	if int(target["hp"]) == 0:
-		target["is_dead"] = true
+	if int(target["hp"]) == 0 and not bool(target.get("is_player", false)): target["is_dead"] = true
 	var h: int = int(target["handle"])
 	if bool(target["is_player"]) and _chars.has(h):
 		_chars[h]["hp"] = target["hp"]
@@ -7653,6 +8482,11 @@ const ACT_SUMMON_FEAT:      int = 72
 const ACT_DISMISS_CONSTRUCT:int = 73
 const ACT_RECALL_CONSTRUCT: int = 74
 const ACT_REFORM_CONSTRUCT: int = 75
+const ACT_MAGIC_ITEM:       int = 80    # use the active ability granted by an attuned magic item
+const ACT_IMPROVISED:       int = 81    # melee strike with an improvised weapon (IWM feat)
+const ACT_THROW_OBJECT:     int = 82    # throw an improvised weapon (IWM T3+ AoE explosion at T3, single hit at lower tiers)
+const ACT_DUAL_STRIKE:      int = 83    # Twin Fang dual-wield two-weapon attack
+const ACT_PARRY:            int = 84    # Duelist's Path / Twin Fang parry reaction
 
 # ── Spell database (mirrors SpellRegistry.h) ──────────────────────────────────
 # Fields: sc=sp_cost, dom=domain, rt=range_tiles, atk=is_attack,
@@ -7813,12 +8647,32 @@ func _make_action(
 	}
 
 # ── Dungeon init ──────────────────────────────────────────────────────────────
+## Reset all per-encounter feat trackers on the active team. Called by every
+## dungeon-entry function so feats marked "once per encounter" — Fury's Call
+## T3 Warcry, Martial Prowess T1 reaction, Swift Striker T1 reroll, etc. —
+## refresh at the start of each combat instead of waiting for a short rest.
+func _reset_per_encounter_trackers() -> void:
+	for h in GameState.active_team:
+		var ih: int = int(h)
+		if ih < 0 or not _chars.has(ih): continue
+		var c: Dictionary = _chars[ih]
+		var to_erase: Array = []
+		for k in c.keys():
+			if str(k).begins_with("_enc_"):
+				to_erase.append(k)
+		for k in to_erase:
+			c.erase(k)
+		# Specific encounter-bound flags that don't share the _enc_ prefix
+		c.erase("ae_kill_adv")            # Assassin's Execution T3 advantage post-kill
+		c.erase("hit_bonus_buff")         # cumulative encounter buff (kill-streaks etc.)
+
 func start_dungeon(player_handles, enemy_level: int,
 		specific_enemy_handle: int, terrain_style: int) -> void:
 	# Reset crawl state for a standard run unless the caller (a crawl
 	# entry-point) has just set MAP_SIZE / _crawl_active themselves.
 	if not _crawl_active:
 		MAP_SIZE = MAP_SIZE_STANDARD
+	_reset_per_encounter_trackers()
 	_dungeon_active       = true
 	_dungeon_round        = 1
 	_dungeon_enemy_level  = maxi(1, enemy_level)
@@ -8080,6 +8934,28 @@ func end_dungeon() -> void:
 	var outcome: String = check_dungeon_outcome()
 	if outcome == "victory":
 		_dungeon_encounters_survived += 1
+	# Resolve any player still in the dying state so they aren't stuck in
+	# limbo after the encounter ends.
+	#  * Victory: the team rescues them — stabilize at 1 HP.
+	#  * Defeat:  they bleed out — confirmed dead + routed to cemetery.
+	for ent in _dungeon_entities:
+		if not bool(ent.get("is_dying", false)): continue
+		if bool(ent.get("is_dead", false)): continue
+		var ph: int = int(ent.get("handle", -1))
+		if outcome == "defeat":
+			ent["is_dying"] = false
+			ent["is_dead"] = true
+			if ent.has("conditions"): ent["conditions"].clear()
+			if bool(ent.get("is_player", false)) and ph >= 0:
+				GameState.move_to_cemetery(ph, "killed in action")
+		else:
+			# Stabilize — team patches them up after the fight.
+			ent["is_dying"] = false
+			ent["hp"] = 1
+			ent["death_save_successes"] = 0
+			ent["death_save_failures"] = 0
+			if ph >= 0 and _chars.has(ph):
+				_chars[ph]["hp"] = 1
 	_dungeon_active = false
 	_dungeon_entities.clear()
 	_dungeon_player_queue.clear()
@@ -8434,6 +9310,38 @@ func crawl_reachable_tiles() -> Array:
 			queue.append(n)
 	return visited.keys()
 
+
+## Wall / obstacle tiles that the party CAN break through to reach further
+## areas. Used by the explore-mode overlay to tint breakable walls so the
+## player sees the wall-smash option visually instead of guessing.
+##
+## Returns Array[Vector2i].
+func crawl_breakable_wall_tiles() -> Array:
+	if not crawl_in_explore_mode():
+		return []
+	# Reuse the floor-reachable BFS to find which walls border reachable floor.
+	var reachable: Array = crawl_reachable_tiles()
+	if reachable.is_empty(): return []
+	var reach_set: Dictionary = {}
+	for v in reachable:
+		reach_set[v] = true
+	var walls: Dictionary = {}
+	for v in reachable:
+		var neighbours: Array = [
+			Vector2i(v.x + 1, v.y),
+			Vector2i(v.x - 1, v.y),
+			Vector2i(v.x, v.y + 1),
+			Vector2i(v.x, v.y - 1),
+		]
+		for n in neighbours:
+			if reach_set.has(n): continue
+			if n.x < 0 or n.y < 0 or n.x >= MAP_SIZE or n.y >= MAP_SIZE: continue
+			var t: int = _dung_tile(n.x, n.y)
+			if t == TILE_WALL or t == TILE_OBSTACLE:
+				walls[n] = true
+	return walls.keys()
+
+
 ## Step the party ONE tile toward (tx, ty) using the BFS path. Used to drive
 ## animated movement — call repeatedly from a timer to walk the whole path.
 ##
@@ -8766,6 +9674,8 @@ func get_available_ability_actions(entity_id: String) -> Array:
 	if ent == null or not ent["is_player"] or ent["is_dead"]: return []
 	var next_cost: int = int(ent.get("actions_taken", 0)) + 1
 	var actions: Array = []
+	# Hoisted: IWM/Twin Fang/Parry blocks below all need the int handle.
+	var handle: int = int(ent.get("handle", -1))
 
 	# Dodge — escalating AP cost, grants +3 AC until next turn
 	actions.append(_make_action(
@@ -8773,11 +9683,18 @@ func get_available_ability_actions(entity_id: String) -> Array:
 		0, false, false, "", 0, 1, false, 0,
 		"Focus on defence. Gain +3 AC until your next turn. (%d AP)" % next_cost))
 
-	# Rest — escalating AP cost, recovers HP & SP
-	actions.append(_make_action(
-		"Rest", "Ability", ACT_REST, next_cost,
-		0, false, false, "", 0, 1, false, 0,
-		"Rest to recover. Restore some HP and SP. (%d AP)" % next_cost))
+	# Rest — costs 0 AP at all times, but only available if the character has
+	# taken no non-movement actions this turn (PHB short-rest semantics for
+	# in-combat catch-breath). Refreshes the action budget and movement
+	# budget, plus heals some HP/SP. Once any other action has been taken,
+	# Rest is hidden from the available actions until next turn.
+	if int(ent.get("actions_taken", 0)) == 0:
+		actions.append(_make_action(
+			"Rest", "Ability", ACT_REST, 0,
+			0, false, false, "", 0, 1, false, 0,
+			"Catch your breath. Refresh AP & movement, recover some HP and SP. " +
+			"Costs 0 AP. Only usable if you have not yet taken any action " +
+			"besides moving this turn."))
 
 	# Hide — escalating AP cost, become hidden from enemies
 	actions.append(_make_action(
@@ -8798,12 +9715,70 @@ func get_available_ability_actions(entity_id: String) -> Array:
 			0, false, false, "", 0, 1, false, 0,
 			"Attempt to break free from a grapple. (%d AP)" % next_cost))
 
-	# Reload — only if equipped ranged weapon
-	if _weapon_is_ranged(ent["equipped_weapon"]):
-		actions.append(_make_action(
-			"Reload", "Ability", ACT_RELOAD, next_cost,
-			0, false, false, "", 0, 1, false, 0,
-			"Reload your ranged weapon. (%d AP)" % next_cost))
+	# Reload action removed — weapons no longer use ammo. Durability HP is the
+	# new resource: every hit reduces the weapon's HP by 1 (5 on a critical
+	# fail). Repair is handled out of combat via Anvilstone, Blacksmith's
+	# Ember, Reforge Token, etc.
+
+	# Improvised Weapon Mastery actions — only surfaced if the wielder has
+	# the Improvised Weapon Mastery feat at any tier.
+	if handle >= 0 and _chars.has(handle):
+		var iwm_t: int = int(_chars[handle].get("feats", {}).get("Improvised Weapon Mastery", 0))
+		if iwm_t >= 1:
+			# Improvised melee strike — uses tier dice, applies SPD/STR bonus,
+			# and lets the player pick damage type at strike time.
+			var iwm_label: String = "🪨 Improvised Strike"
+			var iwm_die: int = 4
+			if iwm_t >= 3: iwm_die = 10
+			elif iwm_t >= 2: iwm_die = 6
+			actions.append(_make_action(
+				iwm_label, "Ability", ACT_IMPROVISED, next_cost,
+				0, true, false, "", 0, 1, false, 1,
+				"Strike with an improvised weapon. (1d%d + STR/SPD; %d AP)" % [iwm_die, next_cost]))
+			# Throw object — at T3+ becomes an area explosion. Lower tiers
+			# fire as a single-target ranged improvised attack.
+			if iwm_t >= 3:
+				actions.append(_make_action(
+					"🪨 Throw Object (AoE)", "Ability", ACT_THROW_OBJECT, next_cost,
+					0, true, true, "", 3, 1, false, 2,
+					"Hurl an object — 10 ft radius, %dd6 + STR/SPD damage. Spend SP for +2d6 each. Once per encounter." % (2)))
+			else:
+				actions.append(_make_action(
+					"🪨 Throw Object", "Ability", ACT_THROW_OBJECT, next_cost,
+					0, true, true, "", 0, 1, false, 2,
+					"Hurl an object at a target up to 30 ft away. (1d%d + STR/SPD; %d AP)" % [iwm_die, next_cost]))
+
+	# Dual-Strike action surfaced when the wielder has Twin Fang and an
+	# off-hand weapon equipped. Builds extra attack actions in the loop
+	# below; gating + AP cost handled in dispatch.
+	if handle >= 0 and _chars.has(handle):
+		var tf_t: int = int(_chars[handle].get("feats", {}).get("Twin Fang", 0))
+		var offhand: String = str(_chars[handle].get("offhand", "None"))
+		if tf_t >= 1 and offhand != "None" and offhand != "":
+			# Twin Fang T1: +1 AP vs single-strike for non-light weapons.
+			# T2+: same cost as single. T4: heavy weapons no longer cost extra.
+			var dual_ap: int = next_cost + 1 if tf_t < 2 else next_cost
+			actions.append(_make_action(
+				"⚔⚔ Dual Strike", "Ability", ACT_DUAL_STRIKE, dual_ap,
+				0, true, false, "", 0, 1, false, 1,
+				"Strike a target with both weapons. (%d AP)" % dual_ap))
+
+	# Duelist's Path / Twin Fang Parry — a self-prep reaction. Costs 1 AP
+	# and primes the next melee attack against the parrier for an
+	# attack-roll contest. Twin Fang T3 also unlocks parry; Duelist's
+	# Path T1+ has the full mechanic.
+	if handle >= 0 and _chars.has(handle):
+		var dp_t: int = int(_chars[handle].get("feats", {}).get("Duelist's Path", 0))
+		var tf_parry: int = int(_chars[handle].get("feats", {}).get("Twin Fang", 0))
+		if dp_t >= 1 or tf_parry >= 3:
+			# Bastion Form (DP T3, 1/LR) skips the AP cost
+			var bastion_active: bool = bool(ent.get("dp_bastion_active", false))
+			actions.append(_make_action(
+				"🛡 Parry", "Ability", ACT_PARRY,
+				0 if bastion_active else 1,
+				0, false, false, "", 0, 1, false, 0,
+				"Ready a parry. Next melee attack against you (or adjacent ally if shielded) " +
+				"is contested by your attack roll. On a miss-by-5+ you may counter-attack."))
 
 	# Extra Move — escalating AP cost, grants additional movement
 	actions.append(_make_action(
@@ -8833,7 +9808,7 @@ func get_available_ability_actions(entity_id: String) -> Array:
 			"Spend 1 AP to take flight. Flying units can pass over obstacles and walls."))
 
 	# Shapeshifting — Shapeshifter's Path feat
-	var handle: int = int(ent.get("handle", -1))
+	# (handle is hoisted at the top of this function)
 	if handle >= 0 and _chars.has(handle):
 		var ss_tier: int = int(_chars[handle].get("feats", {}).get("Shapeshifter's Path", 0))
 		if ss_tier >= 1:
@@ -8913,6 +9888,49 @@ func get_available_ability_actions(entity_id: String) -> Array:
 					reform_name, "Ability", ACT_REFORM_CONSTRUCT, next_cost,
 					0, false, false, cm_id, 0, 1, false, 0,
 					"Reform destroyed construct while spell is still active."))
+
+	# ── Magic-item actives ──────────────────────────────────────────────────
+	# Surface a button for every attuned item that exposes an "active" spec
+	# (and isn't on cooldown). Toggle items always show — pressing flips state.
+	if handle >= 0 and _chars.has(handle):
+		var attuned: Array = _chars[handle].get("attuned", [])
+		for item_name in attuned:
+			var act: Dictionary = _magic_item_get_active_for_handle(handle, item_name)
+			if act.is_empty(): continue
+			var ap: int = int(act.get("ap", 0))
+			var sp: int = int(act.get("sp", 0))
+			var cd: String = str(act.get("cooldown", ""))
+			var is_toggle: bool = bool(act.get("toggle", false))
+			# Cooldown gating (toggle off → still allowed even if on cooldown so
+			# the player can deactivate; toggle on → require non-cooldown.)
+			if not is_toggle and cd != "" and _magic_item_on_cooldown(ent, item_name, cd):
+				continue
+			# Resolve action shape from target / area hints
+			var target_kind: String = str(act.get("target", "self"))
+			var area_radius: int = int(act.get("area", 0))
+			var area_type: int = 0
+			# Map area radius to existing AREA_RADII tiers (1, 3, 10) used by UI
+			if area_radius > 0:
+				if area_radius <= 1: area_type = 1
+				elif area_radius <= 3: area_type = 2
+				else: area_type = 3
+			var is_attack: bool = (target_kind == "enemy") and area_radius == 0
+			var range_idx: int = 1
+			if target_kind == "self": range_idx = 0
+			elif target_kind == "tile": range_idx = 2
+			# Build a pretty button label
+			var btn_label: String = str(act.get("name", item_name))
+			var prefix: String = "✦"
+			if is_toggle:
+				prefix = "● ON" if _magic_item_is_toggled(handle, item_name) else "○ OFF"
+			var label: String = "%s %s" % [prefix, btn_label]
+			var desc: String = str(act.get("description", "Use the magical effect of " + item_name + "."))
+			if cd != "" and not is_toggle:
+				desc += "  [Once per %s]" % cd.replace("_", " ")
+			actions.append(_make_action(
+				label, "Magic Item", ACT_MAGIC_ITEM, ap,
+				sp, is_attack, false, item_name, area_type, 1, false, range_idx,
+				desc))
 
 	return actions
 
@@ -9081,7 +10099,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var tgt: Dictionary = adj[0]
 				var dmg: int = randi_range(1, 4) * (3 if trait_id == "BloodlettingTouch" else 1) + randi_range(1, 8)
 				_dung_reduce_hp(tgt, dmg)
-				if tgt["hp"] == 0: tgt["is_dead"] = true
+				if tgt["hp"] == 0 and not bool(tgt.get("is_player", false)): tgt["is_dead"] = true
 				var steal: int = dmg / 2
 				ent["hp"] = mini(int(ent["max_hp"]), int(ent["hp"]) + steal)
 				effect_note = " (dealt %d, healed %d from %s)" % [dmg, steal, tgt["name"]]
@@ -9092,7 +10110,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var tgt: Dictionary = nearby[0]
 				var drain: int = randi_range(1, 4) + div_v
 				_dung_reduce_hp(tgt, drain)
-				if tgt["hp"] == 0: tgt["is_dead"] = true
+				if tgt["hp"] == 0 and not bool(tgt.get("is_player", false)): tgt["is_dead"] = true
 				ent["hp"] = mini(int(ent["max_hp"]), int(ent["hp"]) + drain)
 				effect_note = " (drained %d HP from %s)" % [drain, tgt["name"]]
 			else: effect_note = " (no target in range)"
@@ -9123,7 +10141,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			for t in targets:
 				var pdmg: int = randi_range(1, 4)
 				_dung_reduce_hp(t, pdmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "poisoned")
 			effect_note = " (poison: %d targets hit)" % targets.size() if not targets.is_empty() else " (no targets)"
 		"BreathWeapon", "CorruptBreath", "BrineCone", "WinterBreath", "SteamJet":
@@ -9134,7 +10152,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			var dmg_base: int = randi_range(2, 6) + lv
 			for t in cone:
 				_dung_reduce_hp(t, dmg_base)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				if trait_id in ["BrineCone", "WinterBreath", "SteamJet"]:
 					_dung_add_condition(t, "slowed")
 			effect_note = " (breath %d dmg to %d targets)" % [dmg_base, cone.size()] if not cone.is_empty() else " (no targets)"
@@ -9143,7 +10161,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			var dmg: int = randi_range(3, 6)
 			for t in targets:
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "dazed")
 			effect_note = " (lightning: %d to %d targets, dazed)" % [dmg, targets.size()] if not targets.is_empty() else " (no targets)"
 		"RadiantPulse", "Flareburst", "SunsFavor":
@@ -9159,7 +10177,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			for t in targets:
 				var fd: int = randi_range(2, 4)
 				_dung_reduce_hp(t, fd)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "slowed")
 			effect_note = " (frost: %d targets slowed)" % targets.size() if not targets.is_empty() else " (no targets)"
 		"NeuralLiquefaction":
@@ -9168,7 +10186,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = adj[0]
 				var dmg: int = randi_range(2, 6) + randi_range(2, 6)
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				t["sp"] = maxi(0, int(t.get("sp", 0)) - 1)
 				effect_note = " (%s: %d psychic, -1 SP)" % [t["name"], dmg]
 			else: effect_note = " (no adjacent target)"
@@ -9179,7 +10197,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				if _dung_has_condition(t, "stunned") or _dung_has_condition(t, "restrained"):
 					var dmg: int = randi_range(2, 6) + randi_range(2, 6)
 					_dung_reduce_hp(t, dmg)
-					if t["hp"] == 0: t["is_dead"] = true
+					if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 					ent["hp"] = mini(int(ent["max_hp"]), int(ent["hp"]) + dmg)
 					effect_note = " (drilled %s: %d dmg, healed %d)" % [t["name"], dmg, dmg]
 				else:
@@ -9191,7 +10209,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = adj[0]
 				var dmg: int = randi_range(3, 6) * 3
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "dazed")
 				effect_note = " (slam: %d to %s, dazed)" % [dmg, t["name"]]
 			else: effect_note = " (no adjacent target)"
@@ -9243,7 +10261,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = adj[0]
 				var dmg: int = randi_range(1, 4)
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				if trait_id == "VenomousBite": _dung_add_condition(t, "poisoned")
 				if trait_id in ["LeechHex", "DrainingFangs"]:
 					ent["hp"] = mini(int(ent["max_hp"]), int(ent["hp"]) + 1)
@@ -9267,7 +10285,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = nearby[0]
 				var dmg: int = randi_range(1, 6)
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "exhausted")
 				effect_note = " (%s: %d dmg + exhausted)" % [t["name"], dmg]
 			else: effect_note = " (no target)"
@@ -9358,7 +10376,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			for t in adj:
 				var dmg: int = randi_range(1, 6)
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 			effect_note = " (shatter: %d adjacent hit)" % adj.size() if not adj.is_empty() else " (no targets)"
 		"VersatileGrant":
 			ent["hit_bonus_buff"] = int(ent.get("hit_bonus_buff", 0)) + 2
@@ -9417,7 +10435,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = nearby_pr[0]
 				var dmg: int = randi_range(1, 6) + int_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "stunned")
 				effect_note = " (paralyzing ray: %d to %s, stunned)" % [dmg, t["name"]]
 			else: effect_note = " (no target in range)"
@@ -9437,7 +10455,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = nearby_nr[0]
 				var dmg: int = randi_range(1, 8) + div_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "vulnerable")
 				effect_note = " (necrotic ray: %d to %s)" % [dmg, t["name"]]
 			else: effect_note = " (no target in range)"
@@ -9447,7 +10465,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = nearby_dr[0]
 				var dmg: int = randi_range(4, 12) + int_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				effect_note = " (disintegrate: %d dmg to %s)" % [dmg, t["name"]]
 			else: effect_note = " (no target in range)"
 		"QuillLaunch":
@@ -9456,7 +10474,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = nearby_ql[0]
 				var dmg: int = randi_range(1, 6) + str_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				effect_note = " (quill: %d piercing to %s)" % [dmg, t["name"]]
 			else: effect_note = " (no target)"
 		"MireBurst":
@@ -9464,7 +10482,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			for t in targets_mb:
 				var dmg: int = randi_range(1, 6)
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "slowed")
 			effect_note = " (mire: %d targets slowed)" % targets_mb.size() if not targets_mb.is_empty() else " (no targets)"
 		"DisjointedLeap":
@@ -9473,7 +10491,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = adj_leap[0]
 				var dmg: int = randi_range(1, 6) + spd_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(ent, "dodging")
 				effect_note = " (leap strike: %d dmg, dodging)" % dmg
 			else:
@@ -9485,7 +10503,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = adj_gore[0]
 				var dmg: int = randi_range(1, 10) + str_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				effect_note = " (gore: %d piercing to %s)" % [dmg, t["name"]]
 			else: effect_note = " (no adjacent target)"
 		# ── AoE pulses ────────────────────
@@ -9494,7 +10512,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			for t in targets_p:
 				var dmg: int = randi_range(1, 6) + lv
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				if trait_id == "AbyssariPulse":
 					_dung_add_condition(t, "blinded")
 				elif trait_id == "DarkLineagePulse":
@@ -9507,7 +10525,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 			for t in targets_gv:
 				var dmg: int = randi_range(1, 4)
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				_dung_add_condition(t, "poisoned")
 			effect_note = " (gas: %d targets poisoned)" % targets_gv.size() if not targets_gv.is_empty() else " (no targets)"
 		"ResonantVoice":
@@ -9546,7 +10564,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 				var t: Dictionary = adj_mb[0]
 				var dmg: int = randi_range(1, 6) + int_v
 				_dung_reduce_hp(t, dmg)
-				if t["hp"] == 0: t["is_dead"] = true
+				if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 				t["sp"] = maxi(0, int(t.get("sp", 0)) - 1)
 				effect_note = " (mind bleed: %d psychic to %s, -1 SP)" % [dmg, t["name"]]
 			else: effect_note = " (no adjacent target)"
@@ -9616,7 +10634,7 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 					var t: Dictionary = adj[0]
 					var dmg: int = randi_range(2, 8)
 					_dung_reduce_hp(t, dmg)
-					if t["hp"] == 0: t["is_dead"] = true
+					if t["hp"] == 0 and not bool(t.get("is_player", false)): t["is_dead"] = true
 					effect_note = " (dealt %d to %s)" % [dmg, t["name"]]
 				else: effect_note = " (no target in range)"
 			elif "toggle" in label_lower:
@@ -9633,11 +10651,14 @@ func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Di
 ## (caller should then trigger enemy phase via dungeon_advance_enemy_phase()).
 func dungeon_end_individual_turn() -> String:
 	_dungeon_queue_idx += 1
-	# Skip dead players
+	# Skip dead AND dying players — dying chars roll death saves at
+	# round-start but can't take an action turn.
 	while _dungeon_queue_idx < _dungeon_player_queue.size():
 		var eid: String = _dungeon_player_queue[_dungeon_queue_idx]
 		var ent = _dung_find(eid)
-		if ent != null and not ent["is_dead"]: break
+		if ent != null and not ent["is_dead"] \
+				and not bool(ent.get("is_dying", false)):
+			break
 		_dungeon_queue_idx += 1
 	if _dungeon_queue_idx >= _dungeon_player_queue.size():
 		return ""   # all players done → caller triggers enemy phase
@@ -9775,11 +10796,48 @@ func dungeon_advance_enemy_phase() -> Array:
 	_dungeon_player_queue.clear()
 	_dungeon_queue_idx = 0
 
+	# Drain any death-save log entries that were stashed on entities during
+	# _dung_tick_conditions so they surface in the battle log.
+	for ent in _dungeon_entities:
+		var ds_logs: Array = ent.get("death_save_logs", [])
+		if ds_logs.size() > 0:
+			for log_text in ds_logs:
+				logs.append(str(log_text))
+			ent["death_save_logs"] = []
+
 	for ent in _dungeon_entities:
 		if ent["is_dead"]: continue
 		ent["move_used"] = 0
 		ent["actions_taken"] = 0   # reset escalating action cost each round
 		ent.erase("_mm_transfer_used_this_round")  # reset Minion Master damage transfer
+		# Improvised Weapon Mastery T4 tracker — count of improvised strikes
+		# used this turn, used for the +1 AP "two different weapons" bonus.
+		var ent_h: int = int(ent.get("handle", -1))
+		if ent_h >= 0 and _chars.has(ent_h):
+			_chars[ent_h]["_iwm_uses_this_turn"] = 0
+		# Twin Fang T2 disadvantage marker on enemies — applies to their NEXT
+		# attack only, so consume / clear at round start.
+		ent.erase("disadv_next_attack")
+		# Duelist's Path T3 feint is once-per-turn
+		ent.erase("_dp_feint_used_this_turn")
+		# Per-turn pierce flags for weapon-type feats (Crimson Edge, Iron
+		# Hammer, Iron Thorn) reset each round
+		ent.erase("_ce_pierce_used_this_turn")
+		ent.erase("_ih_pierce_used_this_turn")
+		ent.erase("_it_pierce_used_this_turn")
+		# Grasp of the Titan T2: each grappled creature takes 1d4 bludgeoning
+		# at the start of the grappler's turn, free action.
+		if ent_h >= 0 and _chars.has(ent_h):
+			var gt_tt: int = int(_chars[ent_h].get("feats", {}).get("Grasp of the Titan", 0))
+			if gt_tt >= 2:
+				var holds: Array = ent.get("_grappled_ids", [])
+				for held_id in holds:
+					var held = _dung_find(str(held_id))
+					if held == null or held.get("is_dead", false): continue
+					var tick: int = randi_range(1, 4)
+					_dung_reduce_hp(held, tick)
+					if int(held.get("hp", 0)) <= 0:
+						held["is_dead"] = true; held["conditions"].clear()
 		# PHB: AP regeneration = Strength score at start of each round (min 1).
 		# Player characters use their actual STR; enemies get full reset each turn.
 		if ent["is_player"]:
@@ -9791,7 +10849,18 @@ func dungeon_advance_enemy_phase() -> Array:
 			elif ent.has("stats"):
 				# Allies (handle=-1) use their own stats array
 				str_regen = maxi(1, int(ent["stats"][0]))
-			ent["ap_spent"] = maxi(0, int(ent["ap_spent"]) - str_regen)
+			# Apply Rest's "_rest_carry_ap" if present. Rest is allowed to push
+			# total AP above max_ap, so we DO NOT clamp at 0 when a carry is
+			# present — ap_spent can go negative for one round, giving the
+			# character bonus AP beyond their normal pool.
+			var rest_carry: int = int(ent.get("_rest_carry_ap", 0))
+			ent.erase("_rest_carry_ap")
+			ent.erase("rested_this_turn")
+			var new_spent: int = int(ent["ap_spent"]) - str_regen - rest_carry
+			if rest_carry > 0:
+				ent["ap_spent"] = new_spent          # may be negative → bonus AP
+			else:
+				ent["ap_spent"] = maxi(0, new_spent)
 		else:
 			ent["ap_spent"] = 0  # enemies: full AP reset at round start
 		# Tick conditions and matrices for all entities at round start
@@ -9804,7 +10873,7 @@ func dungeon_advance_enemy_phase() -> Array:
 		if not ent["is_dead"]:
 			var echo_log: String = _process_spell_echo(ent)
 			if echo_log != "": logs.append(echo_log)
-		if ent["is_player"]:
+		if ent["is_player"] and not bool(ent.get("is_dying", false)):
 			_dungeon_player_queue.append(ent["id"])
 
 	_update_fog()   # refresh visibility at round start
@@ -9913,6 +10982,47 @@ func move_dungeon_player(id: String, nx: int, ny: int) -> bool:
 ##   • Ally standing on tile → difficult terrain (2 tiles), CAN pass through, CANNOT stop.
 ##   • Enemy on tile      → blocks movement entirely (cannot enter).
 ##   • Elevation-0 pits   → impassable.
+## Returns true if `ent` is enraged AND the destination tile would move
+## them further from their wrath source (within the source's Fury's Call
+## tier range). Used by movement code to gate "moving away from" the
+## enrager. The Speed save is rolled ONCE per turn (cached in
+## ent["_enraged_save_tried_round"]) so the gate is consistent across the
+## BFS / pathfind for that turn — pass = no restriction this turn, fail =
+## tiles further from source are filtered out.
+func _enraged_movement_forbidden(ent: Dictionary, dest_x: int, dest_y: int) -> bool:
+	if not _dung_has_condition(ent, "enraged"): return false
+	var src_id: String = str(ent.get("enraged_by", ""))
+	if src_id == "": return false
+	var src = _dung_find(src_id)
+	if src == null or src.get("is_dead", false): return false
+	# Determine the wrath source's Fury's Call tier (controls range)
+	var src_h: int = int(src.get("handle", -1))
+	var fc_t: int = 0
+	if src_h >= 0 and _chars.has(src_h):
+		fc_t = int(_chars[src_h].get("feats", {}).get("Fury's Call", 0))
+	if fc_t < 2: return false   # T2 unlocks the move-restriction
+	# T2: 10 ft (2 tiles); T5: 30 ft (6 tiles)
+	var range_tiles: int = 6 if fc_t >= 5 else 2
+	var src_x: int = int(src.get("x", -99))
+	var src_y: int = int(src.get("y", -99))
+	var cur_x: int = int(ent.get("x", 0))
+	var cur_y: int = int(ent.get("y", 0))
+	var cur_dist: int = absi(cur_x - src_x) + absi(cur_y - src_y)
+	if cur_dist > range_tiles: return false   # already outside the leash
+	# Cache one save per turn for this entity
+	var saved_round: int = int(ent.get("_enraged_save_round", -1))
+	if saved_round != _dungeon_round:
+		var dc: int = 10
+		if src_h >= 0 and _chars.has(src_h):
+			dc += int(_chars[src_h].get("stats", [1,1,1,1,1])[0])   # +STR
+		ent["_enraged_save_pass"] = _spell_save_roll(ent, dc, 1)
+		ent["_enraged_save_round"] = _dungeon_round
+	if bool(ent.get("_enraged_save_pass", false)):
+		return false   # save passed → free to move away this turn
+	# Save failed: forbid destinations that increase distance from source
+	var dest_dist: int = absi(dest_x - src_x) + absi(dest_y - src_y)
+	return dest_dist > cur_dist
+
 func get_valid_dungeon_moves(id: String) -> Array:
 	var ent = _dung_find(id)
 	if ent == null or not ent["is_player"] or ent["is_dead"]: return []
@@ -9938,9 +11048,11 @@ func get_valid_dungeon_moves(id: String) -> Array:
 
 	while not queue.is_empty():
 		var cur: Dictionary = queue.pop_front()
-		# Reachable stop tile: cost > 0 and not blocked by a standing ally
+		# Reachable stop tile: cost > 0 and not blocked by a standing ally,
+		# AND not forbidden by Fury's Call enrage tether (T2/T5).
 		if cur["cost"] > 0 and not cur["pass_only"]:
-			result.append({"x": cur["x"], "y": cur["y"], "tile_cost": cur["cost"]})
+			if not _enraged_movement_forbidden(ent, int(cur["x"]), int(cur["y"])):
+				result.append({"x": cur["x"], "y": cur["y"], "tile_cost": cur["cost"]})
 		if cur["cost"] >= budget: continue
 
 		var cur_idx: int = cur["x"] * MAP_SIZE + cur["y"]
@@ -10049,6 +11161,8 @@ func dungeon_perform_action(
 		ACT_DODGE:
 			result = _dung_dispatch_dodge(ent, ap_cost)
 		ACT_REST:
+			# UI sets action["_rest_sp"] from the Spark Point dialog (0..5)
+			ent["_pending_rest_sp"] = int(action.get("_rest_sp", 0))
 			result = _dung_dispatch_rest(ent, ap_cost)
 		ACT_HIDE:
 			result = _dung_dispatch_hide(ent, ap_cost)
@@ -10100,6 +11214,25 @@ func dungeon_perform_action(
 		ACT_REFORM_CONSTRUCT:
 			ent["ap_spent"] = int(ent["ap_spent"]) + ap_cost
 			result = _dung_reform_construct(ent, str(action.get("matrix_id", "")))
+		ACT_MAGIC_ITEM:
+			ent["ap_spent"] = int(ent["ap_spent"]) + ap_cost
+			if sp_cost > 0:
+				ent["sp"] = int(ent.get("sp", 0)) - sp_cost
+				var ent_h: int = int(ent.get("handle", -1))
+				if ent_h >= 0 and _chars.has(ent_h):
+					_chars[ent_h]["sp"] = int(ent["sp"])
+			result = _dung_dispatch_magic_item_active(
+				ent, str(action.get("matrix_id", "")), target_id, cx, cy)
+		ACT_IMPROVISED:
+			result = _dung_dispatch_improvised_strike(ent, target_id, ap_cost)
+		ACT_THROW_OBJECT:
+			# Action carries optional _sp_invest from the UI for damage scaling
+			var sp_invest: int = int(action.get("_sp_invest", 0))
+			result = _dung_dispatch_throw_object(ent, target_id, cx, cy, ap_cost, sp_invest)
+		ACT_DUAL_STRIKE:
+			result = _dung_dispatch_dual_strike(ent, target_id, ap_cost)
+		ACT_PARRY:
+			result = _dung_dispatch_parry(ent, ap_cost)
 		_:
 			return _dung_fail("Action '%s' (id=%d) not implemented." % [action.get("name","?"), action_id])
 
@@ -10191,18 +11324,63 @@ func _dung_dispatch_ranged(atk: Dictionary, target_id: String, weapon: String, a
 	var dist: int = _chebyshev(int(atk["x"]), int(atk["y"]), int(tgt["x"]), int(tgt["y"]))
 	if dist > max_range:
 		return _dung_fail("Target is out of range (dist %d, max %d)." % [dist, max_range])
-	# Ammo check
-	var entity_id: String = str(atk.get("id", ""))
-	if not _spend_ammo(entity_id, weapon):
-		return _dung_fail("No ammo! Use Reload before shooting.")
-	# Cover bonus: target gets +2 AC if adjacent to wall/obstacle
+	# Ranged weapons no longer track ammo — durability HP is the limiter.
+	# Cover bonus: target gets +2 AC if adjacent to wall/obstacle.
 	var cover: int = _cover_bonus(int(tgt["x"]), int(tgt["y"]))
+	# ── Linebreaker's Aim cover bypass ────────────────────────────────────
+	# T1: half cover treated as no cover. T1 secondary: if you haven't moved
+	#   this turn, full cover treats as half cover.
+	# T2: ricochet "breach shot" available 1/turn — described in T2 note;
+	#   we approximate as a permanent -1 to cover when within 5 ft of cover.
+	# T3: ignores all non-magical cover entirely.
+	var la_t: int = 0
+	var la_note: String = ""
+	var atk_h2: int = int(atk.get("handle", -1))
+	if atk_h2 >= 0 and _chars.has(atk_h2):
+		la_t = int(_chars[atk_h2].get("feats", {}).get("Linebreaker's Aim", 0))
+	if la_t >= 3:
+		if cover > 0: la_note = " (Linebreaker's Aim T3: cover bypassed)"
+		cover = 0
+	elif la_t >= 1:
+		# T1 treats half cover (=2 AC) as no cover.
+		if cover == 2:
+			cover = 0
+			la_note = " (Linebreaker's Aim: cover bypassed)"
+	# Cover-degradation marker: track that this tile's cover was hit so
+	# T2 secondary "degraded by one step until next turn" can read it.
+	if la_t >= 2 and cover > 0:
+		atk["_la_cover_degraded_at"] = Vector2i(int(tgt["x"]), int(tgt["y"]))
 	var note: String = ""
 	if cover > 0:
 		note = " (target has cover +%d AC)" % cover
 	atk["ap_spent"] += ap_cost
 	var result: Dictionary = _dung_do_attack(atk, tgt, weapon, false, cover)
-	return _dung_ok(result["log"] + note + " [%d ammo left]" % _get_ammo(entity_id, weapon), ap_cost, 0)
+	# T3 secondary — Shattershot: 2/SR the projectile hits the target plus
+	# every enemy within 5 ft. Driven by an action flag (_la_shattershot)
+	# set by the action's UI dispatch (not yet exposed as a separate
+	# button — for now, fires automatically when 2 or more enemies are
+	# within 5 ft of the target and the player has T3+ + uses remain).
+	var shatter_log: String = ""
+	if la_t >= 3 and result.get("hit", false):
+		var ss_used: int = int(atk.get("_la_shatter_sr_used", 0))
+		if ss_used < 2:
+			var nearby: Array = []
+			for e in _dungeon_entities:
+				if e == tgt or e == atk or e.get("is_dead", false): continue
+				if e.get("is_player", false) == atk.get("is_player", false): continue
+				var dx2: int = absi(int(e.get("x", -99)) - int(tgt.get("x", 0)))
+				var dy2: int = absi(int(e.get("y", -99)) - int(tgt.get("y", 0)))
+				if dx2 + dy2 <= 1:
+					nearby.append(e)
+			if nearby.size() >= 1:
+				atk["_la_shatter_sr_used"] = ss_used + 1
+				var shatter_dmg: int = int(result.get("damage", 0))
+				for e in nearby:
+					_dung_reduce_hp(e, shatter_dmg)
+					if int(e.get("hp", 0)) <= 0:
+						e["is_dead"] = true; e["conditions"].clear()
+				shatter_log = " — Shattershot hits %d nearby" % nearby.size()
+	return _dung_ok(result["log"] + note + la_note + shatter_log, ap_cost, 0)
 
 func _dung_dispatch_attack(atk: Dictionary, target_id: String, weapon: String, ap_cost: int) -> Dictionary:
 	var tgt = _dung_find(target_id)
@@ -10222,14 +11400,34 @@ func _dung_dispatch_grapple(atk: Dictionary, target_id: String, ap_cost: int) ->
 	var dist: int = abs(tgt["x"] - atk["x"]) + abs(tgt["y"] - atk["y"])
 	if dist > 1:
 		return _dung_fail("Target is not adjacent.")
+	# Grasp of the Titan T3 lets the wielder grapple two creatures at once.
+	# Lower tiers and no-feat: only one grapple at a time.
+	var atk_h: int = int(atk.get("handle", -1))
+	var gt_t: int = 0
+	if atk_h >= 0 and _chars.has(atk_h):
+		gt_t = int(_chars[atk_h].get("feats", {}).get("Grasp of the Titan", 0))
+	var existing: int = int(atk.get("_grapple_holds", 0))
+	var max_holds: int = 2 if gt_t >= 3 else 1
+	if existing >= max_holds:
+		return _dung_fail("You're already grappling the maximum number of creatures.")
 	atk["ap_spent"] += ap_cost
 	# Contest: d20 + 4 vs d20 + target's (speed / 2)
-	var atk_roll: int = randi_range(1, 20) + 4
+	# Grasp of the Titan T1: advantage on the contested roll
+	var atk_roll1: int = randi_range(1, 20)
+	var atk_roll: int = atk_roll1 + 4
+	if gt_t >= 1:
+		var atk_roll2: int = randi_range(1, 20)
+		atk_roll = maxi(atk_roll1, atk_roll2) + 4
 	var def_roll: int = randi_range(1, 20) + (tgt["speed"] / 2)
 	if atk_roll >= def_roll:
 		_dung_add_condition(tgt, "grappled")
-		return _dung_ok("%s grapples %s! (rolled %d vs %d) %s cannot move." % [
-			atk["name"], tgt["name"], atk_roll, def_roll, tgt["name"]], ap_cost, 0)
+		atk["_grapple_holds"] = existing + 1
+		# Track which targets are held so the per-turn 1d4 tick can find them.
+		var holds: Array = atk.get("_grappled_ids", [])
+		holds.append(str(tgt.get("id", "")))
+		atk["_grappled_ids"] = holds
+		return _dung_ok("%s grapples %s! (rolled %d vs %d)" % [
+			atk["name"], tgt["name"], atk_roll, def_roll], ap_cost, 0)
 	else:
 		return _dung_ok("%s tries to grapple %s — failed! (rolled %d vs %d)" % [
 			atk["name"], tgt["name"], atk_roll, def_roll], ap_cost, 0)
@@ -10252,48 +11450,672 @@ func _dung_dispatch_hide(ent: Dictionary, ap_cost: int) -> Dictionary:
 	return _dung_ok("%s slips into the shadows." % ent["name"], ap_cost, 0)
 
 func _dung_dispatch_rest(ent: Dictionary, ap_cost: int) -> Dictionary:
-	ent["ap_spent"] += ap_cost
-	# Recover HP and SP proportional to AP spent
-	var hp_gain: int = maxi(1, ent["max_hp"] / 4)
-	var sp_gain: int = maxi(1, ent["max_sp"] / 4)
+	# Rest = "catch your breath." Per the action description: refreshes AP
+	# AND movement THIS turn, recovers some HP/SP. Legal only when the
+	# character has not yet taken any non-movement action this round, and
+	# only once per turn (Rest itself counts as an action via actions_taken).
+	if int(ent.get("actions_taken", 0)) > 0:
+		return _dung_fail("%s has already taken an action this turn — Rest is no longer available." % ent["name"])
 
-	# Rest & Recovery feat: T1 +25% rest HP, T2 +50%, T3 +SP on rest, T4 remove condition
-	var rr_t: int = _ent_feat_tier(ent, "Rest & Recovery")
-	if rr_t >= 2: hp_gain = int(hp_gain * 1.5)
-	elif rr_t >= 1: hp_gain = int(hp_gain * 1.25)
-	if rr_t >= 3: sp_gain += 1
-	if rr_t >= 4:
-		# Remove a random negative condition
-		for cond in ["poisoned", "bleeding", "burning", "slowed"]:
-			if _dung_has_condition(ent, cond):
-				_dung_remove_condition(ent, cond); break
-
-	# Explorer's Grit: +1 HP recovered per tier
-	var eg_t: int = _ent_feat_tier(ent, "Explorer's Grit")
-	if eg_t >= 1: hp_gain += eg_t
-
-	# Healing & Restoration: add Divinity to rest healing
-	var hr_t: int = _ent_feat_tier(ent, "Healing & Restoration")
-	if hr_t >= 1:
-		var h: int = int(ent.get("handle", -1))
-		if h >= 0 and _chars.has(h):
-			var div_v: int = int(_chars[h].get("stats", [1,1,1,1,1])[4])
-			if hr_t >= 5: hp_gain += div_v * 3
-			elif hr_t >= 3: hp_gain += div_v * 2
-			else: hp_gain += div_v
-
-	ent["hp"] = mini(ent["max_hp"], ent["hp"] + hp_gain)
-	ent["sp"] = mini(ent["max_sp"], ent["sp"] + sp_gain)
-	# Also sync back to character sheet if this is a player
-	var handle: int = ent.get("handle", -1)
+	# ── Strength score ──────────────────────────────────────────────────────
+	var handle: int = int(ent.get("handle", -1))
+	var str_v: int = 1
 	if handle >= 0 and _chars.has(handle):
-		_chars[handle]["hp"] = ent["hp"]
-		_chars[handle]["sp"] = ent["sp"]
-	return _dung_ok("%s rests — recovered %d HP and %d SP." % [ent["name"], hp_gain, sp_gain], ap_cost, 0)
+		var s: Array = _chars[handle].get("stats", [1, 1, 1, 1, 1])
+		str_v = maxi(1, int(s[0]))
+	elif ent.has("stats"):
+		str_v = maxi(1, int(ent["stats"][0]))
+
+	# ── Optional Spark Point investment escalates the dice ─────────────────
+	var sp_spent: int = int(ent.get("_pending_rest_sp", 0))
+	ent.erase("_pending_rest_sp")
+	sp_spent = clampi(sp_spent, 0, int(ent["sp"]))
+	if sp_spent > 0:
+		ent["sp"] = int(ent["sp"]) - sp_spent
+
+	var dice: Vector2i = _rest_dice_for_sp(sp_spent)
+	var dice_count: int = dice.x
+	var dice_sides: int = dice.y
+	var rolled: int = 0
+	for _i in dice_count:
+		rolled += randi_range(1, dice_sides)
+	var ap_regain: int = rolled + str_v
+
+	# ── Apply the AP refresh THIS turn ─────────────────────────────────────
+	# Subtract from ap_spent (ap_available = max_ap - ap_spent), clamp at 0.
+	# Don't end the turn — let the player spend the recovered AP. Mark
+	# actions_taken so they can't rest again on this turn.
+	ent["ap_spent"] = maxi(0, int(ent["ap_spent"]) - ap_regain)
+	ent["move_used"] = 0   # also refresh movement
+	ent["actions_taken"] = int(ent.get("actions_taken", 0)) + 1
+	ent["rested_this_turn"] = true
+	# Defensive: clear any stale carry from the old "bank-for-next-turn"
+	# variant so the next round tick doesn't double-apply.
+	ent.erase("_rest_carry_ap")
+
+	# ── HP and SP recovery ─────────────────────────────────────────────────
+	# Both scale with the AP roll so a bigger SP investment also heals more.
+	var hp_heal: int = ap_regain
+	var sp_heal: int = 1 + (sp_spent / 2)
+	var max_hp: int = int(ent.get("max_hp", ent.get("hp", 1)))
+	var max_sp_ent: int = int(ent.get("max_sp", ent.get("sp", 1)))
+	ent["hp"] = mini(max_hp, int(ent.get("hp", 0)) + hp_heal)
+	ent["sp"] = mini(max_sp_ent, int(ent["sp"]) + sp_heal)
+
+	# Mirror state to the character sheet so menu UIs stay in sync.
+	if handle >= 0 and _chars.has(handle):
+		_chars[handle]["hp"] = int(ent["hp"])
+		_chars[handle]["sp"] = int(ent["sp"])
+
+	var msg: String = "%s catches breath — rolled %dd%d (%d) + STR (%d) = +%d AP, +%d HP, +%d SP" % [
+		ent["name"], dice_count, dice_sides, rolled, str_v, ap_regain, hp_heal, sp_heal]
+	if sp_spent > 0:
+		msg += " (spent %d SP)" % sp_spent
+	msg += "."
+	return _dung_ok(msg, ap_cost, 0)
+
+## Rest dice scaling table — base is 1d4 + STR. Each Spark Point spent
+## bumps both the dice count (+1) and the die size (+2 sides), capped at 5
+## dice and 1d12. Maximum investment is 5 SP → 5d12 + STR.
+##   sp_spent → Vector2i(dice_count, dice_sides)
+const REST_MAX_SP: int = 5
+func _rest_dice_for_sp(sp_spent: int) -> Vector2i:
+	var n: int = clampi(sp_spent, 0, REST_MAX_SP)
+	var count: int = mini(1 + n, 5)
+	var sides: int = mini(4 + 2 * n, 12)
+	return Vector2i(count, sides)
 
 func _dung_dispatch_interact(ent: Dictionary, ap_cost: int) -> Dictionary:
 	ent["ap_spent"] += ap_cost
 	return _dung_ok("%s interacts with the environment." % ent["name"], ap_cost, 0)
+
+## Generic dispatcher for magic-item actives. Reads the item's `active` spec
+## from MagicItemData and applies a per-item handler. Toggle items just flip
+## state. Non-toggle items mark cooldown after success.
+## Improvised Weapon Mastery: tier-scaled melee strike. The "weapon" is an
+## ad-hoc object (chair, rock, frying pan, etc.) — damage die scales with
+## the wielder's IWM tier. T1 +SPD/STR, T2 1d6, T3 1d10 + crit-shatter,
+## T4 +AP for using two different improvised weapons in a turn, T5
+## counts as magical for resistance.
+func _dung_dispatch_improvised_strike(atk_ent: Dictionary, target_id: String, ap_cost: int) -> Dictionary:
+	var tgt = _dung_find(target_id)
+	if tgt == null or tgt.get("is_dead", false):
+		return _dung_fail("No valid target.")
+	atk_ent["ap_spent"] = int(atk_ent["ap_spent"]) + ap_cost
+	var atk_h: int = int(atk_ent.get("handle", -1))
+	var iwm_t: int = 0
+	var atk_stats: Array = [1, 1, 1, 1, 1]
+	var atk_feats: Dictionary = {}
+	if atk_h >= 0 and _chars.has(atk_h):
+		atk_stats = _chars[atk_h].get("stats", atk_stats)
+		atk_feats = _chars[atk_h].get("feats", {})
+		iwm_t = int(atk_feats.get("Improvised Weapon Mastery", 0))
+	# Determine tier-scaled die
+	var die: int = 4
+	if iwm_t >= 3: die = 10
+	elif iwm_t >= 2: die = 6
+	# Roll attack — basic d20 + best of (STR, SPD)
+	var stat_bonus: int = maxi(int(atk_stats[0]), int(atk_stats[1]))
+	var roll: int = randi_range(1, 20) + stat_bonus
+	var ac_target: int = int(tgt.get("ac", 10))
+	if roll < ac_target:
+		return _dung_ok("%s swings an improvised weapon at %s — MISS! (%d vs AC %d)" % [
+			atk_ent["name"], tgt["name"], roll, ac_target], ap_cost, 0)
+	var dmg: int = randi_range(1, die) + stat_bonus
+	# T3 crit shatters the weapon for +2d6
+	if roll - stat_bonus >= 20 and iwm_t >= 3:
+		dmg += randi_range(1, 6) + randi_range(1, 6)
+	# T5 splash damage — adjacent enemies take 1d4
+	var splash_log: String = ""
+	if iwm_t >= 5:
+		var splash: int = randi_range(1, 4)
+		var hit_count: int = 0
+		for e in _dungeon_entities:
+			if e.get("is_dead", false) or e == tgt or e == atk_ent: continue
+			if e.get("is_player", false) == atk_ent.get("is_player", false): continue
+			var dx: int = absi(int(e.get("x", -99)) - int(tgt.get("x", 0)))
+			var dy: int = absi(int(e.get("y", -99)) - int(tgt.get("y", 0)))
+			if dx <= 1 and dy <= 1:
+				_dung_reduce_hp(e, splash); hit_count += 1
+		if hit_count > 0:
+			splash_log = " (splash: %d to %d adjacent)" % [splash, hit_count]
+	# Track that an improvised weapon was used this turn (for T4 +AP next turn)
+	if atk_h >= 0 and _chars.has(atk_h):
+		var used_imp: int = int(_chars[atk_h].get("_iwm_uses_this_turn", 0))
+		_chars[atk_h]["_iwm_uses_this_turn"] = used_imp + 1
+		if iwm_t >= 4 and used_imp >= 1:
+			# Two different improvised weapons used → +1 AP banked for next turn
+			atk_ent["_rest_carry_ap"] = int(atk_ent.get("_rest_carry_ap", 0)) + 1
+	_dung_reduce_hp(tgt, dmg)
+	if int(tgt.get("hp", 0)) <= 0:
+		tgt["is_dead"] = true
+		tgt["conditions"].clear()
+	return _dung_ok("%s strikes %s with an improvised weapon for %d damage!%s" % [
+		atk_ent["name"], tgt["name"], dmg, splash_log], ap_cost, 0)
+
+## Throw object: at T1-T2 a single-target ranged improvised attack; at T3+
+## becomes a 10 ft AoE explosion (2d6 + STR/SPD, +2d6 per SP invested).
+## Uses cx/cy as the target tile for the AoE; target_id when single-shot.
+func _dung_dispatch_throw_object(atk_ent: Dictionary, target_id: String,
+		cx: int, cy: int, ap_cost: int, sp_invest: int) -> Dictionary:
+	atk_ent["ap_spent"] = int(atk_ent["ap_spent"]) + ap_cost
+	var atk_h: int = int(atk_ent.get("handle", -1))
+	var iwm_t: int = 0
+	var atk_stats: Array = [1, 1, 1, 1, 1]
+	if atk_h >= 0 and _chars.has(atk_h):
+		atk_stats = _chars[atk_h].get("stats", atk_stats)
+		iwm_t = int(_chars[atk_h].get("feats", {}).get("Improvised Weapon Mastery", 0))
+	var stat_bonus: int = maxi(int(atk_stats[0]), int(atk_stats[1]))
+	# AoE path (T3+)
+	if iwm_t >= 3 and cx >= 0 and cy >= 0:
+		# Spend SP for damage boost
+		if sp_invest > 0 and atk_h >= 0 and _chars.has(atk_h):
+			var sp_have: int = int(_chars[atk_h].get("sp", 0))
+			sp_invest = mini(sp_invest, sp_have)
+			_chars[atk_h]["sp"] = sp_have - sp_invest
+		var dice_count: int = 2 + (sp_invest * 2)   # base 2d6, +2d6 per SP
+		var dmg: int = stat_bonus
+		for _i in range(dice_count): dmg += randi_range(1, 6)
+		var hits: int = 0
+		var dc: int = 10 + maxi(int(atk_stats[0]), int(atk_stats[1]))
+		for e in _dungeon_entities:
+			if e.get("is_dead", false): continue
+			if e.get("is_player", false) == atk_ent.get("is_player", false): continue
+			var dx: int = absi(int(e.get("x", -99)) - cx)
+			var dy: int = absi(int(e.get("y", -99)) - cy)
+			if dx <= 2 and dy <= 2:
+				var taken: int = dmg
+				if _spell_save_roll(e, dc, 1):   # Speed save → half
+					taken = maxi(1, dmg / 2)
+				_dung_reduce_hp(e, taken)
+				if int(e.get("hp", 0)) <= 0:
+					e["is_dead"] = true; e["conditions"].clear()
+				hits += 1
+		var sp_note: String = ""
+		if sp_invest > 0:
+			sp_note = " (+%d SP boost: %dd6)" % [sp_invest, dice_count]
+		return _dung_ok("%s hurls an explosive object — 10 ft radius, %d enemies hit!%s" % [
+			atk_ent["name"], hits, sp_note], ap_cost, sp_invest)
+	# Single-target path
+	var tgt = _dung_find(target_id)
+	if tgt == null or tgt.get("is_dead", false):
+		return _dung_fail("No valid target.")
+	var die: int = 4
+	if iwm_t >= 2: die = 6
+	var roll: int = randi_range(1, 20) + stat_bonus
+	if roll < int(tgt.get("ac", 10)):
+		return _dung_ok("%s throws an object at %s — MISS!" % [atk_ent["name"], tgt["name"]], ap_cost, 0)
+	var dmg: int = randi_range(1, die) + stat_bonus
+	_dung_reduce_hp(tgt, dmg)
+	if int(tgt.get("hp", 0)) <= 0:
+		tgt["is_dead"] = true; tgt["conditions"].clear()
+	return _dung_ok("%s throws an object at %s for %d damage!" % [atk_ent["name"], tgt["name"], dmg], ap_cost, 0)
+
+## Duelist's Path / Twin Fang T3 Parry. Costs 1 AP (or 0 in Bastion Form).
+## Sets the parry-pending flag; the next melee (or T2+ ranged) attack
+## against this entity rolls a contest. On parry-success, the attack
+## misses; if the parrier won by 5+, they immediately counter-attack.
+func _dung_dispatch_parry(ent: Dictionary, ap_cost: int) -> Dictionary:
+	ent["ap_spent"] = int(ent.get("ap_spent", 0)) + ap_cost
+	ent["parry_pending"] = true
+	# Pre-roll the parry value so the incoming attack just compares.
+	# Use STR/SPD whichever is higher.
+	var atk_h: int = int(ent.get("handle", -1))
+	var stat_b: int = 0
+	if atk_h >= 0 and _chars.has(atk_h):
+		var s: Array = _chars[atk_h].get("stats", [1,1,1,1,1])
+		stat_b = maxi(int(s[0]), int(s[1]))
+	# T3 secondary: free-action feint adds +1d4 to the parry roll
+	var feint_used: bool = bool(ent.get("_dp_feint_used_this_turn", false))
+	var feint_bonus: int = 0
+	if not feint_used:
+		var dp_t: int = 0
+		if atk_h >= 0 and _chars.has(atk_h):
+			dp_t = int(_chars[atk_h].get("feats", {}).get("Duelist's Path", 0))
+		if dp_t >= 3:
+			feint_bonus = randi_range(1, 4)
+			ent["_dp_feint_used_this_turn"] = true
+	ent["parry_roll"] = randi_range(1, 20) + stat_b + feint_bonus
+	var note: String = " (+%d feint)" % feint_bonus if feint_bonus > 0 else ""
+	return _dung_ok("%s readies a parry — next melee attack will be contested.%s" % [
+		ent["name"], note], ap_cost, 0)
+
+## Dual Strike (Twin Fang): swing both main and off-hand weapons at one
+## target. Each weapon rolls its own attack and damage. T2+ enables a
+## "both hit" debuff that applies disadvantage on the target's next attack.
+## T4 lets heavy weapons be dual-wielded as if light. T5 chain-attack on kill.
+func _dung_dispatch_dual_strike(atk_ent: Dictionary, target_id: String, ap_cost: int) -> Dictionary:
+	var tgt = _dung_find(target_id)
+	if tgt == null or tgt.get("is_dead", false):
+		return _dung_fail("No valid target.")
+	var atk_h: int = int(atk_ent.get("handle", -1))
+	if atk_h < 0 or not _chars.has(atk_h):
+		return _dung_fail("Dual Strike requires a player character.")
+	atk_ent["ap_spent"] = int(atk_ent["ap_spent"]) + ap_cost
+	var c: Dictionary = _chars[atk_h]
+	var main_w: String = str(c.get("weapon", "None"))
+	var off_w: String = str(c.get("offhand", "None"))
+	var feats: Dictionary = c.get("feats", {})
+	var stats: Array = c.get("stats", [1,1,1,1,1])
+	var tf_t: int = int(feats.get("Twin Fang", 0))
+	var stat_b: int = int(stats[0])   # STR for melee
+	var both_hit: bool = true
+	var total_dmg: int = 0
+	var msg_parts: PackedStringArray = []
+	# Main hand
+	var roll_m: int = randi_range(1, 20) + stat_b
+	if roll_m >= int(tgt.get("ac", 10)):
+		var d_m: int = _roll_weapon_damage_with_feats(main_w, feats) + stat_b
+		_dung_reduce_hp(tgt, d_m)
+		total_dmg += d_m
+		msg_parts.append("%s for %d" % [main_w, d_m])
+	else:
+		both_hit = false
+		msg_parts.append("%s MISS" % main_w)
+	# Off-hand (only if target still alive)
+	if int(tgt.get("hp", 0)) > 0:
+		var roll_o: int = randi_range(1, 20) + stat_b
+		if roll_o >= int(tgt.get("ac", 10)):
+			var d_o: int = _roll_weapon_damage_with_feats(off_w, feats) + stat_b
+			_dung_reduce_hp(tgt, d_o)
+			total_dmg += d_o
+			msg_parts.append("%s for %d" % [off_w, d_o])
+		else:
+			both_hit = false
+			msg_parts.append("%s MISS" % off_w)
+	else:
+		both_hit = false
+	# Both-hit bonuses
+	var bonus_log: String = ""
+	if both_hit:
+		# T1: +1d4 if both hit same target
+		var bonus: int = randi_range(1, 4)
+		# T5: +1d6 if target below half HP
+		if tf_t >= 5 and int(tgt.get("hp", 0)) < int(tgt.get("max_hp", 1)) / 2:
+			bonus += randi_range(1, 6)
+		_dung_reduce_hp(tgt, bonus)
+		total_dmg += bonus
+		bonus_log = " (both hit: +%d)" % bonus
+		# T2+: impose disadvantage on target's next attack
+		if tf_t >= 2:
+			tgt["disadv_next_attack"] = true
+		# T4: prone save on both heavy hits
+		if tf_t >= 4:
+			var dc: int = 10 + stat_b
+			if not _spell_save_roll(tgt, dc, 0):
+				_dung_add_condition(tgt, "prone")
+				bonus_log += " — prone!"
+	# Death + chain-attack T5
+	var killed: bool = int(tgt.get("hp", 0)) <= 0
+	if killed:
+		tgt["is_dead"] = true; tgt["conditions"].clear()
+	return _dung_ok("%s dual-strikes %s — %s.%s%s" % [
+		atk_ent["name"], tgt["name"], ", ".join(msg_parts), bonus_log,
+		" [DEFEATED]" if killed else ""], ap_cost, 0)
+
+func _dung_dispatch_magic_item_active(ent: Dictionary, item_name: String,
+		target_id: String, cx: int, cy: int) -> Dictionary:
+	if item_name == "":
+		return _dung_fail("No magic item specified.")
+	var handle: int = int(ent.get("handle", -1))
+	var act: Dictionary = _magic_item_get_active_for_handle(handle, item_name)
+	if act.is_empty():
+		return _dung_fail("%s has no active ability defined." % item_name)
+	var is_toggle: bool = bool(act.get("toggle", false))
+	var cd: String = str(act.get("cooldown", ""))
+
+	# Toggle items: flip state, no cooldown.
+	if is_toggle:
+		var was_on: bool = _magic_item_is_toggled(handle, item_name)
+		_magic_item_set_toggle(handle, item_name, not was_on)
+		# Mirror toggle state on the dungeon entity max_ap so this turn picks it up
+		if handle >= 0 and _chars.has(handle):
+			ent["max_ap"] = int(_chars[handle].get("max_ap", ent.get("max_ap", 6)))
+		var new_state: String = "OFF" if was_on else "ON"
+		var penalty: int = int(act.get("active_max_ap_penalty", 0))
+		var penalty_note: String = ""
+		if penalty > 0:
+			penalty_note = " (Max AP %s%d)" % ["+" if was_on else "-", penalty]
+		return _dung_ok("%s — %s %s%s" % [
+			ent["name"], str(act.get("name", item_name)), new_state, penalty_note], 0, 0)
+
+	# Cooldown gate
+	if cd != "" and _magic_item_on_cooldown(ent, item_name, cd):
+		return _dung_fail("%s is on cooldown until next %s." % [item_name, cd.replace("_", " ")])
+
+	# Per-item dispatch
+	var msg: String = _dung_run_magic_item_handler(ent, item_name, act, target_id, cx, cy)
+	if msg == "":
+		return _dung_fail("%s couldn't activate." % item_name)
+
+	# Apply active-use curse self-damage (Ironseed Pod, Manifestation Mirror, etc.)
+	msg += _apply_active_use_curse(ent, item_name)
+
+	# Mark cooldown after a successful non-toggle use
+	if cd != "":
+		_magic_item_mark_used(ent, item_name, cd)
+	return _dung_ok(msg, 0, 0)
+
+## Per-item active dispatch table. Keep this as a centralized switch so
+## the data file (MagicItemData) carries metadata and this file carries
+## actual gameplay code.
+func _dung_run_magic_item_handler(ent: Dictionary, item_name: String,
+		act: Dictionary, target_id: String, cx: int, cy: int) -> String:
+	var handle: int = int(ent.get("handle", -1))
+	match item_name:
+		# ── Common ─────────────────────────────────────────────────────────
+		"Cradleleaf Poultice":
+			# Stabilize a dying ally and grant 1 HP
+			var tgt = _dung_find(target_id)
+			if tgt == null: return ""
+			tgt["hp"] = maxi(int(tgt.get("hp", 0)), 1)
+			tgt["is_dying"] = false
+			return "%s applies Cradleleaf Poultice to %s — stabilised, +1 HP." % [ent["name"], tgt["name"]]
+
+		"Glowroot Bandage":
+			# Heal 1d6 HP (self or ally)
+			var tgt = _dung_find(target_id) if target_id != "" else ent
+			if tgt == null: tgt = ent
+			var heal: int = _roll_dice(1, 6)
+			tgt["hp"] = mini(int(tgt.get("max_hp", heal)), int(tgt.get("hp", 0)) + heal)
+			return "%s applies Glowroot Bandage — heals %s for %d HP." % [ent["name"], tgt["name"], heal]
+
+		"Smoke Puff":
+			# 5ft cloud of obscurement around caster (+1 stealth for 1 round)
+			_dung_add_condition(ent, "obscured")
+			return "%s pops a Smoke Puff — obscured for 1 round." % ent["name"]
+
+		"Silent Bell":
+			# 10ft sphere of silence — apply silenced condition to all in range
+			var origin: Vector2i = Vector2i(int(ent.get("x", 0)), int(ent.get("y", 0)))
+			var hits: int = 0
+			for e in _dungeon_entities:
+				var ex: int = int(e.get("x", -99)); var ey: int = int(e.get("y", -99))
+				if absi(ex - origin.x) + absi(ey - origin.y) <= 2:
+					_dung_add_condition(e, "silenced")
+					hits += 1
+			return "%s rings the Silent Bell — %d creatures silenced for 1 minute." % [ent["name"], hits]
+
+		# ── Uncommon ───────────────────────────────────────────────────────
+		"Cinderbite Fang":
+			# Ignite the blade — adjacent attackers take 1 fire/round, 10ft light
+			_magic_item_set_toggle(handle, item_name, true)
+			return "%s ignites Cinderbite Fang — adjacent attackers take 1 fire/round (1 minute)." % ent["name"]
+
+		"Runeblade Arm":
+			# Phase Strike — single melee attack that treats the target's AC
+			# as 10 (blade phases through armor). Uses the wielder's
+			# equipped weapon for damage; we just spoof target AC for the
+			# duration of the swing.
+			var tgt = _dung_find(target_id)
+			if tgt == null or bool(tgt.get("is_dead", false)):
+				return "%s swings Runeblade Arm through empty air — no valid target." % ent["name"]
+			# Range check — must be adjacent (Manhattan ≤ 1).
+			var ax: int = int(ent.get("x", 0))
+			var ay: int = int(ent.get("y", 0))
+			var tx: int = int(tgt.get("x", 0))
+			var ty: int = int(tgt.get("y", 0))
+			if absi(ax - tx) + absi(ay - ty) > 1:
+				return "%s reaches with Phase Strike but %s is not adjacent." % [ent["name"], tgt["name"]]
+			var wpn: String = "Runeblade Arm"
+			if handle >= 0 and _chars.has(handle):
+				wpn = str(_chars[handle].get("weapon", "Runeblade Arm"))
+			# Spoof AC to 10 for this attack only.
+			var saved_ac: int = int(tgt["ac"])
+			tgt["ac"] = 10
+			var result: Dictionary = _dung_do_attack(ent, tgt, wpn, false, 0)
+			tgt["ac"] = saved_ac
+			var inner: String = str(result.get("log", ""))
+			return "%s unleashes Phase Strike! %s" % [ent["name"], inner]
+
+		"Fluxglass Shard":
+			# Teleport 30 ft (free action). The 1d4 psychic per 30 ft is applied
+			# automatically via curse_self_dmg_on_active in the dispatcher.
+			if cx < 0 or cy < 0 or cx >= MAP_SIZE or cy >= MAP_SIZE: return ""
+			if _dung_tile(cx, cy) != TILE_FLOOR or _dung_occupied(cx, cy): return ""
+			ent["x"] = cx; ent["y"] = cy
+			return "%s flickers through fluxglass and reappears 30 ft away." % ent["name"]
+
+		"Boots of the Gale Walker":
+			# 30ft leap — teleport to target tile within 6 tiles (5ft per tile)
+			if cx < 0 or cy < 0 or cx >= MAP_SIZE or cy >= MAP_SIZE:
+				return ""
+			if _dung_tile(cx, cy) != TILE_FLOOR or _dung_occupied(cx, cy): return ""
+			ent["x"] = cx; ent["y"] = cy
+			return "%s leaps 30 ft on the gale wind." % ent["name"]
+
+		"Stormbound Cloak":
+			# Toggle 1-minute fly mode
+			_magic_item_set_toggle(handle, item_name, true)
+			_dung_add_condition(ent, "flying")
+			return "%s wraps Stormbound Cloak — flying for 1 minute." % ent["name"]
+
+		"Skyward Harness":
+			# 30 ft fly speed for 10 minutes — flying condition
+			_dung_add_condition(ent, "flying")
+			return "%s activates Skyward Harness — flight 30 ft for 10 minutes." % ent["name"]
+
+		"Webspinner's Gauntlets":
+			# Restrain a target within 30 ft on failed Speed save
+			var tgt = _dung_find(target_id)
+			if tgt == null: return ""
+			var dc: int = 10 + int(_chars[handle].get("stats", [0,0,0,0,0])[4]) if handle >= 0 and _chars.has(handle) else 12
+			if not _spell_save_roll(tgt, dc, 1):
+				_dung_add_condition(tgt, "restrained")
+				return "%s casts a webnet — %s is restrained!" % [ent["name"], tgt["name"]]
+			return "%s casts a webnet — %s breaks free." % [ent["name"], tgt["name"]]
+
+		"Boneclatter Chimes":
+			# Frighten all undead within 30 ft on failed VIT save
+			var hits: int = 0
+			for e in _dungeon_entities:
+				if e.get("is_dead", false) or e.get("is_player", false): continue
+				if not str(e.get("creature_type", "")).to_lower().contains("undead"): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx + dy > 6: continue
+				var dc: int = 10 + int(_chars[handle].get("stats", [0,0,0,0,0])[4]) if handle >= 0 and _chars.has(handle) else 12
+				if not _spell_save_roll(e, dc, 3):
+					_dung_add_condition(e, "frightened")
+					hits += 1
+			return "%s rattles the Boneclatter Chimes — %d undead frightened." % [ent["name"], hits]
+
+		# ── Rare ───────────────────────────────────────────────────────────
+		"Forgefire Hammer":
+			# Toggle ignite-ground mode — bonus fire dice already gated by wield;
+			# while toggled on, max AP -3 and you ignite the ground each turn.
+			_magic_item_set_toggle(handle, item_name, true)
+			return "%s ignites Forgefire Hammer — Max AP -3, ground burns where you swing." % ent["name"]
+
+		"Builder's Runehammer":
+			# 10 ft radius minor earthquake — knock prone on failed Speed save
+			var hits: int = 0
+			var dc: int = 10 + int(_chars[handle].get("stats", [0,0,0,0,0])[3]) if handle >= 0 and _chars.has(handle) else 12
+			for e in _dungeon_entities:
+				if e.get("is_dead", false) or e.get("is_player", false): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx > 2 or dy > 2: continue
+				if not _spell_save_roll(e, dc, 1):
+					_dung_add_condition(e, "prone")
+					hits += 1
+			return "%s slams the Runehammer — earthquake! %d enemies knocked prone." % [ent["name"], hits]
+
+		"Horde-Breaker's Horn":
+			# Allies within 60 ft gain advantage on next attack roll
+			for e in _dungeon_entities:
+				if not e.get("is_player", false) or e.get("is_dead", false): continue
+				e["adv_next_attack"] = true
+			return "%s blows the Horde-Breaker's Horn — allies have advantage on next attack." % ent["name"]
+
+		"Beacon of Hope":
+			# Allies within 30 ft fear-immune + bonus to saves for 1 hour (1 fight)
+			for e in _dungeon_entities:
+				if not e.get("is_player", false) or e.get("is_dead", false): continue
+				e["beacon_buff"] = true
+				_dung_remove_condition(e, "frightened")
+			return "%s lifts the Beacon of Hope — allies inspired, immune to fear." % ent["name"]
+
+		"Banner of the Victor":
+			# Plant a banner — allies within 20 ft +DIV to attack and saves
+			ent["banner_planted"] = true
+			ent["banner_x"] = int(ent.get("x", 0))
+			ent["banner_y"] = int(ent.get("y", 0))
+			return "%s plants the Banner of the Victor — allies bolstered." % ent["name"]
+
+		"Veil of Shadows":
+			# Become invisible for 1 minute
+			_dung_add_condition(ent, "invisible")
+			return "%s vanishes under the Veil of Shadows — invisible for 1 minute." % ent["name"]
+
+		"Chameleon's Veil":
+			# Near-invisible 1 minute (1 SP)
+			_dung_add_condition(ent, "invisible")
+			return "%s blends into the surroundings — invisible for 1 minute." % ent["name"]
+
+		"Living Pathway Sandals":
+			# Teleport up to 30 ft along a natural path
+			if cx < 0 or cy < 0: return ""
+			if _dung_tile(cx, cy) != TILE_FLOOR or _dung_occupied(cx, cy): return ""
+			ent["x"] = cx; ent["y"] = cy
+			return "%s steps along a living root — teleports 30 ft." % ent["name"]
+
+		"Skybound Anklets":
+			# Leap 60 ft and hover until next turn
+			if cx < 0 or cy < 0: return ""
+			if _dung_tile(cx, cy) != TILE_FLOOR or _dung_occupied(cx, cy): return ""
+			ent["x"] = cx; ent["y"] = cy
+			_dung_add_condition(ent, "flying")
+			return "%s leaps 60 ft into the air, hovering." % ent["name"]
+
+		"Stormrunner Legs":
+			# Free-action move + lightning trail (1d6 to adjacent)
+			var hits: int = 0
+			for e in _dungeon_entities:
+				if e.get("is_dead", false) or e.get("is_player", false): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx <= 1 and dy <= 1:
+					var dmg: int = _roll_dice(1, 6)
+					dmg = _apply_magic_resistances(e, dmg, "lightning")
+					_dung_reduce_hp(e, dmg)
+					hits += 1
+			return "%s sprints in a static trail — %d enemies shocked for 1d6 lightning." % [ent["name"], hits]
+
+		"Molten Emberstone":
+			# Sacrifice X HP, deal 2X fire in 10 ft radius. Half of current HP
+			# is the default sacrifice amount; capped to never drop below 1.
+			var sacrifice: int = mini(int(ent.get("hp", 1)) - 1, 10)
+			if sacrifice <= 0: return ""
+			ent["hp"] = int(ent["hp"]) - sacrifice
+			var radius_dmg: int = sacrifice * 2
+			var hits: int = 0
+			for e in _dungeon_entities:
+				if e.get("is_dead", false) or e.get("is_player", false): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx <= 2 and dy <= 2:
+					var dmg: int = _apply_magic_resistances(e, radius_dmg, "fire")
+					_dung_reduce_hp(e, dmg); hits += 1
+			return "%s detonates the Emberstone — %d HP sacrificed, %d enemies hit for %d fire." % [
+				ent["name"], sacrifice, hits, radius_dmg]
+
+		"Aberrant Flex Band":
+			# Toggle 5 ft melee reach (max AP -2)
+			_magic_item_set_toggle(handle, item_name, true)
+			return "%s stretches the Flex Band — melee reach +5 ft, Max AP -2." % ent["name"]
+
+		# ── Very Rare ──────────────────────────────────────────────────────
+		"Glacierforged Blade":
+			# Toggle nothing here (passive +2d6 cold), but offer a short-rest
+			# crit-slow burst as the active.
+			var tgt = _dung_find(target_id)
+			if tgt == null: return ""
+			var dc: int = 14
+			if _spell_save_roll(tgt, dc, 1):
+				return "%s strikes %s with Glacierforged Blade — slow resisted." % [ent["name"], tgt["name"]]
+			_dung_add_condition(tgt, "slowed")
+			return "%s strikes %s — slowed by Glacierforged Blade until end of next turn." % [ent["name"], tgt["name"]]
+
+		"Necrotic Lantern":
+			# 30 ft radius dim necrotic light — undead inside take 1 radiant/round
+			ent["necrotic_lantern_active"] = true
+			return "%s activates the Necrotic Lantern — undead within 30 ft take 1 radiant/round." % ent["name"]
+
+		"Prime Eden Blossom":
+			# Heal 3d6 distributed however; for now, all allies within 30 ft
+			var heal_total: int = _roll_dice(3, 6)
+			var allies: Array = []
+			for e in _dungeon_entities:
+				if not e.get("is_player", false) or e.get("is_dead", false): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx <= 6 and dy <= 6: allies.append(e)
+			if allies.is_empty(): return ""
+			var per_ally: int = maxi(1, heal_total / allies.size())
+			for a in allies:
+				a["hp"] = mini(int(a.get("max_hp", per_ally)), int(a.get("hp", 0)) + per_ally)
+			return "%s blooms the Prime Eden Blossom — %d HP healed to %d allies." % [
+				ent["name"], heal_total, allies.size()]
+
+		"Soulglass Circlet":
+			# Restore SP. Stub: refund 3 SP if the player has been hit recently.
+			var ent_h: int = int(ent.get("handle", -1))
+			if ent_h >= 0 and _chars.has(ent_h):
+				_chars[ent_h]["sp"] = mini(int(_chars[ent_h].get("max_sp", 0)),
+					int(_chars[ent_h].get("sp", 0)) + 3)
+				ent["sp"] = int(_chars[ent_h]["sp"])
+			return "%s reabsorbs latent magic — +3 SP." % ent["name"]
+
+		# ── Legendary ──────────────────────────────────────────────────────
+		"Crown of the First Dawn":
+			# Toggle: light + allies within 60 ft fear/blind immune (Max AP -5)
+			_magic_item_set_toggle(handle, item_name, true)
+			for e in _dungeon_entities:
+				if not e.get("is_player", false) or e.get("is_dead", false): continue
+				_dung_remove_condition(e, "frightened")
+				_dung_remove_condition(e, "blinded")
+			return "%s ignites the Crown of the First Dawn — Max AP -5, allies cleansed of fear/blindness." % ent["name"]
+
+		"Erylon's Echo":
+			# Mass heal 4d8+4 to up to 6 allies within 30 ft
+			var heal_total: int = _roll_dice(4, 8) + 4
+			var n: int = 0
+			for e in _dungeon_entities:
+				if n >= 6: break
+				if not e.get("is_player", false) or e.get("is_dead", false): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx > 6 or dy > 6: continue
+				e["hp"] = mini(int(e.get("max_hp", heal_total)), int(e.get("hp", 0)) + heal_total)
+				n += 1
+			return "%s pulses Erylon's Echo — %d allies restored for %d HP." % [ent["name"], n, heal_total]
+
+		"Heart of the Leviathan":
+			# 30 ft cube poison cloud — VIT save DC 16, 8d6 poison
+			var dmg_full: int = _roll_dice(8, 6)
+			var hits: int = 0
+			for e in _dungeon_entities:
+				if e.get("is_dead", false) or e.get("is_player", false): continue
+				var dx: int = absi(int(e.get("x", -99)) - int(ent.get("x", 0)))
+				var dy: int = absi(int(e.get("y", -99)) - int(ent.get("y", 0)))
+				if dx > 3 or dy > 3: continue
+				var saved: bool = _spell_save_roll(e, 16, 3)
+				var dmg: int = dmg_full / 2 if saved else dmg_full
+				dmg = _apply_magic_resistances(e, dmg, "poison")
+				_dung_reduce_hp(e, dmg)
+				if not saved:
+					_dung_add_condition(e, "poisoned")
+				hits += 1
+			return "%s exhales the Leviathan's poison — %d enemies caught in cube." % [ent["name"], hits]
+
+		"Phoenix Feather Cloak":
+			# Passive auto-revive is handled elsewhere via extra_revive flag.
+			# This active is a stub no-op — tell the player.
+			return "%s — Phoenix Feather Cloak's auto-revive is passive (no manual activation)." % ent["name"]
+
+	# Unknown item — soft-fail
+	return "%s tries to use %s, but the magic doesn't respond yet (active not wired)." % [ent["name"], item_name]
 
 func _dung_dispatch_reload(ent: Dictionary, ap_cost: int) -> Dictionary:
 	ent["ap_spent"] += ap_cost
@@ -10304,10 +12126,45 @@ func _dung_dispatch_reload(ent: Dictionary, ap_cost: int) -> Dictionary:
 
 func _dung_dispatch_escape_grapple(ent: Dictionary, ap_cost: int) -> Dictionary:
 	ent["ap_spent"] += ap_cost
-	var roll: int = randi_range(1, 20) + 2
+	# Find the grappler (the entity that lists this entity in _grappled_ids).
+	# Used for Grasp of the Titan T1's "auto-prone on successful escape"
+	# (1/LR) and T3's "disadvantage on escape".
+	var grappler: Dictionary = {}
+	var ent_id: String = str(ent.get("id", ""))
+	for e in _dungeon_entities:
+		var holds: Array = e.get("_grappled_ids", [])
+		if ent_id in holds:
+			grappler = e; break
+	var gt_t: int = 0
+	if not grappler.is_empty():
+		var gh: int = int(grappler.get("handle", -1))
+		if gh >= 0 and _chars.has(gh):
+			gt_t = int(_chars[gh].get("feats", {}).get("Grasp of the Titan", 0))
+	# T3: disadvantage on escape rolls
+	var roll: int = randi_range(1, 20)
+	if gt_t >= 3:
+		var roll2: int = randi_range(1, 20)
+		roll = mini(roll, roll2)
+	roll += 2
 	if roll >= 12:
 		_dung_remove_condition(ent, "grappled")
-		return _dung_ok("%s breaks free from the grapple! (rolled %d)" % [ent["name"], roll], ap_cost, 0)
+		# Sever the grappler's hold tracking
+		if not grappler.is_empty():
+			var holds: Array = grappler.get("_grappled_ids", [])
+			holds.erase(ent_id)
+			grappler["_grappled_ids"] = holds
+			grappler["_grapple_holds"] = maxi(0, int(grappler.get("_grapple_holds", 1)) - 1)
+		# T1 secondary: 1/LR auto-prone on successful escape from your grapple
+		var prone_note: String = ""
+		if gt_t >= 1 and not grappler.is_empty():
+			var gh2: int = int(grappler.get("handle", -1))
+			if gh2 >= 0 and _chars.has(gh2):
+				if not bool(_chars[gh2].get("_mi_lr_grapple_prone_used", false)):
+					_dung_add_condition(ent, "prone")
+					_chars[gh2]["_mi_lr_grapple_prone_used"] = true
+					prone_note = " — but %s slams them prone!" % grappler["name"]
+		return _dung_ok("%s breaks free from the grapple! (rolled %d)%s" % [
+			ent["name"], roll, prone_note], ap_cost, 0)
 	else:
 		return _dung_ok("%s struggles but can't break free. (rolled %d)" % [ent["name"], roll], ap_cost, 0)
 
@@ -10344,7 +12201,7 @@ func _dung_dispatch_use_item(ent: Dictionary, item_name: String, ap_cost: int) -
 						var mob_name: String = str(adj.get("name", "")).to_lower()
 						if "undead" in mob_name or "skeleton" in mob_name or "zombie" in mob_name or "ghost" in mob_name or "wraith" in mob_name or "lich" in mob_name or "vampire" in mob_name:
 							_dung_reduce_hp(adj, dmg)
-							if adj["hp"] == 0: adj["is_dead"] = true; adj["conditions"].clear()
+							if adj["hp"] == 0 and not bool(adj.get("is_player", false)): adj["is_dead"] = true; adj["conditions"].clear()
 							hit_count += 1
 				result = "%s throws Holy Water — %d radiant to %d undead!" % [ent["name"], dmg, hit_count]
 			"Alchemist's Fire (flask)":
@@ -10353,7 +12210,7 @@ func _dung_dispatch_use_item(ent: Dictionary, item_name: String, ap_cost: int) -
 				if closest != null:
 					var fire_dmg: int = _roll_dice(1, 4)
 					_dung_reduce_hp(closest, fire_dmg)
-					if closest["hp"] == 0: closest["is_dead"] = true; closest["conditions"].clear()
+					if closest["hp"] == 0 and not bool(closest.get("is_player", false)): closest["is_dead"] = true; closest["conditions"].clear()
 					else: _dung_add_condition(closest, "burning")
 					result = "%s throws Alchemist's Fire at %s — %d fire damage + burning!" % [ent["name"], closest["name"], fire_dmg]
 				else:
@@ -10363,7 +12220,7 @@ func _dung_dispatch_use_item(ent: Dictionary, item_name: String, ap_cost: int) -
 				if closest != null:
 					var acid_dmg: int = _roll_dice(2, 6)
 					_dung_reduce_hp(closest, acid_dmg)
-					if closest["hp"] == 0: closest["is_dead"] = true; closest["conditions"].clear()
+					if closest["hp"] == 0 and not bool(closest.get("is_player", false)): closest["is_dead"] = true; closest["conditions"].clear()
 					else: _dung_add_condition(closest, "acid_corroded")
 					result = "%s throws Acid at %s — %d acid damage!" % [ent["name"], closest["name"], acid_dmg]
 				else:
@@ -10815,8 +12672,10 @@ func _spell_apply_to_target(
 		dmg += bm_vit_bonus
 		if save_halved:
 			dmg = maxi(1, dmg / 2)
+		# Magic-item resistances (e.g. Stormbound Cloak halves lightning/thunder)
+		dmg = _apply_magic_resistances(tgt, dmg, dmg_type)
 		_dung_reduce_hp(tgt, dmg)
-		if tgt["hp"] == 0:
+		if tgt["hp"] == 0 and not bool(tgt.get("is_player", false)):
 			tgt["is_dead"] = true
 			tgt["conditions"].clear()
 		var t_handle: int = tgt.get("handle", -1)
@@ -10863,8 +12722,7 @@ func _spell_apply_to_target(
 			_dung_reduce_hp(tgt, heal)
 			var nh: int = tgt.get("handle", -1)
 			if nh >= 0 and _chars.has(nh): _chars[nh]["hp"] = tgt["hp"]
-			if int(tgt["hp"]) <= 0:
-				tgt["is_dead"] = true; tgt["conditions"].clear()
+			if int(tgt["hp"]) <= 0 and not bool(tgt.get("is_player", false)): tgt["is_dead"] = true; tgt["conditions"].clear()
 			parts.append("NECROTIC TAINT — healing dealt %d damage!" % heal)
 			heal = 0  # skip normal heal
 		tgt["hp"] = mini(int(tgt["max_hp"]), int(tgt["hp"]) + heal)
@@ -11672,8 +13530,9 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 			if glance_dmg > 0:
 				var glance_ss: String = _dung_reduce_hp(tgt, glance_dmg)
 				if tgt_h >= 0 and _chars.has(tgt_h): _chars[tgt_h]["hp"] = tgt["hp"]
-				if int(tgt["hp"]) <= 0:
-					tgt["is_dead"] = true; tgt["conditions"].clear()
+				if int(tgt["hp"]) <= 0 and not bool(tgt.get("is_player", false)):
+					tgt["is_dead"] = true
+					tgt["conditions"].clear()
 					return {"hit": false, "damage": glance_dmg,
 						"log": "%s attacks %s — MISS but glancing blow for %d! [DEFEATED]%s" % [
 							atk["name"], tgt["name"], glance_dmg, elev_note],
@@ -11946,8 +13805,9 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 				if dist <= 6:  # ~30ft
 					# Transfer damage to minion instead
 					_dung_reduce_hp(mm_ent, dmg)
-					if int(mm_ent["hp"]) <= 0:
-						mm_ent["is_dead"] = true; mm_ent["conditions"].clear()
+					if int(mm_ent["hp"]) <= 0 and not bool(mm_ent.get("is_player", false)):
+						mm_ent["is_dead"] = true
+						mm_ent["conditions"].clear()
 						mm_transfer_msg = " %s absorbs the blow and is destroyed!" % mm_ent["name"]
 					else:
 						mm_transfer_msg = " %s absorbs the blow! (%d HP left)" % [mm_ent["name"], int(mm_ent["hp"])]
@@ -12030,8 +13890,7 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 				if adj_ent.get("is_player", false): continue
 				if absi(int(adj_ent["x"]) - int(tgt["x"])) <= 1 and absi(int(adj_ent["y"]) - int(tgt["y"])) <= 1:
 					_dung_reduce_hp(adj_ent, fod_dmg)
-					if adj_ent["hp"] == 0:
-						adj_ent["is_dead"] = true; adj_ent["conditions"].clear()
+					if adj_ent["hp"] == 0 and not bool(adj_ent.get("is_player", false)): adj_ent["is_dead"] = true; adj_ent["conditions"].clear()
 
 	# Iron Vitality T5: 1/LR drop to 1 HP instead of death
 	if dead and bool(tgt.get("is_player", false)):
@@ -12078,8 +13937,7 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 						if nearest_enemy != null and nearest_dist <= 2:
 							var farewell_dmg: int = randi_range(1, 8) + int(mm_ent.get("creature_level", 1))
 							_dung_reduce_hp(nearest_enemy, farewell_dmg)
-							if int(nearest_enemy["hp"]) <= 0:
-								nearest_enemy["is_dead"] = true; nearest_enemy["conditions"].clear()
+							if int(nearest_enemy["hp"]) <= 0 and not bool(nearest_enemy.get("is_player", false)): nearest_enemy["is_dead"] = true; nearest_enemy["conditions"].clear()
 							mm_transfer_msg += " %s strikes %s for %d before vanishing!" % [mm_ent["name"], nearest_enemy["name"], farewell_dmg]
 						# Minion vanishes
 						mm_ent["is_dead"] = true; mm_ent["conditions"].clear()
@@ -12359,6 +14217,10 @@ func _do_death_save(ent: Dictionary) -> String:
 		ent["is_dying"] = false
 		ent["is_dead"] = true
 		ent["conditions"].clear()
+		# Route player characters to the cemetery so they can be revived.
+		var ph: int = int(ent.get("handle", -1))
+		if bool(ent.get("is_player", false)) and ph >= 0:
+			GameState.move_to_cemetery(ph, "killed in action")
 		return "%s fails the final death save (rolled %d). %s has died." % [name, roll, name]
 	if successes >= 3:
 		ent["is_dying"] = false
@@ -12370,10 +14232,28 @@ func _do_death_save(ent: Dictionary) -> String:
 
 ## Called at the start of each entity's turn to clear transient conditions.
 func _dung_tick_conditions(ent: Dictionary) -> void:
-	# Death saving throws for dying characters
+	# Death saving throws for dying characters — roll once per round.
+	# 3 successes → stable (HP at 0, no longer making saves).
+	# 3 failures → dead (player chars routed to cemetery in _do_death_save).
+	# Stash the log onto the entity so the dungeon UI can surface it.
 	if bool(ent.get("is_dying", false)):
-		# Dying characters can't act — skip rest of tick
-		return
+		# Healed back above 0 HP — exit dying state without a save.
+		if int(ent.get("hp", 0)) > 0:
+			ent["is_dying"] = false
+			ent["death_save_successes"] = 0
+			ent["death_save_failures"] = 0
+			var existing0: Array = ent.get("death_save_logs", [])
+			existing0.append("%s is healed and no longer dying." % str(ent.get("name", "???")))
+			ent["death_save_logs"] = existing0
+			# Fall through to normal tick — they can act this turn.
+		else:
+			var ds_log: String = _do_death_save(ent)
+			if ds_log != "":
+				var existing: Array = ent.get("death_save_logs", [])
+				existing.append(ds_log)
+				ent["death_save_logs"] = existing
+			# Dying characters can't act — skip rest of tick
+			return
 
 	# Dodging condition expires each turn
 	ent["conditions"].erase("dodging")
@@ -12415,7 +14295,7 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 		var elw_t: int = _ent_feat_tier(ent, "Elemental Ward")
 		if elw_t >= 1: bleed_dmg = maxi(0, bleed_dmg - elw_t * 2)
 		_dung_reduce_hp(ent, bleed_dmg)
-		if int(ent["hp"]) <= 0:
+		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 			ent["is_dead"] = true
 			ent["conditions"].clear()
 			return
@@ -12435,7 +14315,7 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 		if sg_t >= 1 and randi() % 2 == 0:
 			ent["conditions"].erase("poisoned"); poison_dmg = 0
 		_dung_reduce_hp(ent, poison_dmg)
-		if int(ent["hp"]) <= 0:
+		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 			ent["is_dead"] = true
 			ent["conditions"].clear()
 			return
@@ -12446,7 +14326,7 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 		var elw_t3: int = _ent_feat_tier(ent, "Elemental Ward")
 		if elw_t3 >= 3: burn_dmg = maxi(0, burn_dmg - elw_t3 * 2)
 		_dung_reduce_hp(ent, burn_dmg)
-		if int(ent["hp"]) <= 0:
+		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 			ent["is_dead"] = true
 			ent["conditions"].clear()
 			return
@@ -12497,8 +14377,7 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 	if _dung_has_condition(ent, "squeezed"):
 		var squeeze_dmg: int = randi_range(1, 4)
 		_dung_reduce_hp(ent, squeeze_dmg)
-		if int(ent["hp"]) <= 0:
-			ent["is_dead"] = true; ent["conditions"].clear(); return
+		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)): ent["is_dead"] = true; ent["conditions"].clear(); return
 
 	# Frozen in time: immune to damage, cannot act
 	if _dung_has_condition(ent, "frozen_time"):
@@ -12605,6 +14484,44 @@ func _weapon_damage(weapon: String) -> int:
 	if "staff" in w or "wand" in w:     return randi_range(1, 6) + 1
 	if "spear" in w or "lance" in w:    return randi_range(1, 8) + 1
 	return randi_range(1, 6) + 1  # generic weapon
+
+## Weapon damage roll with feat-tier bonus dice.
+##
+## Used by dispatches that resolve damage outside of `_dung_do_attack` —
+## currently `_dung_dispatch_dual_strike` (Twin Fang). Returns dice-only
+## damage; the caller adds STR/SPD. Crimson Edge (slashing), Iron Hammer
+## (bludgeoning), Iron Thorn (piercing) and Iron Fist (unarmed) each add
+## a tier-scaled bonus die when the wielded weapon matches.
+func _roll_weapon_damage_with_feats(weapon: String, feats: Dictionary) -> int:
+	var base: int = _weapon_damage(weapon)
+	var w: String = weapon.to_lower()
+
+	var ce_t: int = int(feats.get("Crimson Edge", 0))
+	var ih_t: int = int(feats.get("Iron Hammer", 0))
+	var it_t: int = int(feats.get("Iron Thorn", 0))
+	var if_t: int = int(feats.get("Iron Fist", 0))
+
+	var is_slashing: bool = ("sword" in w or "axe" in w or "scimitar" in w
+		or "katana" in w or "blade" in w)
+	var is_bludgeoning: bool = ("mace" in w or "hammer" in w or "club" in w
+		or "maul" in w or "flail" in w or "staff" in w)
+	var is_piercing: bool = ("dagger" in w or "knife" in w or "spear" in w
+		or "lance" in w or "rapier" in w or "pike" in w)
+	var is_unarmed: bool = (w == "" or w == "none" or "fist" in w
+		or "unarmed" in w)
+
+	var bonus_tier: int = 0
+	if is_unarmed and if_t >= 1:           bonus_tier = if_t
+	elif is_slashing and ce_t >= 1:        bonus_tier = ce_t
+	elif is_bludgeoning and ih_t >= 1:     bonus_tier = ih_t
+	elif is_piercing and it_t >= 1:        bonus_tier = it_t
+
+	# Tier scales the bonus die: T1=1d4, T2=1d6, T3=1d8, T4=1d10, T5=1d12.
+	if bonus_tier > 0:
+		var bonus_sides: int = mini(4 + (bonus_tier - 1) * 2, 12)
+		base += randi_range(1, bonus_sides)
+
+	return base
 
 # ── Core map helpers ──────────────────────────────────────────────────────────
 func _dung_find(id: String):
@@ -13127,9 +15044,10 @@ func collect_loot(player_handle: int) -> PackedStringArray:
 	for h in _combat_creatures:
 		if bool(_combat_creatures[h].get("is_dead", false)):
 			items.append(BONUS_DROPS[randi() % BONUS_DROPS.size()])
-	# Award XP to all active characters
+	# Award XP to all active characters, capped at the player's profile
+	# level so units can't outpace the Agent.
 	for h in GameState.get_active_handles():
-		if _chars.has(h): add_xp(h, xp, 20)
+		if _chars.has(h): add_xp(h, xp, GameState.player_level)
 	return items
 
 # ── Base building (stubs) ─────────────────────────────────────────────────────

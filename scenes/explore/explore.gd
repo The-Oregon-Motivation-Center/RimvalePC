@@ -40,9 +40,22 @@ const POI_TOWN_HALL: int  = 10
 const POI_GUILD: int      = 11
 
 ## Grid constants
-const GRID_W: int  = 30
-const GRID_H: int  = 22
+##
+## Region maps are now 3×3: a central CITY block (30×22) — exactly what
+## explore_maps.gd hand-authors — surrounded by 8 OUTSKIRT blocks of the
+## same size, giving a final 90×66 grid. Source maps stored in
+## explore_maps.gd remain 30×22; they're wrapped at load time by
+## _expand_to_outskirts() with procedurally-generated wilderness around
+## the city.
+const GRID_W: int  = 90
+const GRID_H: int  = 66
 const TILE_PX: int = 48
+
+## City block coordinates within the expanded grid.
+const CITY_W: int = 30
+const CITY_H: int = 22
+const CITY_OFFSET_X: int = 30   # city occupies x = 30..59
+const CITY_OFFSET_Y: int = 22   # city occupies y = 22..43
 
 ## Grid character → tile type mapping
 const CHAR_TILE := {
@@ -105,7 +118,16 @@ var _tile_root: Node3D
 var _wall_root: Node3D
 var _entity_root: Node3D
 var _poi_root: Node3D
+var _base_root: Node3D
 var _overlay_root: Node3D
+var _sun_light: DirectionalLight3D = null
+var _fill_light: DirectionalLight3D = null
+var _hud_time_indicator: Label = null
+var _region_light_base: Dictionary = {}
+var _base_build_mode: bool = false
+var _base_build_type: String = ""
+var _base_build_highlight: MeshInstance3D = null
+var _base_build_highlight_mat: StandardMaterial3D = null
 var _fog_root: Node3D
 var _particle_root: Node3D
 var _env_node: WorldEnvironment
@@ -161,6 +183,9 @@ func _ready() -> void:
 		_subregion = "Upper Forty"
 
 	_map_data = ExploreMaps.get_map(_subregion)
+	# Wrap the hand-authored 30×22 city in 8 procedurally-generated
+	# outskirt cells so the playable region is 3× larger in each axis.
+	_map_data = _expand_to_outskirts(_map_data)
 	_pal = _map_data.get("palette", {})
 	_content = _map_data.get("content", {})
 	_terrain_style = int(_map_data.get("terrain_style", 3))
@@ -244,6 +269,206 @@ func _process(delta: float) -> void:
 	if _player_node != null and is_instance_valid(_player_node):
 		var bob: float = sin(_time_of_day * 50.0) * 0.03
 		_player_node.position.y = _get_tile_y(_player_pos.x, _player_pos.y) + bob
+
+	# Defensive: ensure the player marker matches GameState.active_vehicle.
+	# If recall_vehicle was called outside the dropdown (e.g. via Profile or
+	# a vehicle-destroyed event) and nothing rebuilt the marker, the next
+	# frame catches the mismatch and rebuilds. Cheap — string compare per
+	# frame, and only a real rebuild happens when needed.
+	_ensure_player_marker_matches_state()
+
+	# Base-build placement highlight: while in build mode, raycast the
+	# mouse cursor to a tile and show a green/red highlight there.
+	_update_base_build_highlight()
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  OUTSKIRTS WRAPPER — expand a 30×22 city map into a 90×66 region map
+# ══════════════════════════════════════════════════════════════════════════════
+##
+## Source maps in explore_maps.gd are 30×22 hand-authored city blocks. This
+## function wraps each one in an 8-cell ring of procedurally-generated
+## outskirts so the explorable area becomes 3× wider and taller — wilderness
+## with sparse buildings, paths leading to city gates, and four edge exit
+## gates (N/S/E/W) that take the player back to the world map.
+##
+## Generation is seeded by region name so a given subregion always produces
+## the same outskirts layout (preserves cache positions, NPC home tiles,
+## etc. between visits).
+func _expand_to_outskirts(orig: Dictionary) -> Dictionary:
+	var out: Dictionary = orig.duplicate(true)
+	var off_x: int = CITY_OFFSET_X
+	var off_y: int = CITY_OFFSET_Y
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = absi(hash(str(orig.get("name", "default"))))
+
+	var src_grid: Array = orig.get("grid", [])
+
+	# ── Step 1: build the expanded grid with wilderness around the city ──
+	var new_grid: Array = []
+	for y in range(GRID_H):
+		var row_chars := PackedStringArray()
+		row_chars.resize(GRID_W)
+		for x in range(GRID_W):
+			var in_city: bool = (
+				x >= off_x and x < off_x + CITY_W
+				and y >= off_y and y < off_y + CITY_H
+			)
+			if in_city:
+				var sx: int = x - off_x
+				var sy: int = y - off_y
+				var ch: String = "."
+				if sy < src_grid.size():
+					var src_row: String = str(src_grid[sy])
+					if sx < src_row.length():
+						ch = src_row[sx]
+				row_chars[x] = ch
+			else:
+				# Wilderness biased to ground with scattered trees, rubble,
+				# water, and DANGER patches that trigger random encounters
+				# the same way the city's hand-placed danger tiles do.
+				# Tweakable per region later via terrain_style.
+				var r: float = rng.randf()
+				var ch2: String = "."
+				if r < 0.10:
+					ch2 = "T"     # tree (T_PARK)
+				elif r < 0.13:
+					ch2 = "%"     # rubble
+				elif r < 0.14:
+					ch2 = "~"     # water (rare)
+				elif r < 0.17:
+					ch2 = "!"     # DANGER — encounter trigger (≈3%)
+				row_chars[x] = ch2
+		new_grid.append("".join(row_chars))
+
+	# ── Step 2: cut roads through the outskirts (N–S and E–W spines) ──
+	var mid_y: int = GRID_H / 2
+	var mid_x: int = GRID_W / 2
+	for x in range(GRID_W):
+		if x >= off_x and x < off_x + CITY_W: continue
+		var row: String = new_grid[mid_y]
+		new_grid[mid_y] = row.substr(0, x) + "=" + row.substr(x + 1)
+	for y in range(GRID_H):
+		if y >= off_y and y < off_y + CITY_H: continue
+		var row2: String = new_grid[y]
+		new_grid[y] = row2.substr(0, mid_x) + "=" + row2.substr(mid_x + 1)
+
+	# ── Step 3: place sparse outskirt buildings (one per ring sector) ──
+	var new_buildings: Array = []
+	for b in orig.get("buildings", []):
+		var off_b: Array = [
+			int(b[0]) + off_x,
+			int(b[1]) + off_y,
+			int(b[2]),
+			int(b[3]),
+			str(b[4])
+		]
+		if (b as Array).size() > 5:
+			off_b.append(int(b[5]))
+		new_buildings.append(off_b)
+
+	var outskirt_names: Array = [
+		"Old Farmstead",   "Hunter's Cabin",
+		"Roadside Shrine", "Abandoned Mill",
+		"Watchtower",      "Forester's Hut",
+		"Stone Marker",    "Pilgrim's Rest",
+	]
+	# Ring-of-eight: top-left corner of each outskirt cell, skipping center.
+	var sectors: Array = []
+	for sy in range(3):
+		for sx in range(3):
+			if sx == 1 and sy == 1: continue
+			sectors.append([sx * CITY_W, sy * CITY_H])
+
+	for i in range(sectors.size()):
+		var s: Array = sectors[i]
+		var bw: int = rng.randi_range(2, 3)
+		var bh: int = rng.randi_range(2, 3)
+		var ox: int = int(s[0]) + rng.randi_range(3, CITY_W - 6)
+		var oy: int = int(s[1]) + rng.randi_range(3, CITY_H - 4)
+		var bname: String = str(outskirt_names[i % outskirt_names.size()])
+		new_buildings.append([ox, oy, bw, bh, bname, T_WALL])
+		# Stamp wall tiles into the grid for this building.
+		for yy in range(bh):
+			for xx in range(bw):
+				var gx: int = ox + xx
+				var gy: int = oy + yy
+				if gx < 0 or gx >= GRID_W or gy < 0 or gy >= GRID_H:
+					continue
+				if gx >= off_x and gx < off_x + CITY_W \
+					and gy >= off_y and gy < off_y + CITY_H:
+					continue   # never overwrite the city
+				var row3: String = new_grid[gy]
+				new_grid[gy] = row3.substr(0, gx) + "#" + row3.substr(gx + 1)
+
+	# ── Step 4: offset POIs and add four edge exit gates ──
+	var new_pois: Array = []
+	for p in orig.get("pois", []):
+		new_pois.append([
+			int(p[0]) + off_x,
+			int(p[1]) + off_y,
+			int(p[2]),
+			str(p[3])
+		])
+	new_pois.append([mid_x,         1,          POI_EXIT, "Northern Trail"])
+	new_pois.append([mid_x,         GRID_H - 2, POI_EXIT, "Southern Trail"])
+	new_pois.append([1,             mid_y,      POI_EXIT, "Western Trail"])
+	new_pois.append([GRID_W - 2,    mid_y,      POI_EXIT, "Eastern Trail"])
+
+	# Carve walkable apron around each new edge exit so the player can
+	# step onto the gate even if the wilderness fill happened to drop a
+	# tree or rubble there.
+	var edge_exits: Array = [
+		Vector2i(mid_x, 1),
+		Vector2i(mid_x, GRID_H - 2),
+		Vector2i(1, mid_y),
+		Vector2i(GRID_W - 2, mid_y),
+	]
+	for e in edge_exits:
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				var gx2: int = e.x + dx
+				var gy2: int = e.y + dy
+				if gx2 < 0 or gx2 >= GRID_W or gy2 < 0 or gy2 >= GRID_H:
+					continue
+				var row4: String = new_grid[gy2]
+				new_grid[gy2] = row4.substr(0, gx2) + "=" + row4.substr(gx2 + 1)
+
+	# ── Step 5: offset street labels ──
+	var new_streets: Array = []
+	for sl in orig.get("street_labels", []):
+		var sd: Dictionary = (sl as Dictionary).duplicate()
+		sd["x"] = float(sd.get("x", 0.0)) + float(off_x)
+		sd["y"] = float(sd.get("y", 0.0)) + float(off_y)
+		new_streets.append(sd)
+
+	# ── Step 6: offset hidden caches and add wilderness caches ──
+	var content: Dictionary = (orig.get("content", {}) as Dictionary).duplicate(true)
+	if content.has("hidden_caches"):
+		var new_caches: Array = []
+		for c in content["hidden_caches"]:
+			var nc: Array = (c as Array).duplicate()
+			nc[0] = int(c[0]) + off_x
+			nc[1] = int(c[1]) + off_y
+			new_caches.append(nc)
+		# Add 2 wilderness caches — small reward for exploring outskirts.
+		for i in range(2):
+			var sec: Array = sectors[rng.randi_range(0, sectors.size() - 1)]
+			var cx: int = int(sec[0]) + rng.randi_range(2, CITY_W - 3)
+			var cy: int = int(sec[1]) + rng.randi_range(2, CITY_H - 3)
+			new_caches.append([cx, cy, "stash", "Wayfarer's Cache", 11, "gold", 40])
+		content["hidden_caches"] = new_caches
+
+	# ── Step 7: shift player spawn into the centered city block ──
+	var spawn: Vector2i = orig.get("player_spawn", Vector2i(15, 11))
+
+	out["grid"]          = new_grid
+	out["buildings"]     = new_buildings
+	out["pois"]          = new_pois
+	out["street_labels"] = new_streets
+	out["content"]       = content
+	out["player_spawn"]  = Vector2i(spawn.x + off_x, spawn.y + off_y)
+	return out
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAP GENERATION — grid-string driven (unchanged logic)
@@ -621,11 +846,14 @@ func _build_ui() -> void:
 
 	_build_environment()
 	_build_camera()
+	_build_horizon_scenery()
 	_build_lights()
 	_build_scene_roots()
 	_build_3d_tiles()
 	_build_3d_walls()
 	_build_3d_pois()
+	_build_3d_bases()
+	_build_3d_kenney_props()
 	_build_3d_water()
 	_build_3d_entities()
 	_build_3d_danger_particles()
@@ -660,8 +888,24 @@ func _build_environment() -> void:
 	}
 	var re: Dictionary = region_envs.get(_region_id, region_envs["metro"])
 
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = re["bg"]
+	# Procedural sky — gradient from sky_top_color through sky_horizon_color
+	# down to a darker ground band. Far cheaper than a baked skybox and
+	# automatically responds to fog. Replaces the previous flat BG_COLOR.
+	var sky := Sky.new()
+	var sky_mat := ProceduralSkyMaterial.new()
+	var bg_col: Color = re["bg"]
+	var fog_col: Color = re["fog_col"]
+	sky_mat.sky_top_color       = bg_col.lerp(Color(0, 0, 0), 0.35)   # darker overhead
+	sky_mat.sky_horizon_color   = fog_col.lerp(bg_col, 0.5)           # bright at horizon
+	sky_mat.sky_curve           = 0.15
+	sky_mat.ground_horizon_color = fog_col
+	sky_mat.ground_bottom_color  = (re["amb"] as Color) * 0.6
+	sky_mat.ground_curve        = 0.05
+	sky_mat.sun_angle_max       = 30.0
+	sky.sky_material = sky_mat
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = re["amb"]
 	env.ambient_light_energy = re["amb_e"]
@@ -686,9 +930,430 @@ func _build_camera() -> void:
 	_cam3d.name = "ExploreCam"
 	_cam3d.fov = 65.0
 	_cam3d.near = 0.1
-	_cam3d.far = 200.0
+	# Far plane bumped from 200 → 500 so the horizon-scenery ring (peaks at
+	# radius 150 around map center) doesn't clip when the player walks to
+	# the far edge of the expanded 90×66 map.
+	_cam3d.far = 500.0
 	_cam3d.current = true
 	_world3d_root.add_child(_cam3d)
+
+# ── Horizon scenery — distant static "world beyond" the playable map ───────
+##
+## Builds a static ring of low-poly mountain silhouettes far outside the
+## play area, plus a wide ground plane that extends below the map, so the
+## camera always sees a believable distant horizon instead of empty void
+## past the tile grid. Region-flavored colors derived from the same
+## region_envs palette _build_environment uses.
+##
+## Static — the meshes are placed once on map load and never need to move.
+## Distance is well within the bumped camera far plane (500), and the
+## environment fog naturally fades them into the sky horizon.
+func _build_horizon_scenery() -> void:
+	# ── Per-region biome config ─────────────────────────────────────────
+	# Keys match the actual region IDs used by GameState.current_region
+	# (plains, frost, forest, underground, city, astral, arena, throne,
+	# islands, titan). Each entry tells the rest of this function how to
+	# style the horizon: sky/fog tones, scatter type, mountain shape,
+	# ground colour. Any region without an entry falls back to plains.
+	var biomes: Dictionary = {
+		"plains": {
+			"fog": Color(0.55, 0.65, 0.75), "amb": Color(0.45, 0.50, 0.30),
+			"ground": Color(0.30, 0.36, 0.20), "tree": "deciduous",
+			"foliage": Color(0.22, 0.45, 0.18), "trunk": Color(0.32, 0.20, 0.10),
+			"scatter": 80, "rocks": 25, "mtn": "peaks",
+			"mtn_min": 8.0, "mtn_max": 22.0,
+		},
+		"frost": {
+			"fog": Color(0.80, 0.85, 0.92), "amb": Color(0.55, 0.65, 0.75),
+			"ground": Color(0.85, 0.90, 0.95), "tree": "pine",
+			"foliage": Color(0.18, 0.32, 0.22), "trunk": Color(0.25, 0.18, 0.12),
+			"scatter": 50, "rocks": 30, "mtn": "peaks",
+			"mtn_min": 14.0, "mtn_max": 32.0,
+		},
+		"forest": {
+			"fog": Color(0.40, 0.55, 0.45), "amb": Color(0.20, 0.35, 0.18),
+			"ground": Color(0.18, 0.28, 0.14), "tree": "deciduous",
+			"foliage": Color(0.14, 0.40, 0.18), "trunk": Color(0.24, 0.16, 0.10),
+			"scatter": 130, "rocks": 25, "mtn": "peaks",
+			"mtn_min": 6.0, "mtn_max": 16.0,
+		},
+		"underground": {
+			"fog": Color(0.06, 0.05, 0.10), "amb": Color(0.10, 0.08, 0.16),
+			"ground": Color(0.12, 0.10, 0.16), "tree": "mushroom",
+			"foliage": Color(0.30, 0.20, 0.45), "trunk": Color(0.65, 0.62, 0.50),
+			"scatter": 35, "rocks": 60, "mtn": "skip",
+			"mtn_min": 0.0, "mtn_max": 0.0,
+		},
+		"city": {
+			"fog": Color(0.30, 0.32, 0.42), "amb": Color(0.22, 0.20, 0.30),
+			"ground": Color(0.26, 0.24, 0.30), "tree": "skip",
+			"foliage": Color(0.30, 0.30, 0.35), "trunk": Color(0.30, 0.30, 0.35),
+			"scatter": 0, "rocks": 0, "mtn": "skyline",
+			"mtn_min": 18.0, "mtn_max": 38.0,
+		},
+		"astral": {
+			"fog": Color(0.20, 0.10, 0.40), "amb": Color(0.28, 0.18, 0.45),
+			"ground": Color(0.10, 0.05, 0.22), "tree": "crystal",
+			"foliage": Color(0.65, 0.40, 0.95), "trunk": Color(0.50, 0.30, 0.85),
+			"scatter": 60, "rocks": 20, "mtn": "spires",
+			"mtn_min": 18.0, "mtn_max": 45.0,
+		},
+		"arena": {
+			"fog": Color(0.75, 0.65, 0.45), "amb": Color(0.55, 0.40, 0.20),
+			"ground": Color(0.55, 0.42, 0.25), "tree": "skip",
+			"foliage": Color(0.35, 0.30, 0.18), "trunk": Color(0.40, 0.30, 0.15),
+			"scatter": 15, "rocks": 50, "mtn": "domes",
+			"mtn_min": 6.0, "mtn_max": 14.0,
+		},
+		"throne": {
+			"fog": Color(0.45, 0.30, 0.30), "amb": Color(0.40, 0.20, 0.18),
+			"ground": Color(0.32, 0.18, 0.16), "tree": "deciduous",
+			"foliage": Color(0.30, 0.18, 0.18), "trunk": Color(0.22, 0.14, 0.10),
+			"scatter": 50, "rocks": 30, "mtn": "peaks",
+			"mtn_min": 10.0, "mtn_max": 22.0,
+		},
+		"islands": {
+			"fog": Color(0.55, 0.75, 0.85), "amb": Color(0.30, 0.55, 0.65),
+			"ground": Color(0.20, 0.45, 0.55), "tree": "palm",
+			"foliage": Color(0.20, 0.50, 0.30), "trunk": Color(0.42, 0.30, 0.18),
+			"scatter": 45, "rocks": 25, "mtn": "domes",
+			"mtn_min": 4.0, "mtn_max": 10.0,
+		},
+		"titan": {
+			"fog": Color(0.55, 0.50, 0.45), "amb": Color(0.40, 0.35, 0.32),
+			"ground": Color(0.62, 0.58, 0.50), "tree": "skip",
+			"foliage": Color(0.75, 0.72, 0.65), "trunk": Color(0.75, 0.72, 0.65),
+			"scatter": 25, "rocks": 70, "mtn": "spires",
+			"mtn_min": 18.0, "mtn_max": 38.0,
+		},
+	}
+	var biome: Dictionary = biomes.get(_region_id, biomes["plains"])
+
+	var fog_col: Color    = biome["fog"]
+	var amb_col: Color    = biome["amb"]
+	var ground_col: Color = biome["ground"]
+	var foliage_col: Color = biome["foliage"]
+	var trunk_col: Color  = biome["trunk"]
+	var tree_kind: String = str(biome["tree"])
+	var mtn_kind: String  = str(biome["mtn"])
+
+	# Silhouette colour for distant peaks/skyline.
+	var sil_color: Color = fog_col.lerp(Color(0.0, 0.0, 0.0), 0.55)
+	# Rock colour — biome-tinted gravel.
+	var rock_color: Color = Color(0.40, 0.38, 0.36).lerp(fog_col, 0.4)
+
+	var horizon_root := Node3D.new()
+	horizon_root.name = "HorizonScenery"
+	_world3d_root.add_child(horizon_root)
+
+	var center := Vector3(float(GRID_W) * 0.5, 0.0, float(GRID_H) * 0.5)
+
+	# ── Transition skirt: ground at playable-tile level ────────────────
+	var skirt_mesh := PlaneMesh.new()
+	skirt_mesh.size = Vector2(400.0, 400.0)
+	var skirt_inst := MeshInstance3D.new()
+	skirt_inst.mesh = skirt_mesh
+	var skirt_mat := StandardMaterial3D.new()
+	skirt_mat.albedo_color = ground_col.lerp(fog_col, 0.4)
+	skirt_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	skirt_inst.material_override = skirt_mat
+	skirt_inst.position = Vector3(center.x, -0.05, center.z)
+	horizon_root.add_child(skirt_inst)
+
+	# ── Distant ground plane ──────────────────────────────────────────
+	var ground_mesh := PlaneMesh.new()
+	ground_mesh.size = Vector2(1200.0, 1200.0)
+	var ground_inst := MeshInstance3D.new()
+	ground_inst.mesh = ground_mesh
+	var ground_mat := StandardMaterial3D.new()
+	ground_mat.albedo_color = ground_col * 0.7
+	ground_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ground_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	ground_inst.material_override = ground_mat
+	ground_inst.position = Vector3(center.x, -2.0, center.z)
+	horizon_root.add_child(ground_inst)
+
+	# ── Scatter (foliage) — variant per biome tree_kind ──────────────
+	var scatter_rng := RandomNumberGenerator.new()
+	scatter_rng.seed = absi(hash(_region_id + "_scatter"))
+	var map_half_diag: float = sqrt(float(GRID_W * GRID_W + GRID_H * GRID_H)) * 0.5
+	var scatter_inner: float = map_half_diag + 4.0
+	var scatter_outer: float = 140.0
+
+	var scatter_count: int = int(biome.get("scatter", 0))
+	for i in range(scatter_count):
+		var angle: float = scatter_rng.randf_range(0.0, TAU)
+		var r: float = scatter_rng.randf_range(scatter_inner, scatter_outer)
+		var px: float = center.x + cos(angle) * r
+		var pz: float = center.z + sin(angle) * r
+		var node: Node3D = _build_biome_scatter_item(
+			tree_kind, foliage_col, trunk_col, scatter_rng)
+		if node == null: continue
+		node.position = Vector3(px, 0.0, pz)
+		horizon_root.add_child(node)
+
+	# Rocks: biome-tinted boxes scattered.
+	var rock_count: int = int(biome.get("rocks", 30))
+	for i in range(rock_count):
+		var angle: float = scatter_rng.randf_range(0.0, TAU)
+		var r: float = scatter_rng.randf_range(scatter_inner, scatter_outer)
+		var px: float = center.x + cos(angle) * r
+		var pz: float = center.z + sin(angle) * r
+		var rock_mesh := BoxMesh.new()
+		rock_mesh.size = Vector3(
+			scatter_rng.randf_range(0.6, 1.4),
+			scatter_rng.randf_range(0.4, 0.9),
+			scatter_rng.randf_range(0.6, 1.4)
+		)
+		var rock_inst := MeshInstance3D.new()
+		rock_inst.mesh = rock_mesh
+		var rock_mat := StandardMaterial3D.new()
+		var shade: float = scatter_rng.randf_range(0.8, 1.15)
+		rock_mat.albedo_color = Color(
+			rock_color.r * shade, rock_color.g * shade, rock_color.b * shade
+		)
+		rock_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		rock_inst.material_override = rock_mat
+		rock_inst.position = Vector3(px, rock_mesh.size.y * 0.5, pz)
+		rock_inst.rotate_y(scatter_rng.randf_range(0.0, TAU))
+		horizon_root.add_child(rock_inst)
+
+	# ── Mountain / skyline ring ───────────────────────────────────────
+	if mtn_kind != "skip":
+		var ring_radius: float = 150.0
+		var num_peaks: int = 32
+		var rng := RandomNumberGenerator.new()
+		rng.seed = absi(hash(_region_id + "_horizon"))
+		var min_h: float = float(biome.get("mtn_min", 8.0))
+		var max_h: float = float(biome.get("mtn_max", 22.0))
+
+		for i in range(num_peaks):
+			var angle: float = TAU * float(i) / float(num_peaks)
+			var r: float = ring_radius + rng.randf_range(-15.0, 25.0)
+			var px: float = center.x + cos(angle) * r
+			var pz: float = center.z + sin(angle) * r
+			var peak_h: float = rng.randf_range(min_h, max_h)
+			var mi: MeshInstance3D = _build_biome_mountain(
+				mtn_kind, peak_h, sil_color, rng)
+			if mi == null: continue
+			mi.position = Vector3(px, peak_h * 0.5 - 1.0, pz)
+			mi.look_at(Vector3(center.x, mi.position.y, center.z), Vector3.UP)
+			horizon_root.add_child(mi)
+
+		# Second ring of taller, more distant peaks for parallax.
+		var far_radius: float = 230.0
+		for i in range(20):
+			var angle: float = TAU * float(i) / 20.0 + 0.1
+			var r: float = far_radius + rng.randf_range(-20.0, 30.0)
+			var px: float = center.x + cos(angle) * r
+			var pz: float = center.z + sin(angle) * r
+			var peak_h: float = rng.randf_range(min_h * 1.7, max_h * 1.4)
+			var mi2: MeshInstance3D = _build_biome_mountain(
+				mtn_kind, peak_h, sil_color * 0.65, rng)
+			if mi2 == null: continue
+			mi2.position = Vector3(px, peak_h * 0.5 - 1.0, pz)
+			mi2.look_at(Vector3(center.x, mi2.position.y, center.z), Vector3.UP)
+			horizon_root.add_child(mi2)
+
+## Build one scatter item (tree / mushroom / palm / crystal) according to
+## the biome's tree_kind. Returns null when the biome has scatter == "skip"
+## (caller already short-circuits on count == 0, but defensive).
+func _build_biome_scatter_item(kind: String, foliage_col: Color,
+		trunk_col: Color, rng: RandomNumberGenerator) -> Node3D:
+	if kind == "skip":
+		return null
+	var holder := Node3D.new()
+	match kind:
+		"deciduous":
+			# Cone foliage on a short cylinder trunk.
+			var trunk_mesh := CylinderMesh.new()
+			trunk_mesh.top_radius = 0.18
+			trunk_mesh.bottom_radius = 0.25
+			trunk_mesh.height = 1.0
+			var trunk_inst := MeshInstance3D.new()
+			trunk_inst.mesh = trunk_mesh
+			var tm := StandardMaterial3D.new()
+			tm.albedo_color = trunk_col
+			tm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			trunk_inst.material_override = tm
+			trunk_inst.position = Vector3(0, 0.5, 0)
+			holder.add_child(trunk_inst)
+			var fm := CylinderMesh.new()
+			fm.top_radius = 0.0
+			fm.bottom_radius = rng.randf_range(0.7, 1.2)
+			fm.height = rng.randf_range(1.6, 2.6)
+			var fi := MeshInstance3D.new()
+			fi.mesh = fm
+			var fmat := StandardMaterial3D.new()
+			var s: float = rng.randf_range(0.85, 1.15)
+			fmat.albedo_color = Color(foliage_col.r * s, foliage_col.g * s, foliage_col.b * s)
+			fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			fi.material_override = fmat
+			fi.position = Vector3(0, 1.0 + fm.height * 0.5, 0)
+			holder.add_child(fi)
+		"pine":
+			# Slender trunk with stacked narrow cones — snowy conifer feel.
+			var ptr := CylinderMesh.new()
+			ptr.top_radius = 0.12
+			ptr.bottom_radius = 0.18
+			ptr.height = 0.7
+			var pti := MeshInstance3D.new()
+			pti.mesh = ptr
+			var ptm := StandardMaterial3D.new()
+			ptm.albedo_color = trunk_col
+			ptm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			pti.material_override = ptm
+			pti.position = Vector3(0, 0.35, 0)
+			holder.add_child(pti)
+			# Stacked cones, narrowing upward.
+			var stack_h: float = 0.7
+			for c in range(3):
+				var cone := CylinderMesh.new()
+				cone.top_radius = 0.0
+				cone.bottom_radius = 0.85 - 0.18 * c
+				cone.height = 1.1 - 0.15 * c
+				var ci := MeshInstance3D.new()
+				ci.mesh = cone
+				var cmat := StandardMaterial3D.new()
+				var ss: float = rng.randf_range(0.85, 1.15)
+				cmat.albedo_color = Color(
+					foliage_col.r * ss, foliage_col.g * ss, foliage_col.b * ss)
+				cmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+				ci.material_override = cmat
+				ci.position = Vector3(0, stack_h + cone.height * 0.5, 0)
+				holder.add_child(ci)
+				stack_h += cone.height * 0.65
+		"palm":
+			# Tall thin trunk with a star of fronds at the top.
+			var ptr := CylinderMesh.new()
+			ptr.top_radius = 0.14
+			ptr.bottom_radius = 0.20
+			ptr.height = 2.6
+			var pti := MeshInstance3D.new()
+			pti.mesh = ptr
+			var ptm := StandardMaterial3D.new()
+			ptm.albedo_color = trunk_col
+			ptm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			pti.material_override = ptm
+			pti.position = Vector3(0, 1.3, 0)
+			holder.add_child(pti)
+			# 5 frond planes radiating outward.
+			for fi in range(5):
+				var frond := MeshInstance3D.new()
+				var pm := PlaneMesh.new()
+				pm.size = Vector2(0.18, 1.2)
+				frond.mesh = pm
+				var fm := StandardMaterial3D.new()
+				fm.albedo_color = foliage_col
+				fm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+				fm.cull_mode = BaseMaterial3D.CULL_DISABLED
+				frond.material_override = fm
+				frond.position = Vector3(0, 2.6, 0)
+				frond.rotation.y = TAU * float(fi) / 5.0
+				frond.rotation.x = -0.8   # droop down/out
+				holder.add_child(frond)
+		"crystal":
+			# Tall colored prism — glows slightly via emission tint.
+			var pm := PrismMesh.new()
+			pm.size = Vector3(
+				rng.randf_range(0.5, 1.0),
+				rng.randf_range(1.4, 2.6),
+				rng.randf_range(0.5, 1.0))
+			pm.left_to_right = 0.5
+			var ci := MeshInstance3D.new()
+			ci.mesh = pm
+			var cmat := StandardMaterial3D.new()
+			var s: float = rng.randf_range(0.85, 1.15)
+			cmat.albedo_color = Color(foliage_col.r * s, foliage_col.g * s, foliage_col.b * s, 0.85)
+			cmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			cmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			ci.material_override = cmat
+			ci.position = Vector3(0, pm.size.y * 0.5, 0)
+			ci.rotate_y(rng.randf_range(0.0, TAU))
+			holder.add_child(ci)
+		"mushroom":
+			# Stubby trunk + dome cap — glowing fungus.
+			var stem := CylinderMesh.new()
+			stem.top_radius = 0.20
+			stem.bottom_radius = 0.28
+			stem.height = 0.55
+			var si := MeshInstance3D.new()
+			si.mesh = stem
+			var sm := StandardMaterial3D.new()
+			sm.albedo_color = trunk_col
+			sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			si.material_override = sm
+			si.position = Vector3(0, 0.275, 0)
+			holder.add_child(si)
+			var cap := SphereMesh.new()
+			cap.radius = rng.randf_range(0.45, 0.75)
+			cap.height = cap.radius * 1.2
+			var ci := MeshInstance3D.new()
+			ci.mesh = cap
+			var cm := StandardMaterial3D.new()
+			cm.albedo_color = foliage_col
+			cm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			ci.material_override = cm
+			ci.position = Vector3(0, 0.55 + cap.height * 0.3, 0)
+			holder.add_child(ci)
+		_:
+			# Fallback — just a trunk.
+			var fm := CylinderMesh.new()
+			fm.top_radius = 0.15
+			fm.bottom_radius = 0.22
+			fm.height = 1.5
+			var fi := MeshInstance3D.new()
+			fi.mesh = fm
+			var ffm := StandardMaterial3D.new()
+			ffm.albedo_color = foliage_col
+			fi.material_override = ffm
+			fi.position = Vector3(0, 0.75, 0)
+			holder.add_child(fi)
+	return holder
+
+## Build a single mountain mesh per the biome's mtn_kind. Returns null on
+## "skip" (caller skips the whole ring in that case).
+func _build_biome_mountain(kind: String, peak_h: float, color: Color,
+		rng: RandomNumberGenerator) -> MeshInstance3D:
+	if kind == "skip":
+		return null
+	var inst := MeshInstance3D.new()
+	var mat := StandardMaterial3D.new()
+	var shade: float = rng.randf_range(0.85, 1.15)
+	mat.albedo_color = Color(color.r * shade, color.g * shade, color.b * shade)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	inst.material_override = mat
+	match kind:
+		"peaks":
+			var pm := PrismMesh.new()
+			pm.size = Vector3(rng.randf_range(12.0, 28.0), peak_h,
+				rng.randf_range(8.0, 16.0))
+			pm.left_to_right = rng.randf_range(0.3, 0.7)
+			inst.mesh = pm
+		"spires":
+			# Tall narrow prisms — astral / titan vibe.
+			var pm := PrismMesh.new()
+			pm.size = Vector3(rng.randf_range(6.0, 14.0), peak_h,
+				rng.randf_range(6.0, 12.0))
+			pm.left_to_right = rng.randf_range(0.4, 0.6)
+			inst.mesh = pm
+		"domes":
+			# Half-sphere — soft hills / atolls.
+			var sm := SphereMesh.new()
+			sm.radius = rng.randf_range(8.0, 16.0)
+			sm.height = peak_h
+			inst.mesh = sm
+		"skyline":
+			# Boxy — distant city silhouette.
+			var bm := BoxMesh.new()
+			bm.size = Vector3(rng.randf_range(8.0, 18.0), peak_h,
+				rng.randf_range(8.0, 14.0))
+			inst.mesh = bm
+		_:
+			var pm := PrismMesh.new()
+			pm.size = Vector3(20.0, peak_h, 12.0)
+			inst.mesh = pm
+	return inst
 
 func _update_camera_pos() -> void:
 	if _cam3d == null:
@@ -730,23 +1395,79 @@ func _build_lights() -> void:
 		"titans":   { "col": Color(1.0, 0.60, 0.30),   "energy": 1.1, "rot": Vector3(-50, 45, 0) },
 		"sublimini":{ "col": Color(0.30, 0.20, 0.50),  "energy": 0.4, "rot": Vector3(-60, 10, 0) },
 	}
-	var rl: Dictionary = region_light.get(_region_id, region_light["metro"])
+	_region_light_base = region_light.get(_region_id, region_light["metro"])
 
-	var sun := DirectionalLight3D.new()
-	sun.name = "SunLight"
-	sun.light_color = rl["col"]
-	sun.light_energy = rl["energy"]
-	sun.shadow_enabled = true
-	sun.rotation_degrees = rl["rot"]
-	_world3d_root.add_child(sun)
+	_sun_light = DirectionalLight3D.new()
+	_sun_light.name = "SunLight"
+	_sun_light.shadow_enabled = true
+	_sun_light.rotation_degrees = _region_light_base["rot"]
+	_world3d_root.add_child(_sun_light)
 
-	var fill := DirectionalLight3D.new()
-	fill.name = "FillLight"
-	fill.light_color = Color(rl["col"], 0.5).lerp(Color(0.3, 0.2, 0.4), 0.5)
-	fill.light_energy = rl["energy"] * 0.3
-	fill.shadow_enabled = false
-	fill.rotation_degrees = Vector3(rl["rot"].x + 90, rl["rot"].y + 180, 0)
-	_world3d_root.add_child(fill)
+	_fill_light = DirectionalLight3D.new()
+	_fill_light.name = "FillLight"
+	_fill_light.shadow_enabled = false
+	_fill_light.rotation_degrees = Vector3(
+		_region_light_base["rot"].x + 90,
+		_region_light_base["rot"].y + 180, 0)
+	_world3d_root.add_child(_fill_light)
+
+	# Apply current-hour tint/energy on top of the region base.
+	_apply_time_of_day_lighting()
+
+## Look up the hour-based lighting period — name, HUD icon, HUD color,
+## sun-energy multiplier, and tint colour. Blended into the region base.
+func _time_period_lighting() -> Dictionary:
+	var h: int = _current_hour
+	if h < 5:
+		return {"name": "Night", "icon": "🌙",
+			"color": RimvaleColors.SP_PURPLE,
+			"energy_mult": 0.20, "tint": Color(0.30, 0.35, 0.65)}
+	if h < 7:
+		return {"name": "Dawn", "icon": "🌅",
+			"color": RimvaleColors.GOLD,
+			"energy_mult": 0.65, "tint": Color(1.00, 0.70, 0.45)}
+	if h < 12:
+		return {"name": "Morning", "icon": "🌞",
+			"color": RimvaleColors.GOLD,
+			"energy_mult": 1.00, "tint": Color(1.00, 0.95, 0.85)}
+	if h < 17:
+		return {"name": "Afternoon", "icon": "☀",
+			"color": RimvaleColors.ORANGE,
+			"energy_mult": 1.15, "tint": Color(1.00, 0.93, 0.80)}
+	if h < 19:
+		return {"name": "Dusk", "icon": "🌇",
+			"color": RimvaleColors.ORANGE,
+			"energy_mult": 0.70, "tint": Color(1.00, 0.55, 0.35)}
+	if h < 21:
+		return {"name": "Evening", "icon": "🌆",
+			"color": RimvaleColors.CYAN,
+			"energy_mult": 0.45, "tint": Color(0.55, 0.50, 0.75)}
+	return {"name": "Night", "icon": "🌙",
+		"color": RimvaleColors.SP_PURPLE,
+		"energy_mult": 0.18, "tint": Color(0.25, 0.30, 0.60)}
+
+## Apply the current hour's lighting tint + energy to the sun/fill lights
+## and the world environment ambient. Safe to call any time the hour
+## changes — _advance_time() pipes through here.
+func _apply_time_of_day_lighting() -> void:
+	if _sun_light == null or not is_instance_valid(_sun_light):
+		return
+	var period: Dictionary = _time_period_lighting()
+	var base_col: Color = _region_light_base.get("col", Color(1, 1, 1))
+	var base_energy: float = float(_region_light_base.get("energy", 1.0))
+	var tinted: Color = base_col.lerp(period["tint"], 0.55)
+	var energy: float = base_energy * float(period["energy_mult"])
+	_sun_light.light_color = tinted
+	_sun_light.light_energy = energy
+	if _fill_light != null and is_instance_valid(_fill_light):
+		_fill_light.light_color = tinted.lerp(Color(0.30, 0.22, 0.45), 0.5)
+		_fill_light.light_energy = energy * 0.3
+	# Pull ambient light down at night so shadows feel real.
+	if _env_node != null and is_instance_valid(_env_node) \
+			and _env_node.environment != null:
+		var env: Environment = _env_node.environment
+		# Re-derive base ambient energy from region (default 0.7) and scale.
+		env.ambient_light_energy = 0.7 * float(period["energy_mult"])
 
 # ── Scene roots ────────────────────────────────────────────────────────────
 
@@ -754,6 +1475,7 @@ func _build_scene_roots() -> void:
 	_tile_root = Node3D.new();     _tile_root.name = "Tiles";       _world3d_root.add_child(_tile_root)
 	_wall_root = Node3D.new();     _wall_root.name = "Walls";       _world3d_root.add_child(_wall_root)
 	_poi_root = Node3D.new();      _poi_root.name = "POIs";         _world3d_root.add_child(_poi_root)
+	_base_root = Node3D.new();     _base_root.name = "Bases";       _world3d_root.add_child(_base_root)
 	_entity_root = Node3D.new();   _entity_root.name = "Entities";  _world3d_root.add_child(_entity_root)
 	_overlay_root = Node3D.new();  _overlay_root.name = "Overlays"; _world3d_root.add_child(_overlay_root)
 	_fog_root = Node3D.new();      _fog_root.name = "Fog";          _world3d_root.add_child(_fog_root)
@@ -949,48 +1671,347 @@ func _add_rubble_debris(x: int, y: int, seed_val: int) -> void:
 #  PHASE 2 — WALLS AND BUILDINGS
 # ══════════════════════════════════════════════════════════════════════════════
 
-func _build_3d_walls() -> void:
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  KENNEY FANTASY TOWN — load GLB props into the city tile rendering
+# ══════════════════════════════════════════════════════════════════════════════
+
+## Pack base paths are resolved at runtime by probing both `res://<pack>/`
+## and `res://assets/<pack>/`. This makes the code work no matter where
+## the user dropped the asset folder.
+const _KENNEY_CANDIDATES: Array = [
+	"res://fantasy-town-kit/Models/GLB format/",
+	"res://assets/fantasy-town-kit/Models/GLB format/",
+]
+const _DUNGEON_CANDIDATES: Array = [
+	"res://modular-dungeon-kit/Models/GLB format/",
+	"res://assets/modular-dungeon-kit/Models/GLB format/",
+]
+
+## Empty string means "not yet probed". Set on first use.
+var _kenney_base_resolved: String = ""
+var _dungeon_base_resolved: String = ""
+
+## Shared resource cache. Key = full res:// path, value = PackedScene or null.
+var _kenney_cache: Dictionary = {}
+
+func _resolve_pack_base(probe_filename: String, candidates: Array) -> String:
+	for c in candidates:
+		if ResourceLoader.exists(str(c) + probe_filename):
+			return str(c)
+	return ""
+
+func _kenney_base() -> String:
+	if _kenney_base_resolved == "":
+		_kenney_base_resolved = _resolve_pack_base("wall.glb", _KENNEY_CANDIDATES)
+	return _kenney_base_resolved
+
+func _dungeon_base() -> String:
+	if _dungeon_base_resolved == "":
+		_dungeon_base_resolved = _resolve_pack_base("template-wall.glb", _DUNGEON_CANDIDATES)
+	return _dungeon_base_resolved
+
+## Generic loader — works with any pack base path.
+func _pack_scene(base: String, filename: String) -> PackedScene:
+	if base == "" or filename == "":
+		return null
+	var path: String = base + filename
+	if _kenney_cache.has(path):
+		return _kenney_cache[path]
+	if not ResourceLoader.exists(path):
+		_kenney_cache[path] = null
+		return null
+	var res = load(path)
+	if res is PackedScene:
+		_kenney_cache[path] = res
+		return res
+	_kenney_cache[path] = null
+	return null
+
+func _pack_instance(base: String, filename: String, tile_x: int, tile_y: int,
+		y_rot: float = 0.0, scale: float = 1.0) -> Node3D:
+	var scn: PackedScene = _pack_scene(base, filename)
+	if scn == null: return null
+	var inst: Node = scn.instantiate()
+	if inst == null or not (inst is Node3D): return null
+	var n: Node3D = inst as Node3D
+	n.position = Vector3(float(tile_x) + 0.5, 0.0, float(tile_y) + 0.5)
+	n.rotation.y = y_rot
+	if absf(scale - 1.0) > 0.001:
+		n.scale = Vector3(scale, scale, scale)
+	return n
+
+## Town-kit shims — preserve existing call sites.
+func _kenney_scene(filename: String) -> PackedScene:
+	return _pack_scene(_kenney_base(), filename)
+
+func _kenney_instance(filename: String, tile_x: int, tile_y: int,
+		y_rot: float = 0.0, scale: float = 1.0) -> Node3D:
+	return _pack_instance(_kenney_base(), filename, tile_x, tile_y, y_rot, scale)
+
+## Returns rotation in radians for a wall tile such that a doorway faces
+## the first adjacent walkable street/grass tile, or -1.0 if every neighbor
+## is also a wall (interior building wall, no gate needed).
+func _wall_facing_dir(x: int, y: int) -> float:
+	var dirs: Array = [
+		[Vector2i(0, -1), 0.0],          # facing -Y (north)
+		[Vector2i(1, 0),  PI * 0.5],     # facing +X (east)
+		[Vector2i(0, 1),  PI],           # facing +Y (south)
+		[Vector2i(-1, 0), PI * 1.5],     # facing -X (west)
+	]
+	for d in dirs:
+		var off: Vector2i = d[0]
+		var rot: float = d[1]
+		var nt: int = _get_tile(x + int(off.x), y + int(off.y))
+		if nt != T_WALL and nt != T_WALL_RICH and nt != T_WALL_POOR:
+			return rot
+	return -1.0
+
+## Variety pools — each tile type can pull from a list of meshes for
+## procedural variety. RNG seeded by (x, y) so the same tile always picks
+## the same mesh across reloads.
+const KENNEY_BUILDING_MESHES_RICH: Array = [
+	"wall.glb", "wall-rounded.glb", "wall-window-shutters.glb",
+	"wall-window-stone.glb", "wall-doorway-square.glb",
+]
+const KENNEY_BUILDING_MESHES_POOR: Array = [
+	"wall-wood.glb", "wall-wood-window-shutters.glb",
+	"wall-wood-rounded.glb", "wall-wood-doorway-square.glb",
+	"wall-wood-broken.glb",
+]
+const KENNEY_BUILDING_MESHES_DEFAULT: Array = [
+	"wall.glb", "wall-wood.glb", "wall-window-shutters.glb",
+	"wall-doorway-square.glb",
+]
+const KENNEY_ROOFS_RICH: Array = [
+	"roof.glb", "roof-gable.glb", "roof-flat.glb",
+]
+const KENNEY_PARK_MESHES: Array = [
+	"tree.glb", "tree-crooked.glb", "tree-high.glb",
+	"tree-high-crooked.glb", "tree-high-round.glb", "hedge.glb",
+]
+const KENNEY_MARKET_MESHES: Array = [
+	"stall.glb", "stall-green.glb", "stall-red.glb", "stall-bench.glb",
+]
+const KENNEY_RUBBLE_MESHES: Array = [
+	"wall-broken.glb", "wall-wood-broken.glb", "fence-broken.glb",
+	"rock-large.glb", "rock-wide.glb", "rock-small.glb",
+]
+
+## Modular Dungeon Kit pools — used for city walls, replacing the chunkier
+## stone aesthetic over the town-kit walls.
+const DUNGEON_WALLS_RICH: Array = [
+	"template-wall-detail-a.glb",
+	"template-wall-top.glb",
+	"template-wall.glb",
+]
+const DUNGEON_WALLS_POOR: Array = [
+	"template-wall-half.glb",
+	"template-wall.glb",
+]
+const DUNGEON_WALLS_DEFAULT: Array = [
+	"template-wall.glb",
+	"template-wall-top.glb",
+	"template-wall-corner.glb",
+]
+## Gate variants placed on edge walls (those facing a street). Picked
+## probabilistically so most edge walls remain walls — too many gates and
+## the city looks like swiss cheese.
+const DUNGEON_GATES: Array = [
+	"gate.glb",
+	"gate-door.glb",
+	"gate-door-window.glb",
+	"gate-metal-bars.glb",
+]
+
+## The Modular Dungeon Kit's pieces are authored on a ~4m grid (their walls
+## span the full width of a 4-unit corridor). We use a 1m tile grid, so we
+## scale the meshes down to fit. Tune this if walls still look off-scale.
+const DUNGEON_MESH_SCALE: float = 0.25
+
+## Build the full Kenney city-prop pass over the playable grid. Iterates
+## every wall/plaza/market/park/rubble tile in the city block and instances
+## the matching mesh under _wall_root. Skipped silently if the Kenney pack
+## isn't available — falls back to the existing box-renderer that already
+## ran in _build_3d_walls.
+## Set to true once we've logged the Kenney status so we don't spam every
+## time a region map is built.
+static var _kenney_status_logged: bool = false
+
+func _build_3d_kenney_props() -> void:
+	# Probe both packs once.
+	var town_base: String = _kenney_base()
+	var dungeon_base: String = _dungeon_base()
+	var have_town: bool = town_base != ""
+	var have_dungeon: bool = dungeon_base != ""
+	if not _kenney_status_logged:
+		_kenney_status_logged = true
+		print("[Packs] Fantasy Town Kit: %s · Modular Dungeon Kit: %s"
+			% ["LOADED ("+town_base+")" if have_town else "missing",
+			   "LOADED ("+dungeon_base+")" if have_dungeon else "missing"])
+		if not have_town:
+			var t_probe: String = "res://fantasy-town-kit/Models/GLB format/wall.glb"
+			push_warning(
+				"[Packs] Town Kit not imported. FileAccess raw: %s · " +
+				"ResourceLoader imported: %s · expected: %s · " +
+				"Fix: open project in Godot editor so it imports the GLBs."
+				% [str(FileAccess.file_exists(t_probe)),
+				   str(ResourceLoader.exists(t_probe)), t_probe])
+		if not have_dungeon:
+			var d_probe: String = "res://assets/modular-dungeon-kit/Models/GLB format/template-wall.glb"
+			push_warning(
+				"[Packs] Modular Dungeon Kit not imported. FileAccess raw: %s · " +
+				"ResourceLoader imported: %s · expected: %s · " +
+				"Fix: open project in Godot editor so it imports the GLBs."
+				% [str(FileAccess.file_exists(d_probe)),
+				   str(ResourceLoader.exists(d_probe)), d_probe])
+	if not have_town and not have_dungeon:
+		return
+	var rng := RandomNumberGenerator.new()
 	for y in range(GRID_H):
 		for x in range(GRID_W):
 			var t: int = _get_tile(x, y)
-			if t != T_WALL and t != T_WALL_RICH and t != T_WALL_POOR:
+			# Stable per-tile RNG seed so a given tile always picks the
+			# same mesh + rotation between sessions.
+			rng.seed = absi(hash("%d_%d" % [x, y]))
+			var pick: String = ""
+			var rot: float = 0.0
+			var base_for_tile: String = ""
+			match t:
+				T_WALL, T_WALL_RICH, T_WALL_POOR:
+					# Prefer dungeon kit walls; fall back to town kit if
+					# dungeon pack isn't loaded.
+					if have_dungeon:
+						# Only render walls on edges (tiles facing a
+						# walkable street). Interior wall tiles are
+						# invisible to the player and just create clutter.
+						var face_dir: float = _wall_facing_dir(x, y)
+						if face_dir < 0.0:
+							continue   # interior wall — skip
+						base_for_tile = dungeon_base
+						# 1-in-8 chance an edge wall becomes a gate.
+						if rng.randi() % 8 == 0:
+							pick = str(DUNGEON_GATES[
+								rng.randi() % DUNGEON_GATES.size()])
+						else:
+							var dpool: Array
+							if t == T_WALL_RICH:
+								dpool = DUNGEON_WALLS_RICH
+							elif t == T_WALL_POOR:
+								dpool = DUNGEON_WALLS_POOR
+							else:
+								dpool = DUNGEON_WALLS_DEFAULT
+							pick = str(dpool[rng.randi() % dpool.size()])
+						# Always face outward toward the street.
+						rot = face_dir
+					elif have_town:
+						base_for_tile = town_base
+						var pool: Array
+						if t == T_WALL_RICH:
+							pool = KENNEY_BUILDING_MESHES_RICH
+						elif t == T_WALL_POOR:
+							pool = KENNEY_BUILDING_MESHES_POOR
+						else:
+							pool = KENNEY_BUILDING_MESHES_DEFAULT
+						pick = str(pool[rng.randi() % pool.size()])
+						rot = (rng.randi() % 4) * (PI * 0.5)
+				T_PLAZA:
+					# Plazas sparsely placed — only put a fountain on
+					# every ~12th plaza tile so it reads as a centerpiece.
+					if have_town and rng.randi() % 12 == 0:
+						base_for_tile = town_base
+						pick = "fountain-square.glb"
+				T_MARKET:
+					if have_town:
+						base_for_tile = town_base
+						pick = str(KENNEY_MARKET_MESHES[
+							rng.randi() % KENNEY_MARKET_MESHES.size()])
+						rot = (rng.randi() % 4) * (PI * 0.5)
+				T_PARK:
+					# Trees on ~50% of park tiles for variety.
+					if have_town and rng.randi() % 2 == 0:
+						base_for_tile = town_base
+						pick = str(KENNEY_PARK_MESHES[
+							rng.randi() % KENNEY_PARK_MESHES.size()])
+						rot = rng.randf_range(0.0, TAU)
+				T_RUBBLE:
+					if have_town and rng.randi() % 3 != 0:
+						base_for_tile = town_base
+						pick = str(KENNEY_RUBBLE_MESHES[
+							rng.randi() % KENNEY_RUBBLE_MESHES.size()])
+						rot = rng.randf_range(0.0, TAU)
+				_:
+					continue
+			if pick == "" or base_for_tile == "":
 				continue
+			# Dungeon kit pieces are 4m authored — scale to fit our 1m grid.
+			var mesh_scale: float = (DUNGEON_MESH_SCALE
+				if base_for_tile == dungeon_base else 1.0)
+			var inst := _pack_instance(
+				base_for_tile, pick, x, y, rot, mesh_scale)
+			if inst != null:
+				_wall_root.add_child(inst)
+			# For rich walls placed via the TOWN kit, drop a town-kit roof
+			# on top to suggest a proper building. The dungeon-kit walls
+			# already include a cap (template-wall-top), so we skip roofs
+			# when the dungeon kit was used.
+			if (t == T_WALL_RICH and have_town and base_for_tile == town_base
+					and rng.randi() % 2 == 0):
+				var roof := str(KENNEY_ROOFS_RICH[
+					rng.randi() % KENNEY_ROOFS_RICH.size()])
+				var rinst := _pack_instance(town_base, roof, x, y, rot, 1.0)
+				if rinst != null:
+					rinst.position.y = 1.6   # sit on top of the wall block
+					_wall_root.add_child(rinst)
 
-			var seed_val: int = (x * 73856093) ^ (y * 19349663)
-			var wall_height: float = 1.25
-			var wall_col: Color = _pc("wall", Color(0.18, 0.15, 0.22))
+func _build_3d_walls() -> void:
+	# Skip the box-wall renderer entirely if EITHER asset pack is available —
+	# _build_3d_kenney_props() will draw the wall visuals using GLB meshes
+	# (dungeon kit preferred, town kit fallback). Building-name signposts
+	# (below) still run either way.
+	var _use_kenney: bool = (_kenney_base() != "") or (_dungeon_base() != "")
+	if not _use_kenney:
+		for y in range(GRID_H):
+			for x in range(GRID_W):
+				var t: int = _get_tile(x, y)
+				if t != T_WALL and t != T_WALL_RICH and t != T_WALL_POOR:
+					continue
 
-			if t == T_WALL_RICH:
-				wall_height = 1.6
-				wall_col = _pc("wall_rich", Color(0.30, 0.24, 0.38))
-			elif t == T_WALL_POOR:
-				wall_height = 1.0
-				wall_col = _pc("wall_poor", Color(0.14, 0.11, 0.16))
+				var seed_val: int = (x * 73856093) ^ (y * 19349663)
+				var wall_height: float = 1.25
+				var wall_col: Color = _pc("wall", Color(0.18, 0.15, 0.22))
 
-			# Check if this is an edge wall (adjacent to walkable tile)
-			var is_edge: bool = false
-			for d in [Vector2i(0,-1), Vector2i(0,1), Vector2i(-1,0), Vector2i(1,0)]:
-				var nt: int = _get_tile(x + d.x, y + d.y)
-				if nt != T_WALL and nt != T_WALL_RICH and nt != T_WALL_POOR:
-					is_edge = true
-					break
+				if t == T_WALL_RICH:
+					wall_height = 1.6
+					wall_col = _pc("wall_rich", Color(0.30, 0.24, 0.38))
+				elif t == T_WALL_POOR:
+					wall_height = 1.0
+					wall_col = _pc("wall_poor", Color(0.14, 0.11, 0.16))
 
-			# Base wall block
-			var wall := MeshInstance3D.new()
-			var box := BoxMesh.new()
-			box.size = Vector3(1.0, wall_height, 1.0)
-			wall.mesh = box
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = wall_col
-			mat.roughness = 0.9
-			mat.metallic = 0.02 if t == T_WALL_RICH else 0.0
-			wall.material_override = mat
-			wall.position = Vector3(float(x) + 0.5, wall_height * 0.5, float(y) + 0.5)
-			_wall_root.add_child(wall)
+				# Check if this is an edge wall (adjacent to walkable tile)
+				var is_edge: bool = false
+				for d in [Vector2i(0,-1), Vector2i(0,1), Vector2i(-1,0), Vector2i(1,0)]:
+					var nt: int = _get_tile(x + d.x, y + d.y)
+					if nt != T_WALL and nt != T_WALL_RICH and nt != T_WALL_POOR:
+						is_edge = true
+						break
 
-			# Wall details for edge walls
-			if is_edge:
-				_add_wall_detail(x, y, t, wall_height, wall_col, seed_val)
+				# Base wall block
+				var wall := MeshInstance3D.new()
+				var box := BoxMesh.new()
+				box.size = Vector3(1.0, wall_height, 1.0)
+				wall.mesh = box
+				var mat := StandardMaterial3D.new()
+				mat.albedo_color = wall_col
+				mat.roughness = 0.9
+				mat.metallic = 0.02 if t == T_WALL_RICH else 0.0
+				wall.material_override = mat
+				wall.position = Vector3(float(x) + 0.5, wall_height * 0.5, float(y) + 0.5)
+				_wall_root.add_child(wall)
+
+				# Wall details for edge walls
+				if is_edge:
+					_add_wall_detail(x, y, t, wall_height, wall_col, seed_val)
 
 	# Building name labels — floating text via 3D labels
 	for bld in _building_labels:
@@ -1734,17 +2755,40 @@ func _build_3d_entities() -> void:
 	_player_node = _create_entity_model(0, handles, true)
 	_player_node.position = _player_world_pos
 	_entity_root.add_child(_player_node)
+	_tag_player_marker(GameState.active_vehicle)
 
-	# Followers
+	# Followers — start visible at the leader's spawn tile so the whole
+	# team appears together when the map loads. Trail-based positioning
+	# takes over once the player walks (see _update_follower_3d_positions).
 	_follower_nodes.clear()
 	for i in range(1, handles.size()):
 		var fnode := _create_entity_model(i, handles, false)
-		fnode.visible = false
+		fnode.position = _player_world_pos
+		fnode.visible = true
 		_entity_root.add_child(fnode)
 		_follower_nodes.append(fnode)
 
 func _create_entity_model(idx: int, handles: Array, is_player: bool) -> Node3D:
 	var root := Node3D.new()
+	# Name-tag the outer root so _rebuild_player_marker can sweep stale
+	# markers off _entity_root reliably (independent of whether it's
+	# currently rendering a vehicle or a character sprite).
+	root.name = "PlayerMarker" if (is_player and idx == 0) else "FollowerMarker_%d" % idx
+
+	# If the player has deployed a vehicle, swap the party token for the
+	# vehicle marker. The vehicle handles encounter-skipping in
+	# _trigger_encounter; this is purely the visual representation.
+	if is_player and idx == 0 and GameState.active_vehicle != "":
+		var v_model := CharacterModelBuilder.build_vehicle_sprite_model(GameState.active_vehicle, 1.5)
+		root.add_child(v_model)
+		# Bright accent light so vehicles pop on the region map
+		var v_light := OmniLight3D.new()
+		v_light.light_color = Color(1.0, 0.85, 0.45)
+		v_light.light_energy = 0.5
+		v_light.omni_range = 2.5
+		v_light.position.y = 0.8
+		root.add_child(v_light)
+		return root
 
 	if idx < handles.size():
 		var h: int = handles[idx]
@@ -2047,10 +3091,25 @@ func _build_hud(parent: Control) -> void:
 
 	var hud_title: String = _map_data.get("hud_title", "Exploring: " + _subregion)
 	hbox.add_child(RimvaleUtils.label(hud_title, 14, RimvaleColors.GOLD))
+	# Day/night indicator — emoji + clock + period name. Updated whenever
+	# _advance_time fires; tinted by the current period (gold morning,
+	# orange dusk, purple night, etc.).
+	var period: Dictionary = _time_period_lighting()
+	_hud_time_indicator = RimvaleUtils.label(
+		"%s  %s — %s" % [str(period["icon"]),
+			_hour_to_str(_current_hour), str(period["name"])],
+		13, period["color"])
+	hbox.add_child(_hud_time_indicator)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox.add_child(spacer)
-	hbox.add_child(RimvaleUtils.label("WASD / Arrows to move  |  Right-drag to rotate  |  Scroll to zoom", 11, RimvaleColors.TEXT_DIM))
+	hbox.add_child(RimvaleUtils.label("WASD / Arrows to move  |  Q / E to rotate  |  Right-drag to rotate  |  Scroll to zoom", 11, RimvaleColors.TEXT_DIM))
+
+	# Vehicle dropdown — shown when any active-team character has attuned to
+	# at least one owned vehicle. The party can swap on the fly between
+	# walking and any of the attuned vehicles. Encounter skipping + the
+	# vehicle marker swap react automatically to the active_vehicle change.
+	_build_vehicle_dropdown(hbox)
 
 	var wait_btn := RimvaleUtils.button("⏳ Wait", RimvaleColors.CYAN, 32, 12)
 	wait_btn.custom_minimum_size.x = 70
@@ -2065,8 +3124,334 @@ func _build_hud(parent: Control) -> void:
 	# Minimap in bottom-left corner
 	_build_minimap(parent)
 
+## Region-map vehicle picker. Lists every owned vehicle that any active-team
+## character is attuned to, plus a "🚶 On Foot" option. Selecting a vehicle
+## deploys it as the active region marker (encounter skip + visual swap).
+var _vehicle_dropdown: OptionButton
+
+func _build_vehicle_dropdown(parent: HBoxContainer) -> void:
+	# Pull the heal-on-read so any orphaned vehicles in character inventories
+	# get migrated into the garage before we render the picker.
+	var attuned: Array = RimvaleAPI.engine.get_team_attuned_vehicles()
+	var owned: Array = GameState.owned_vehicles.keys()
+	owned.sort()
+
+	_vehicle_dropdown = OptionButton.new()
+	_vehicle_dropdown.add_theme_font_size_override("font_size", 12)
+	_vehicle_dropdown.custom_minimum_size = Vector2(220, 32)
+
+	# Always present "🚶 On Foot" as the first option so the player can recall.
+	_vehicle_dropdown.add_item("🚶 On Foot", -1)
+
+	# Index map: dropdown position → vehicle name. Built as we add items.
+	var pos_to_name: Array = []
+
+	if owned.is_empty():
+		# No garage at all — surface a disabled hint item so the dropdown is
+		# visibly present and the player understands the feature exists.
+		_vehicle_dropdown.add_item("🚗 (No vehicles in garage)", -2)
+		_vehicle_dropdown.set_item_disabled(1, true)
+	else:
+		# List every owned vehicle. Non-attuned ones are visible but disabled
+		# with an explanatory prefix so the player knows where to enable them.
+		var attuned_set: Dictionary = {}
+		for n in attuned: attuned_set[str(n)] = true
+		for v in owned:
+			var v_name: String = str(v)
+			var stats: Dictionary = VehicleData.get_stats(v_name)
+			var hp_now: int = int(GameState.owned_vehicles.get(v_name, {}).get("hp_current", 0))
+			var hp_max: int = int(stats.get("hp", 1))
+			var st_now: int = int(GameState.owned_vehicles.get(v_name, {}).get("st_current", 0))
+			var st_max: int = int(stats.get("st_max", 0))
+			var hp_dead: bool = hp_now <= 0
+			var not_attuned: bool = not bool(attuned_set.get(v_name, false))
+			var prefix: String = ""
+			if hp_dead:        prefix = "🔧 "    # disabled
+			elif not_attuned:  prefix = "🔒 "    # not attuned
+			else:              prefix = "🚗 "    # ready
+			var suffix: String = ""
+			if hp_dead:       suffix = "  [DISABLED]"
+			elif not_attuned: suffix = "  [Attune in Profile → Garage]"
+			var label: String = "%s%s  HP %d/%d  ST %d/%d%s" % [
+				prefix, v_name, hp_now, hp_max, st_now, st_max, suffix]
+			_vehicle_dropdown.add_item(label, pos_to_name.size())
+			if hp_dead or not_attuned:
+				_vehicle_dropdown.set_item_disabled(_vehicle_dropdown.item_count - 1, true)
+			pos_to_name.append(v_name)
+
+	# Pre-select the currently-deployed vehicle (or "On Foot")
+	var current_idx: int = 0
+	if GameState.active_vehicle != "":
+		var found_idx: int = pos_to_name.find(GameState.active_vehicle)
+		if found_idx >= 0:
+			current_idx = found_idx + 1   # +1 because On Foot is index 0
+	_vehicle_dropdown.select(current_idx)
+
+	_vehicle_dropdown.item_selected.connect(func(idx: int):
+		var meta: int = int(_vehicle_dropdown.get_item_id(idx))
+		if meta == -1:
+			GameState.recall_vehicle()
+			_force_show_on_foot_marker()
+		elif meta == -2:
+			_vehicle_dropdown.select(0)
+			return   # disabled-hint slot
+		else:
+			if meta < 0 or meta >= pos_to_name.size():
+				_vehicle_dropdown.select(0); return
+			var v_name: String = str(pos_to_name[meta])
+			var err: String = GameState.deploy_vehicle(v_name)
+			if err != "":
+				_show_message(err, RimvaleColors.DANGER)
+				_vehicle_dropdown.select(0)
+				return
+			_force_show_vehicle_marker(v_name)
+	)
+	parent.add_child(_vehicle_dropdown)
+
+## Direct, no-frills swap: clear EVERY player/vehicle visual under the
+## entity root, then attach a fresh character sprite for the team leader.
+## Called when the user picks "On Foot" in the dropdown.
+func _force_show_on_foot_marker() -> void:
+	# 1. Nuke any current player marker and any vehicle visual we can find,
+	#    anywhere under _entity_root (and _world3d_root just to be sure).
+	_purge_player_visuals()
+	# 2. Build a fresh character sprite for the team leader.
+	var handles: Array = GameState.get_active_handles()
+	if handles.is_empty():
+		return
+	var leader_handle: int = int(handles[0])
+	var lineage: String = RimvaleAPI.engine.get_character_lineage_name(leader_handle)
+	var cd: Dictionary = RimvaleAPI.engine.get_char_dict(leader_handle)
+	var weapon: String = str(cd.get("weapon_name", cd.get("weapon", "None")))
+	var armor: String = str(cd.get("armor_name", cd.get("armor", "None")))
+	var shield: String = str(cd.get("shield_name", cd.get("shield", "None")))
+	var team_col: Color = Color(0.20, 0.55, 0.92)
+
+	var root := Node3D.new()
+	root.name = "PlayerMarker"
+	var model: Node3D = CharacterModelBuilder.build_sprite_model(
+		lineage, weapon, armor, shield, 0.55, team_col)
+	if model != null:
+		model.position.y = 0.0
+		root.add_child(model)
+	else:
+		# Fallback capsule if the lineage sprite fails to load.
+		var capsule := MeshInstance3D.new()
+		var cm := CapsuleMesh.new()
+		cm.radius = 0.18; cm.height = 0.8
+		capsule.mesh = cm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = team_col
+		capsule.material_override = mat
+		capsule.position.y = 0.4
+		root.add_child(capsule)
+
+	# 3. Standard team-leader accent light so they're easy to spot.
+	var elight := OmniLight3D.new()
+	elight.light_color = Color(0.20, 0.55, 0.92)
+	elight.light_energy = 0.4
+	elight.omni_range = 1.5
+	elight.position.y = 0.6
+	root.add_child(elight)
+
+	root.position = _player_world_pos
+	_entity_root.add_child(root)
+	_player_node = root
+	_player_node.set_meta("marker_for_vehicle", "")
+
+## Direct, no-frills swap: clear EVERY player/vehicle visual under the
+## entity root, then attach a fresh vehicle billboard for the team leader.
+## Called when the user picks a vehicle in the dropdown.
+func _force_show_vehicle_marker(vehicle_name: String) -> void:
+	_purge_player_visuals()
+
+	var root := Node3D.new()
+	root.name = "PlayerMarker"
+	var v_model := CharacterModelBuilder.build_vehicle_sprite_model(vehicle_name, 1.5)
+	root.add_child(v_model)
+
+	var v_light := OmniLight3D.new()
+	v_light.light_color = Color(1.0, 0.85, 0.45)
+	v_light.light_energy = 0.5
+	v_light.omni_range = 2.5
+	v_light.position.y = 0.8
+	root.add_child(v_light)
+
+	root.position = _player_world_pos
+	_entity_root.add_child(root)
+	_player_node = root
+	_player_node.set_meta("marker_for_vehicle", vehicle_name)
+
+## Recursively walk _entity_root and free anything that looks like a
+## player/leader visual or vehicle visual. Used by both swap helpers
+## above so the swap starts from a clean slate every time.
+func _purge_player_visuals() -> void:
+	if _entity_root == null or not is_instance_valid(_entity_root):
+		_player_node = null
+		return
+	var to_free: Array = []
+	for child in _entity_root.get_children():
+		var nm: String = str(child.name)
+		if (
+			nm == "PlayerMarker"
+			or nm.begins_with("PlayerMarker")
+			or nm.begins_with("@PlayerMarker")
+			or nm.begins_with("VehicleModel_")
+		):
+			to_free.append(child)
+	for c in to_free:
+		_entity_root.remove_child(c)
+		c.queue_free()
+	_player_node = null
+
+## Tag the player marker with the vehicle it was built for ("" = on foot).
+## Used by _ensure_player_marker_matches_state to detect drift.
+func _tag_player_marker(vehicle_name: String) -> void:
+	if _player_node != null and is_instance_valid(_player_node):
+		_player_node.set_meta("marker_for_vehicle", vehicle_name)
+
+## Walk the dropdown's items and select the one matching active_vehicle
+## (or "On Foot" at index 0 if active_vehicle is empty). Safe to call any
+## time — the dropdown disconnects suppress the change event during a
+## programmatic select, preventing a re-entrant deploy/recall.
+func _sync_vehicle_dropdown_selection() -> void:
+	if _vehicle_dropdown == null or not is_instance_valid(_vehicle_dropdown):
+		return
+	var target: String = str(GameState.active_vehicle)
+	if target == "":
+		# On Foot is always at index 0
+		if _vehicle_dropdown.get_selected() != 0:
+			_vehicle_dropdown.select(0)
+		return
+	for i in range(_vehicle_dropdown.item_count):
+		if _vehicle_dropdown.get_item_text(i).find(target) >= 0:
+			if _vehicle_dropdown.get_selected() != i:
+				_vehicle_dropdown.select(i)
+			return
+	# Fallback — can't find the vehicle in the list (newly acquired?).
+	if _vehicle_dropdown.get_selected() != 0:
+		_vehicle_dropdown.select(0)
+
+## Per-frame defensive check: if the player marker's tag doesn't match
+## GameState.active_vehicle, rebuild. Catches any code path that updates
+## active_vehicle without explicitly calling _rebuild_player_marker.
+##
+## Also sweeps for stale "@PlayerMarker@N" nodes that Godot auto-renames
+## when add_child runs against an unfreed sibling — those slip past a
+## simple name match.
+var _last_marker_check: float = 0.0
+func _ensure_player_marker_matches_state() -> void:
+	# Throttle to ~10 Hz — no need to check every frame.
+	_last_marker_check += get_process_delta_time()
+	if _last_marker_check < 0.1: return
+	_last_marker_check = 0.0
+	if _entity_root == null or not is_instance_valid(_entity_root):
+		return
+
+	# ── 1. The dropdown's visible selection IS the source of truth. ─────
+	# If it shows "On Foot" but GameState says a vehicle is deployed,
+	# force-recall. If it shows a vehicle but GameState says On Foot or
+	# the wrong vehicle, force-deploy. Bypasses the item_selected signal
+	# entirely — works regardless of whether the click registered as a
+	# Godot UI event.
+	if _vehicle_dropdown != null and is_instance_valid(_vehicle_dropdown):
+		var sel: int = _vehicle_dropdown.get_selected()
+		if sel == 0:
+			# "🚶 On Foot" is always at index 0
+			if GameState.active_vehicle != "":
+				GameState.recall_vehicle()
+				GameState.save_game()
+		elif sel > 0:
+			# Read the visible label and extract the vehicle name (it's the
+			# part after the icon prefix and before the stat block).
+			var label: String = _vehicle_dropdown.get_item_text(sel)
+			# Format: "🚗 NAME  HP x/y  ST x/y..." — slice the chunk
+			# between the leading icon+space and the first "  HP" sequence.
+			var head: int = label.find(" ")
+			var tail: int = label.find("  HP")
+			if head >= 0 and tail > head:
+				var v_name: String = label.substr(head + 1, tail - head - 1).strip_edges()
+				if v_name != "" and GameState.active_vehicle != v_name:
+					var err: String = GameState.deploy_vehicle(v_name)
+					if err == "":
+						GameState.save_game()
+
+	# ── 2. Marker visual matches the (now-authoritative) state. ─────────
+	var want: String = str(GameState.active_vehicle)
+	var have: String = ""
+	if _player_node != null and is_instance_valid(_player_node) \
+			and _player_node.has_meta("marker_for_vehicle"):
+		have = str(_player_node.get_meta("marker_for_vehicle"))
+	if want == have and _player_node != null and is_instance_valid(_player_node):
+		return
+	if want == "":
+		_force_show_on_foot_marker()
+	else:
+		_force_show_vehicle_marker(want)
+
+## Tear down and rebuild only the player marker so vehicle swaps appear
+## without restarting the whole region-map scene.
+##
+## IMPORTANT: Godot's queue_free() is deferred — the freed node still exists
+## in the scene tree until end-of-frame. If we just call queue_free() and
+## add the new node, both the old vehicle marker AND the new
+## vehicle/character can render in the same frame. We force-remove the old
+## node from its parent first so the swap is visually atomic.
+##
+## Also sweeps _entity_root for any orphaned VehicleModel_* / SpriteModel_*
+## nodes left over from earlier paths (save load, dungeon transitions, etc.)
+## so a stale vehicle marker can't linger after switching to On Foot.
+func _rebuild_player_marker() -> void:
+	# Step 1: detach + queue the known _player_node
+	if _player_node != null and is_instance_valid(_player_node):
+		var parent_node: Node = _player_node.get_parent()
+		if parent_node != null:
+			parent_node.remove_child(_player_node)
+		_player_node.queue_free()
+		_player_node = null
+	# Step 2: belt-and-braces sweep — any node in _entity_root whose name
+	# starts with PlayerMarker (incl. Godot's auto-rename forms like
+	# "@PlayerMarker@123") AND any orphan VehicleModel_* / SpriteModel_*
+	# children that may have been re-parented up. Catches stale state
+	# left by save-load, scene-reentry, or this very rebuild path racing
+	# with queue_free's deferred cleanup.
+	if _entity_root != null and is_instance_valid(_entity_root):
+		for child in _entity_root.get_children():
+			var nm: String = str(child.name)
+			var match: bool = (
+				nm == "PlayerMarker"
+				or nm.begins_with("@PlayerMarker")
+				or nm.begins_with("PlayerMarker@")
+				or nm.begins_with("VehicleModel_")
+			)
+			if match:
+				_entity_root.remove_child(child)
+				child.queue_free()
+	# Step 3: build the new marker from current GameState.active_vehicle.
+	# Read active_vehicle locally so any concurrent state writes can't
+	# race with us mid-build.
+	var active_now: String = str(GameState.active_vehicle)
+	var handles: Array = GameState.get_active_handles()
+	_player_node = _create_entity_model(0, handles, true)
+	_player_node.position = _player_world_pos
+	_entity_root.add_child(_player_node)
+	# Force one immediate position update so the new marker doesn't
+	# render at the origin for a frame before _process catches up.
+	_update_player_3d_pos()
+	# Tag with the vehicle the marker was built for. The per-frame
+	# state-watcher uses this meta to detect drift between active_vehicle
+	# and the visible marker.
+	_tag_player_marker(active_now)
+	# Resync the dropdown so its visible label tracks the actual state —
+	# matters when the rebuild was triggered by something other than a
+	# user-initiated dropdown click (per-frame watcher, save-load, vehicle
+	# auto-recall on damage, etc.).
+	_sync_vehicle_dropdown_selection()
+
 func _build_minimap(parent: Control) -> void:
-	var minimap_size: int = 140
+	# Bumped from 140 to 200 to keep individual tiles legible after the
+	# region grid grew from 30×22 to 90×66 (city + outskirts ring).
+	var minimap_size: int = 200
 	var mm_panel := PanelContainer.new()
 	mm_panel.anchor_left = 0.0; mm_panel.anchor_top = 1.0
 	mm_panel.anchor_right = 0.0; mm_panel.anchor_bottom = 1.0
@@ -2145,7 +3530,7 @@ func _update_minimap_player() -> void:
 
 func _find_and_update_player_dot(node: Node) -> void:
 	if node.name == "PlayerDot" and node is ColorRect:
-		var minimap_size: float = 140.0
+		var minimap_size: float = 200.0
 		var tile_w: float = minimap_size / float(GRID_W)
 		var tile_h: float = minimap_size / float(GRID_H)
 		node.position = Vector2(_player_pos.x * tile_w - tile_w * 0.25,
@@ -2159,6 +3544,8 @@ func _build_info_panel(parent: HBoxContainer) -> void:
 	_info_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_info_panel.size_flags_stretch_ratio = 1.0
 	_info_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Clip overflow so any oversized child doesn't bleed past the panel.
+	_info_panel.clip_contents = true
 	var st := StyleBoxFlat.new()
 	st.bg_color = Color(0.06, 0.04, 0.10, 1.0)
 	st.border_width_left = 2
@@ -2171,10 +3558,19 @@ func _build_info_panel(parent: HBoxContainer) -> void:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Disable horizontal scroll so long buttons wrap to the panel width
+	# instead of shoving the scrollbar offscreen — vertical-only scroll.
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.clip_contents = true
 	_info_panel.add_child(scroll)
 
 	_info_vbox = VBoxContainer.new()
 	_info_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# IMPORTANT: do NOT set vertical EXPAND_FILL on the vbox — it must be
+	# allowed to grow taller than the scroll viewport so the scrollbar
+	# engages. SIZE_FILL only fills width, leaves height to fit content.
+	_info_vbox.size_flags_vertical = Control.SIZE_FILL
 	_info_vbox.add_theme_constant_override("separation", 8)
 	scroll.add_child(_info_vbox)
 
@@ -2218,6 +3614,21 @@ func _unhandled_input(event: InputEvent) -> void:
 ## WASD free camera pan — moves the camera target freely across the map.
 ## Camera snaps back to the party when the player moves (arrow keys / click-to-walk).
 func _poll_wasd_camera(delta: float) -> void:
+	# ── Q/E camera yaw rotation ─────────────────────────────────────────
+	# Held-key yaw matches the right-drag rate scaled to ~75°/sec so a
+	# full quarter-turn takes about 1.2 seconds — fast enough to feel
+	# responsive, slow enough to aim accurately.
+	var yaw_speed: float = 75.0   # degrees per second
+	if Input.is_key_pressed(KEY_Q):
+		_cam_yaw -= yaw_speed * delta
+	if Input.is_key_pressed(KEY_E):
+		_cam_yaw += yaw_speed * delta
+	if Input.is_key_pressed(KEY_Q) or Input.is_key_pressed(KEY_E):
+		# Wrap to keep yaw in [0, 360) — matches the right-drag handler.
+		if _cam_yaw > 360.0: _cam_yaw -= 360.0
+		if _cam_yaw < 0.0:   _cam_yaw += 360.0
+
+	# ── WASD camera pan ─────────────────────────────────────────────────
 	var pan_speed: float = 12.0  # world units per second
 	var move := Vector2.ZERO
 	if Input.is_key_pressed(KEY_W):
@@ -2317,6 +3728,11 @@ func _on_3d_click(screen_pos: Vector2) -> void:
 	if tx < 0 or tx >= GRID_W or ty < 0 or ty >= GRID_H:
 		return
 
+	# Base build mode — clicking a tile attempts placement.
+	if _base_build_mode and _base_build_type != "":
+		_try_place_base_building(tx, ty)
+		return
+
 	var target := Vector2i(tx, ty)
 	if target == _player_pos:
 		return
@@ -2368,6 +3784,12 @@ func _try_move(dir: Vector2i) -> void:
 		_show_npc_panel(_npc_positions[new_pos])
 		return
 
+	# Stepping onto a base building tile shows that building's feature panel.
+	var on_building: Dictionary = _base_building_at(new_pos.x, new_pos.y)
+	if not on_building.is_empty():
+		_stop_auto_walk()
+		_show_building_features_panel(on_building)
+		return
 	var tile: int = _get_tile(new_pos.x, new_pos.y)
 	if tile == T_DANGER:
 		_stop_auto_walk()
@@ -2396,6 +3818,22 @@ func _on_danger_step() -> void:
 		_trigger_encounter()
 
 func _trigger_encounter() -> void:
+	# In-vehicle bypass: if the party is currently deployed in a vehicle, the
+	# encounter is skipped entirely. The vehicle takes 1 HP of damage instead.
+	# When the vehicle is destroyed, the next step will trigger an encounter
+	# normally on the dismounted party.
+	if GameState.active_vehicle != "":
+		var v_name: String = GameState.active_vehicle
+		var destroyed: bool = GameState.damage_vehicle(1)
+		if destroyed:
+			_show_message("⚠ %s is disabled — the party dismounts!" % v_name,
+				RimvaleColors.DANGER)
+		else:
+			var hp_now: int = int(GameState.owned_vehicles.get(v_name, {}).get("hp_current", 0))
+			_show_message("Skipped encounter — %s takes 1 HP (%d remaining)." % [v_name, hp_now],
+				RimvaleColors.GOLD)
+		return
+
 	var handles: PackedInt64Array = GameState.get_active_handles()
 	if handles.is_empty():
 		_show_message("No active team! Return to base and deploy units.", RimvaleColors.DANGER)
@@ -2544,7 +3982,7 @@ func _on_poi_step(pos: Vector2i) -> void:
 		POI_LEDGER:     _show_ledger_house_panel()
 		POI_TOWN_HALL:  _show_town_hall_panel()
 		POI_GUILD:      _show_merchant_guild_panel()
-		POI_EXIT:       _on_exit()
+		POI_EXIT:       _show_exit_confirmation()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  INFO PANEL CONTENT — all text driven from _content dictionary
@@ -2592,6 +4030,19 @@ func _show_location_info() -> void:
 
 	_info_vbox.add_child(RimvaleUtils.separator())
 	_add_time_status(_info_vbox)
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	# Base building entry — placed in default location panel so it's
+	# always one click away regardless of POI proximity.
+	var build_count: int = GameState.get_base_buildings(_subregion).size()
+	var build_label: String = "🛠  Build Base"
+	if build_count > 0:
+		build_label = "🛠  Manage Base (%d building%s)" % [
+			build_count, "s" if build_count != 1 else ""]
+	var build_btn := RimvaleUtils.button(
+		build_label, RimvaleColors.GOLD, 36, 12)
+	build_btn.pressed.connect(_show_base_build_panel)
+	_info_vbox.add_child(build_btn)
 	_info_vbox.add_child(RimvaleUtils.separator())
 
 	_info_vbox.add_child(RimvaleUtils.label("PARTY", 13, RimvaleColors.ACCENT))
@@ -2642,6 +4093,7 @@ func _show_location_info() -> void:
 	_info_vbox.add_child(RimvaleUtils.separator())
 	_info_vbox.add_child(RimvaleUtils.label("CONTROLS", 13, RimvaleColors.TEXT_GRAY))
 	_info_vbox.add_child(RimvaleUtils.label("WASD / Arrows — Move", 10, RimvaleColors.TEXT_DIM))
+	_info_vbox.add_child(RimvaleUtils.label("Q / E — Rotate camera", 10, RimvaleColors.TEXT_DIM))
 	_info_vbox.add_child(RimvaleUtils.label("Right-drag — Rotate camera", 10, RimvaleColors.TEXT_DIM))
 	_info_vbox.add_child(RimvaleUtils.label("Scroll — Zoom in/out", 10, RimvaleColors.TEXT_DIM))
 	_info_vbox.add_child(RimvaleUtils.label("Home — Reset camera", 10, RimvaleColors.TEXT_DIM))
@@ -2734,7 +4186,18 @@ func _advance_time(hours: int = 1) -> bool:
 	GameState.explore_current_hour = _current_hour
 	# Re-snap regional NPCs if we've crossed a schedule boundary (6/12/18/0).
 	_refresh_regional_npc_schedule()
+	# Time-of-day lighting + HUD indicator track the new hour.
+	_apply_time_of_day_lighting()
+	_refresh_hud_time_indicator()
 	return _current_hour < 24
+
+func _refresh_hud_time_indicator() -> void:
+	if _hud_time_indicator == null or not is_instance_valid(_hud_time_indicator):
+		return
+	var period: Dictionary = _time_period_lighting()
+	_hud_time_indicator.text = "%s  %s — %s" % [
+		str(period["icon"]), _hour_to_str(_current_hour), str(period["name"])]
+	_hud_time_indicator.add_theme_color_override("font_color", period["color"])
 
 func _time_cost_str(hours: int = 1) -> String:
 	if hours == 1:
@@ -2825,7 +4288,7 @@ func _show_acf_panel() -> void:
 	brief_btn.pressed.connect(func():
 		if not _try_action(_show_acf_panel): return
 		for h in GameState.get_active_handles():
-			RimvaleAPI.engine.add_xp(h, 50, 20)
+			RimvaleAPI.engine.add_xp(h, 50, GameState.player_level)
 		GameState.player_xp += 50
 		GameState.save_game()
 		_show_message("Briefing received. +50 XP to all agents.", RimvaleColors.CYAN, _show_acf_panel)
@@ -2841,6 +4304,12 @@ func _show_acf_panel() -> void:
 			main_node.go_to_tab(0)
 	)
 	_info_vbox.add_child(manage_btn)
+
+	# Transport — fast-travel between ACF offices for 100 gold.
+	var transport_btn := RimvaleUtils.button(
+		"🚆 ACF Transport (100g)…", RimvaleColors.CYAN, 38, 12)
+	transport_btn.pressed.connect(_show_acf_transport_panel)
+	_info_vbox.add_child(transport_btn)
 
 	# Stationed ACF personnel
 	var region_key: String = WorldData.subregion_to_key(_subregion)
@@ -3076,7 +4545,7 @@ func _show_tavern_panel() -> void:
 		if GameState.gold >= 25:
 			GameState.gold -= 25
 			for h in GameState.get_active_handles():
-				RimvaleAPI.engine.add_xp(h, 30, 20)
+				RimvaleAPI.engine.add_xp(h, 30, GameState.player_level)
 			GameState.player_xp += 30
 			GameState.save_game()
 			_show_message("Cheers all around! +30 XP.", RimvaleColors.ORANGE, _show_tavern_panel)
@@ -3153,7 +4622,7 @@ func _show_blacksmith_panel() -> void:
 		if GameState.gold >= 40:
 			GameState.gold -= 40
 			for h in GameState.get_active_handles():
-				RimvaleAPI.engine.add_xp(h, 20, 20)
+				RimvaleAPI.engine.add_xp(h, 20, GameState.player_level)
 			GameState.save_game()
 			_show_message("Weapons honed to a razor edge. +20 XP.", Color(0.85, 0.45, 0.25), _show_blacksmith_panel)
 		else:
@@ -3238,7 +4707,7 @@ func _show_library_panel() -> void:
 		if GameState.gold >= 50:
 			GameState.gold -= 50
 			for h in GameState.get_active_handles():
-				RimvaleAPI.engine.add_xp(h, 80, 20)
+				RimvaleAPI.engine.add_xp(h, 80, GameState.player_level)
 			GameState.player_xp += 80
 			GameState.save_game()
 			_show_message("Hours among ancient tomes. +80 XP.", RimvaleColors.CYAN, _show_library_panel)
@@ -3434,7 +4903,7 @@ func _show_fountain_panel() -> void:
 						RimvaleAPI.engine.restore_character_sp(h, boon_val)
 				"xp":
 					for h in GameState.get_active_handles():
-						RimvaleAPI.engine.add_xp(h, boon_val, 20)
+						RimvaleAPI.engine.add_xp(h, boon_val, GameState.player_level)
 					GameState.player_xp += boon_val
 				"gold":
 					GameState.earn_gold(boon_val)
@@ -4356,7 +5825,7 @@ func _recruit_npc(npc: Dictionary) -> void:
 
 	# Grant XP for recruitment
 	for ph in GameState.get_active_handles():
-		RimvaleAPI.engine.add_xp(ph, 50, 20)
+		RimvaleAPI.engine.add_xp(ph, 50, GameState.player_level)
 	GameState.player_xp += 50
 	GameState.save_game()
 
@@ -4762,7 +6231,7 @@ func _reveal_cache(pos: Vector2i, cache: Dictionary, detail: String) -> void:
 			reward_msg = "+%d Gold found!" % rval
 		"xp":
 			for h in GameState.get_active_handles():
-				RimvaleAPI.engine.add_xp(h, rval, 20)
+				RimvaleAPI.engine.add_xp(h, rval, GameState.player_level)
 			GameState.player_xp += rval
 			reward_msg = "+%d XP gained!" % rval
 		"item":
@@ -5305,3 +6774,620 @@ func _on_exit() -> void:
 		main.pop_screen()
 	else:
 		get_tree().change_scene_to_file("res://scenes/main/main.tscn")
+
+
+## Confirmation prompt shown when the player steps onto an Exit Gate POI.
+## Replaces the previous auto-exit behaviour — players asked for a "are
+## you sure?" gate so an accidental walk onto the gate doesn't dump them
+## back to the world map.
+func _show_exit_confirmation() -> void:
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label(
+		"🚪  Exit Gate", 16, RimvaleColors.GOLD))
+	var desc := RimvaleUtils.label(
+		"Leave the region and return to the world map?",
+		12, RimvaleColors.TEXT_GRAY)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(desc)
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	var leave_btn := RimvaleUtils.button(
+		"← Leave Region", RimvaleColors.GOLD, 40, 13)
+	leave_btn.pressed.connect(_on_exit)
+	_info_vbox.add_child(leave_btn)
+
+	var stay_btn := RimvaleUtils.button(
+		"Stay", RimvaleColors.TEXT_GRAY, 36, 12)
+	stay_btn.pressed.connect(_show_location_info)
+	_info_vbox.add_child(stay_btn)
+
+## ACF Transport — pick another subregion's ACF office and pay 100g to
+## relocate. The catalog mirrors the real subregion → region_id mapping
+## from explore_maps.gd (every entry corresponds to an actual playable
+## map). Travel time still applies — vehicles speed it up if deployed.
+func _show_acf_transport_panel() -> void:
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label(
+		"🚆  ACF Transport", 16, RimvaleColors.CYAN))
+	# Block transport when there are no active units — same gate the
+	# region-map launcher in world.gd uses. Also prompts the player
+	# toward the team page so they know how to recover.
+	if GameState.get_active_handles().is_empty():
+		var warn := RimvaleUtils.label(
+			"You have no active units. Visit the Units tab to summon or " +
+			"deploy a character before travelling.",
+			11, RimvaleColors.DANGER)
+		warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_info_vbox.add_child(warn)
+		_info_vbox.add_child(RimvaleUtils.separator())
+		var back_btn := RimvaleUtils.button(
+			"← Back", RimvaleColors.TEXT_GRAY, 32, 11)
+		back_btn.pressed.connect(_show_acf_panel)
+		_info_vbox.add_child(back_btn)
+		return
+	var desc := RimvaleUtils.label(
+		"Take an ACF transport carriage to a sister office in another " +
+		"subregion. Travel time still applies — vehicles will speed it up " +
+		"if deployed.", 11, RimvaleColors.TEXT_GRAY)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(desc)
+	_info_vbox.add_child(RimvaleUtils.label(
+		"Cost: 100 gold     Your gold: %d" % GameState.gold,
+		12, RimvaleColors.GOLD))
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	# Real region/subregion catalog — keys match explore_maps.gd region_id
+	# and subregion-name strings. Each tuple is [region_id, region_label,
+	# [subregion_name, ...]]. Aliases (e.g. "The Plains" → Kingdom of Qunorum)
+	# are excluded — only canonical playable subregions are listed.
+	var catalog := [
+		["plains",    "The Plains", [
+			"House of Arachana", "Kingdom of Qunorum", "Wilds of Endero",
+			"Forest of SubEden", "Eternal Library"]],
+		["peaks",     "Peaks of Isolation", [
+			"Pharaoh's Den", "The Darkness", "Arcane Collapse", "Argent Hall"]],
+		["metro",     "The Metropolitan", [
+			"Upper Forty", "Lower Forty"]],
+		["isles",     "The Isles", [
+			"Depths of Denorim", "Moroboros", "Gloamfen Hollow"]],
+		["glass",     "The Glass Passage", [
+			"Sacral Separation", "Infernal Machine"]],
+		["titans",    "Titan's Lament", [
+			"Vulcan Valley", "Mortal Arena"]],
+		["astral",    "The Astral Tear", [
+			"L.I.T.O.", "West End Gullet", "Cradling Depths"]],
+		["shadows",   "The Shadows Beneath", [
+			"Corrupted Marshes", "Spindle York's Schism", "Crypt at End of Valley"]],
+		["terminus",  "Terminus Volarus", [
+			"Land of Tomorrow", "City of Eternal Light", "Hallowed Sacrament"]],
+		["sublimini", "Sublimini Dominus", [
+			"Beating Heart of The Void"]],
+	]
+
+	for entry in catalog:
+		var rid: String = str(entry[0])
+		var rlabel: String = str(entry[1])
+		var subs: Array = entry[2]
+		if subs.is_empty():
+			continue
+		# Sublimini Dominus is gated behind the same 9-region-badge story
+		# requirement that reveals it on the world map. Hide both the
+		# region button and its subregions until the gate is open.
+		if rid == "sublimini" and not GameState.is_sublimini_unlocked():
+			continue
+		var default_sub: String = str(subs[0])   # first subregion = region's hub
+
+		_info_vbox.add_child(RimvaleUtils.spacer(4))
+
+		# Region-level button (routes to the region's default subregion)
+		var region_is_here: bool = (rid == _region_id)
+		var region_btn_color: Color = RimvaleColors.TEXT_GRAY if region_is_here else RimvaleColors.GOLD
+		var region_label: String = rlabel
+		if region_is_here:
+			region_label += "  (here)"
+		var region_btn := RimvaleUtils.button(region_label, region_btn_color, 34, 12)
+		region_btn.disabled = region_is_here or GameState.gold < 100
+		var captured_rid_r: String = rid
+		var captured_sub_r: String = default_sub
+		region_btn.pressed.connect(func():
+			if GameState.gold < 100:
+				_show_message("Not enough gold (need 100).",
+					RimvaleColors.DANGER, _show_acf_transport_panel)
+				return
+			GameState.gold -= 100
+			GameState.advance_time_for_travel(captured_rid_r, captured_sub_r)
+			GameState.travel_to_region(captured_rid_r)
+			GameState.travel_to_subregion(captured_sub_r)
+			GameState.save_game()
+			get_tree().change_scene_to_file("res://scenes/explore/explore.tscn")
+		)
+		_info_vbox.add_child(region_btn)
+
+		# Per-subregion buttons (indented to read as sub-options)
+		for sub_raw in subs:
+			var sub_name: String = str(sub_raw)
+			var is_here: bool = (sub_name == _subregion)
+			var btn_color: Color = RimvaleColors.TEXT_GRAY if is_here else RimvaleColors.CYAN
+			var label_text: String = "    " + sub_name
+			if is_here:
+				label_text += "  (here)"
+			var btn := RimvaleUtils.button(label_text, btn_color, 30, 11)
+			btn.disabled = is_here or GameState.gold < 100
+			var captured_rid: String = rid
+			var captured_sub: String = sub_name
+			btn.pressed.connect(func():
+				if GameState.gold < 100:
+					_show_message("Not enough gold (need 100).",
+						RimvaleColors.DANGER, _show_acf_transport_panel)
+					return
+				GameState.gold -= 100
+				GameState.advance_time_for_travel(captured_rid, captured_sub)
+				GameState.travel_to_region(captured_rid)
+				GameState.travel_to_subregion(captured_sub)
+				GameState.save_game()
+				get_tree().change_scene_to_file("res://scenes/explore/explore.tscn")
+			)
+			_info_vbox.add_child(btn)
+
+	_info_vbox.add_child(RimvaleUtils.separator())
+	var back_btn := RimvaleUtils.button(
+		"← Back", RimvaleColors.TEXT_GRAY, 32, 11)
+	back_btn.pressed.connect(_show_acf_panel)
+	_info_vbox.add_child(back_btn)
+
+func _build_3d_bases() -> void:
+	if _base_root == null or not is_instance_valid(_base_root):
+		return
+	# Clear any existing visuals so a re-render is idempotent.
+	for child in _base_root.get_children():
+		_base_root.remove_child(child)
+		child.queue_free()
+	var buildings: Array = GameState.get_base_buildings(_subregion)
+	for b in buildings:
+		var bt: String = str(b.get("type", ""))
+		if bt == "" or not GameState.BASE_BUILDINGS.has(bt):
+			continue
+		var def: Dictionary = GameState.BASE_BUILDINGS[bt]
+		var bx: int = int(b.get("x", 0))
+		var by: int = int(b.get("y", 0))
+		var holder := Node3D.new()
+		holder.name = "Base_%s_%d_%d" % [bt, bx, by]
+		holder.position = Vector3(float(bx) + 0.5, 0.0, float(by) + 0.5)
+		var mesh_inst := MeshInstance3D.new()
+		var box := BoxMesh.new()
+		# Central building is bigger so it reads as the anchor.
+		var is_anchor: bool = bool(def.get("anchor", false))
+		var size: Vector3 = Vector3(0.8, 1.4, 0.8) if is_anchor else Vector3(0.7, 1.0, 0.7)
+		box.size = size
+		mesh_inst.mesh = box
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = def.get("color", Color(0.5, 0.5, 0.5))
+		mat.metallic = 0.1
+		mat.roughness = 0.7
+		mesh_inst.material_override = mat
+		mesh_inst.position = Vector3(0, size.y * 0.5, 0)
+		holder.add_child(mesh_inst)
+		# Label3D above the building
+		var lbl := Label3D.new()
+		lbl.text = str(def.get("name", bt.capitalize()))
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.font_size = 18
+		lbl.outline_size = 4
+		lbl.modulate = Color(1.0, 0.95, 0.7)
+		lbl.position = Vector3(0, size.y + 0.4, 0)
+		holder.add_child(lbl)
+		_base_root.add_child(holder)
+
+## Validate a placement attempt. Returns "" if OK, error message otherwise.
+func _validate_base_placement(x: int, y: int, building_type: String) -> String:
+	if x < 0 or x >= GRID_W or y < 0 or y >= GRID_H:
+		return "Tile out of bounds."
+	# Tile must be in OUTSKIRTS — i.e. NOT inside the central city block.
+	var in_city: bool = (
+		x >= CITY_OFFSET_X and x < CITY_OFFSET_X + CITY_W
+		and y >= CITY_OFFSET_Y and y < CITY_OFFSET_Y + CITY_H
+	)
+	if in_city:
+		return "Bases can only be built in the outskirts (outside the city)."
+	if not _is_walkable(x, y):
+		return "Tile is not walkable (wall or water)."
+	# No POI / cache / NPC on this tile
+	var v := Vector2i(x, y)
+	if _poi_map.has(v):
+		return "A point of interest occupies this tile."
+	if _hidden_cache_map.has(v):
+		return "Something is buried under this tile — clear it first."
+	if _npc_positions.has(v):
+		return "An NPC is standing on this tile."
+	# No existing building on this tile in any region
+	for b in GameState.get_base_buildings(_subregion):
+		if int(b.get("x", -99)) == x and int(b.get("y", -99)) == y:
+			return "A building already occupies this tile."
+	# Anchor / range checks
+	var def: Dictionary = GameState.BASE_BUILDINGS.get(building_type, {})
+	var is_anchor: bool = bool(def.get("anchor", false))
+	var has_anchor: bool = GameState.has_central_building(_subregion)
+	if is_anchor and has_anchor:
+		return "This region already has a Command Center."
+	if not is_anchor and not has_anchor:
+		return "Build a Command Center first."
+	if not is_anchor:
+		var ct: Vector2i = GameState.get_central_tile(_subregion)
+		var dist: int = absi(x - ct.x) + absi(y - ct.y)
+		if dist > GameState.BASE_BUILD_RADIUS:
+			return "Too far from Command Center (max %d tiles)." % GameState.BASE_BUILD_RADIUS
+	return ""
+
+## Top-level entry button — opens the building picker panel in the info pane.
+func _show_base_build_panel() -> void:
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label(
+		"🛠  Base Building", 16, RimvaleColors.GOLD))
+	var desc := RimvaleUtils.label(
+		"Build structures on the outskirts. The Command Center must be " +
+		"placed first; subsequent buildings must be within %d tiles of it." %
+		GameState.BASE_BUILD_RADIUS, 11, RimvaleColors.TEXT_GRAY)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(desc)
+	_info_vbox.add_child(RimvaleUtils.label(
+		"Gold: %d" % GameState.gold, 12, RimvaleColors.GOLD))
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	# Show existing buildings with Remove buttons
+	var existing: Array = GameState.get_base_buildings(_subregion)
+	if existing.size() > 0:
+		_info_vbox.add_child(RimvaleUtils.label(
+			"Current base: %d building%s" % [existing.size(),
+				"s" if existing.size() != 1 else ""],
+			12, RimvaleColors.ACCENT))
+		for ei in range(existing.size()):
+			var eb: Dictionary = existing[ei]
+			var ebt: String = str(eb.get("type", ""))
+			if not GameState.BASE_BUILDINGS.has(ebt): continue
+			var edef: Dictionary = GameState.BASE_BUILDINGS[ebt]
+			var ename: String = str(edef.get("name", ebt.capitalize()))
+			var ex: int = int(eb.get("x", 0))
+			var ey: int = int(eb.get("y", 0))
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			row.add_child(RimvaleUtils.label(
+				"  • %s @ (%d, %d)" % [ename, ex, ey], 11,
+				edef.get("color", RimvaleColors.TEXT_WHITE)))
+			var rspc := Control.new(); rspc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(rspc)
+			var rm_btn := RimvaleUtils.button(
+				"Demolish", Color(0.85, 0.35, 0.30), 26, 10)
+			var captured_idx: int = ei
+			var captured_is_anchor: bool = bool(edef.get("anchor", false))
+			var captured_name: String = ename
+			rm_btn.pressed.connect(func():
+				if captured_is_anchor:
+					_show_message(
+						"Demolishing the Command Center will remove the entire base. " +
+						"Click Demolish again to confirm.", RimvaleColors.DANGER,
+						_show_base_build_panel)
+					# Set a confirm flag — the second click on the same demolish
+					# button will execute. Use ent metadata for state.
+					if rm_btn.get_meta("confirming", false):
+						_remove_base_building_at(captured_idx, captured_name)
+					else:
+						rm_btn.set_meta("confirming", true)
+				else:
+					_remove_base_building_at(captured_idx, captured_name)
+			)
+			row.add_child(rm_btn)
+			_info_vbox.add_child(row)
+		_info_vbox.add_child(RimvaleUtils.separator())
+		_info_vbox.add_child(RimvaleUtils.spacer(2))
+
+	var has_anchor: bool = GameState.has_central_building(_subregion)
+	for type_key in GameState.BASE_BUILDINGS.keys():
+		var bdef: Dictionary = GameState.BASE_BUILDINGS[type_key]
+		var bname: String = str(bdef.get("name", type_key))
+		var cost: int = int(bdef.get("cost", 0))
+		var bdesc: String = str(bdef.get("desc", ""))
+		var is_anchor: bool = bool(bdef.get("anchor", false))
+		var disabled: bool = false
+		var hint: String = ""
+		if is_anchor and has_anchor:
+			disabled = true
+			hint = "  (already built)"
+		elif not is_anchor and not has_anchor:
+			disabled = true
+			hint = "  (need Command Center first)"
+		elif GameState.gold < cost:
+			disabled = true
+			hint = "  (need %d more gold)" % (cost - GameState.gold)
+		var card := RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.DIVIDER, 6, 8)
+		var cv := VBoxContainer.new()
+		cv.add_theme_constant_override("separation", 2)
+		card.add_child(cv)
+		cv.add_child(RimvaleUtils.label(
+			"%s — %d gold%s" % [bname, cost, hint], 13,
+			RimvaleColors.GOLD if not disabled else RimvaleColors.TEXT_DIM))
+		var d_lbl := RimvaleUtils.label(bdesc, 10, RimvaleColors.TEXT_GRAY)
+		d_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		cv.add_child(d_lbl)
+		if not disabled:
+			var place_btn := RimvaleUtils.button(
+				"Place…", RimvaleColors.ACCENT, 30, 11)
+			var captured_type: String = type_key
+			var captured_name: String = bname
+			place_btn.pressed.connect(func():
+				_enter_base_build_placement(captured_type, captured_name)
+			)
+			cv.add_child(place_btn)
+		_info_vbox.add_child(card)
+
+	_info_vbox.add_child(RimvaleUtils.separator())
+	var back_btn := RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 32, 11)
+	back_btn.pressed.connect(_show_location_info)
+	_info_vbox.add_child(back_btn)
+
+## Enter placement mode: subsequent map clicks attempt to place this type.
+func _enter_base_build_placement(building_type: String, display_name: String) -> void:
+	_base_build_mode = true
+	_base_build_type = building_type
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label(
+		"📐  Placing: " + display_name, 14, RimvaleColors.GOLD))
+	var instr := RimvaleUtils.label(
+		"Click an outskirt tile (outside the central city) to place. " +
+		"Non-Command buildings must be within %d tiles of the Command Center." %
+		GameState.BASE_BUILD_RADIUS, 11, RimvaleColors.TEXT_GRAY)
+	instr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(instr)
+	_info_vbox.add_child(RimvaleUtils.spacer(8))
+	var cancel := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 32, 11)
+	cancel.pressed.connect(_cancel_base_build_placement)
+	_info_vbox.add_child(cancel)
+
+func _cancel_base_build_placement() -> void:
+	_base_build_mode = false
+	_base_build_type = ""
+	_show_base_build_panel()
+
+## Click-to-place handler. Validates, charges gold, persists, re-renders.
+func _try_place_base_building(x: int, y: int) -> void:
+	var err: String = _validate_base_placement(x, y, _base_build_type)
+	if err != "":
+		_show_message(err, RimvaleColors.DANGER, _show_base_build_panel)
+		_base_build_mode = false
+		_base_build_type = ""
+		return
+	var place_err: String = GameState.add_base_building(
+		_subregion, _base_build_type, x, y)
+	if place_err != "":
+		_show_message(place_err, RimvaleColors.DANGER, _show_base_build_panel)
+	else:
+		_build_3d_bases()
+		_show_message(
+			"Building placed at (%d, %d)." % [x, y],
+			RimvaleColors.SUCCESS, _show_base_build_panel)
+	_base_build_mode = false
+	_base_build_type = ""
+
+
+## Per-frame: while in base-build mode, draw a coloured square on the
+## tile under the mouse cursor. Green = valid placement, red = invalid.
+## Hidden / freed when build mode is off.
+func _update_base_build_highlight() -> void:
+	if not _base_build_mode or _base_build_type == "":
+		if _base_build_highlight != null and is_instance_valid(_base_build_highlight):
+			_base_build_highlight.visible = false
+		return
+	if _cam3d == null:
+		return
+	# Raycast mouse cursor to ground plane (Y = 0) — same math as _on_3d_click.
+	var screen_pos: Vector2 = _viewport_3d.get_mouse_position()
+	var from: Vector3 = _cam3d.project_ray_origin(screen_pos)
+	var dir: Vector3 = _cam3d.project_ray_normal(screen_pos)
+	if absf(dir.y) < 0.001:
+		return
+	var t: float = -from.y / dir.y
+	if t < 0:
+		return
+	var hit: Vector3 = from + dir * t
+	var tx: int = int(floor(hit.x))
+	var ty: int = int(floor(hit.z))
+	# Out of bounds — hide rather than warp.
+	if tx < 0 or tx >= GRID_W or ty < 0 or ty >= GRID_H:
+		if _base_build_highlight != null and is_instance_valid(_base_build_highlight):
+			_base_build_highlight.visible = false
+		return
+	# Lazy-init the highlight mesh on first use.
+	if _base_build_highlight == null or not is_instance_valid(_base_build_highlight):
+		_base_build_highlight = MeshInstance3D.new()
+		_base_build_highlight.name = "BaseBuildHighlight"
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(0.95, 0.95)
+		_base_build_highlight.mesh = pm
+		_base_build_highlight_mat = StandardMaterial3D.new()
+		_base_build_highlight_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_base_build_highlight_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		_base_build_highlight_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_base_build_highlight.material_override = _base_build_highlight_mat
+		_world3d_root.add_child(_base_build_highlight)
+	_base_build_highlight.visible = true
+	# Sit slightly above the playable tile tops so it doesn't z-fight.
+	_base_build_highlight.position = Vector3(float(tx) + 0.5, 0.06, float(ty) + 0.5)
+	# Validate and tint accordingly.
+	var err: String = _validate_base_placement(tx, ty, _base_build_type)
+	if err == "":
+		# Valid — translucent green
+		_base_build_highlight_mat.albedo_color = Color(0.30, 0.95, 0.30, 0.55)
+	else:
+		# Invalid — translucent red
+		_base_build_highlight_mat.albedo_color = Color(0.95, 0.30, 0.30, 0.55)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BASE BUILDING — stepping on a building, removing buildings, feature panels
+# ══════════════════════════════════════════════════════════════════════════════
+
+## Returns the building dict at this tile (in the current subregion), or {}.
+func _base_building_at(x: int, y: int) -> Dictionary:
+	for b in GameState.get_base_buildings(_subregion):
+		if int(b.get("x", -99)) == x and int(b.get("y", -99)) == y:
+			return b
+	return {}
+
+## Remove a building by index. Refunds nothing. Demolishing the central wipes
+## the whole base.
+func _remove_base_building_at(idx: int, display_name: String) -> void:
+	var err: String = GameState.remove_base_building(_subregion, idx)
+	if err != "":
+		_show_message(err, RimvaleColors.DANGER, _show_base_build_panel)
+		return
+	_build_3d_bases()
+	_show_message("%s demolished." % display_name,
+		RimvaleColors.SUCCESS, _show_base_build_panel)
+
+## Show the contextual features panel for a building when the team stands
+## on its tile. Each building type exposes a small set of actions.
+func _show_building_features_panel(building: Dictionary) -> void:
+	_clear_info()
+	var bt: String = str(building.get("type", ""))
+	if not GameState.BASE_BUILDINGS.has(bt):
+		_show_location_info()
+		return
+	var def: Dictionary = GameState.BASE_BUILDINGS[bt]
+	var bname: String = str(def.get("name", bt.capitalize()))
+	var icon: String = "🏛"
+	match bt:
+		"central":    icon = "🏛"
+		"barracks":   icon = "🛏"
+		"armory":     icon = "⚙"
+		"infirmary":  icon = "✚"
+		"watchtower": icon = "🗼"
+		"granary":    icon = "🌾"
+		"smithy":     icon = "⚒"
+	_info_vbox.add_child(RimvaleUtils.label("%s  %s" % [icon, bname], 16,
+		def.get("color", RimvaleColors.GOLD)))
+	var desc := RimvaleUtils.label(
+		str(def.get("desc", "")), 11, RimvaleColors.TEXT_GRAY)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(desc)
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	match bt:
+		"central":
+			# Quick access to the build/manage panel.
+			var manage_btn := RimvaleUtils.button(
+				"🛠 Manage Base…", RimvaleColors.GOLD, 36, 12)
+			manage_btn.pressed.connect(_show_base_build_panel)
+			_info_vbox.add_child(manage_btn)
+		"barracks":
+			var rest_btn := RimvaleUtils.button(
+				"💤 Long Rest (full team heal, advances 1 day)",
+				RimvaleColors.HP_GREEN, 36, 12)
+			rest_btn.pressed.connect(func():
+				for h in GameState.get_active_handles():
+					RimvaleAPI.engine.long_rest(h)
+				GameState.advance_days(1)
+				GameState.save_game()
+				_show_message("The team rests at the barracks. HP/SP restored.",
+					RimvaleColors.HP_GREEN, _show_location_info)
+			)
+			_info_vbox.add_child(rest_btn)
+		"armory":
+			var repair_btn := RimvaleUtils.button(
+				"🛠 Repair All Equipment (50g per item)",
+				RimvaleColors.GOLD, 36, 12)
+			repair_btn.pressed.connect(func():
+				var slots := ["weapon", "armor", "shield"]
+				var total_cost: int = 0
+				var fixed: int = 0
+				for h in GameState.get_active_handles():
+					for s in slots:
+						if RimvaleAPI.engine.has_method("repair_equipment"):
+							var err: String = RimvaleAPI.engine.repair_equipment(h, s)
+							if err == "":
+								fixed += 1
+								total_cost += 50
+				if fixed == 0:
+					_show_message("No equipment in need of repair.",
+						RimvaleColors.TEXT_GRAY, _show_location_info)
+				else:
+					_show_message("Repaired %d item%s for %d gold." % [
+						fixed, "s" if fixed != 1 else "", total_cost],
+						RimvaleColors.GOLD, _show_location_info)
+			)
+			_info_vbox.add_child(repair_btn)
+		"infirmary":
+			var heal_btn := RimvaleUtils.button(
+				"✚ Tend Injuries (200g per agent)",
+				RimvaleColors.SUCCESS, 36, 12)
+			heal_btn.pressed.connect(func():
+				var handles: Array = GameState.get_active_handles()
+				var cost: int = 200 * handles.size()
+				if GameState.gold < cost:
+					_show_message("Not enough gold (need %d)." % cost,
+						RimvaleColors.DANGER, _show_location_info)
+					return
+				GameState.gold -= cost
+				for h in handles:
+					var c: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+					if c == null: continue
+					c["injuries"] = []
+					c["hp"] = int(c.get("max_hp", c.get("hp", 1)))
+				GameState.save_game()
+				_show_message("All injuries cleared. Team patched up.",
+					RimvaleColors.SUCCESS, _show_location_info)
+			)
+			_info_vbox.add_child(heal_btn)
+		"watchtower":
+			var intel_btn := RimvaleUtils.button(
+				"🔍 Survey Region (free)", RimvaleColors.CYAN, 36, 12)
+			intel_btn.pressed.connect(func():
+				_show_message(
+					"Surveying the area… encounter chance reduced for the next " +
+					"few moves.", RimvaleColors.CYAN, _show_location_info)
+				_steps_since_encounter = -10  # postpone next encounter check
+			)
+			_info_vbox.add_child(intel_btn)
+		"granary":
+			var stock_btn := RimvaleUtils.button(
+				"🌾 Stock Up Supplies (100g)", RimvaleColors.GOLD, 36, 12)
+			stock_btn.pressed.connect(func():
+				if GameState.gold < 100:
+					_show_message("Not enough gold (need 100).",
+						RimvaleColors.DANGER, _show_location_info)
+					return
+				GameState.gold -= 100
+				GameState.base_supplies += 25
+				GameState.save_game()
+				_show_message("Supplies stocked. +25 supplies.",
+					RimvaleColors.GOLD, _show_location_info)
+			)
+			_info_vbox.add_child(stock_btn)
+		"smithy":
+			var smith_btn := RimvaleUtils.button(
+				"⚒ Discount Repair (25g per item)",
+				RimvaleColors.ACCENT, 36, 12)
+			smith_btn.pressed.connect(func():
+				var slots := ["weapon", "armor", "shield"]
+				var fixed: int = 0
+				var total_cost: int = 0
+				for h in GameState.get_active_handles():
+					for s in slots:
+						if RimvaleAPI.engine.has_method("repair_equipment"):
+							var err: String = RimvaleAPI.engine.repair_equipment(h, s)
+							if err == "":
+								fixed += 1
+								total_cost += 25
+				if fixed == 0:
+					_show_message("No equipment in need of repair.",
+						RimvaleColors.TEXT_GRAY, _show_location_info)
+				else:
+					_show_message("Smith repaired %d item%s for %d gold." % [
+						fixed, "s" if fixed != 1 else "", total_cost],
+						RimvaleColors.ACCENT, _show_location_info)
+			)
+			_info_vbox.add_child(smith_btn)
+
+	_info_vbox.add_child(RimvaleUtils.separator())
+	var back_btn := RimvaleUtils.button(
+		"← Step Off / Back", RimvaleColors.TEXT_GRAY, 32, 11)
+	back_btn.pressed.connect(_show_location_info)
+	_info_vbox.add_child(back_btn)

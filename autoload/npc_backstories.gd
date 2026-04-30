@@ -1001,6 +1001,1426 @@ static func get_all() -> Array:
 			"recruit_quest": "Deliver his final undelivered message to a hermit in the wilderness",
 			"recruit_dc": 10,
 			"combat_class": "ranger"
+		},
+		{
+			"name": "Corwin Thornglass",
+			"lineage": "Aetherian",
+			"personality": "Stoic Wanderer",
+			"backstory": "A Aetherian chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Steal back a captured artifact from a smuggler's vault",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Iva Stonecourse",
+			"lineage": "Archivist",
+			"personality": "Hopeful Idealist",
+			"backstory": "A Archivist survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Recover a family heirloom from a collapsed ruin",
+			"recruit_dc": 14,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Lyra Riftborn",
+			"lineage": "Ashrot Human",
+			"personality": "Wry Strategist",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Ashrot Human hunts redemption with patient determination.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Cleanse a corrupted shrine in the nearby wilds",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Joran Quenbarrow",
+			"lineage": "Auroran",
+			"personality": "Devout Pilgrim",
+			"backstory": "A traveling Auroran who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 15,
+			"combat_class": "support"
+		},
+		{
+			"name": "Xara Underhollow",
+			"lineage": "Bespoker",
+			"personality": "Hopeful Idealist",
+			"backstory": "A Bespoker runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 12,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Torven Crowfeather",
+			"lineage": "Blackroot",
+			"personality": "Cheerful Tinker",
+			"backstory": "A Blackroot runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Find a long-lost sibling thought dead for years",
+			"recruit_dc": 12,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Roen Xenos",
+			"lineage": "Blightmire",
+			"personality": "Faithful Companion",
+			"backstory": "A Blightmire survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Recover a family heirloom from a collapsed ruin",
+			"recruit_dc": 11,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Qori Walenrove",
+			"lineage": "Blood Spawn",
+			"personality": "Cheerful Tinker",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Blood Spawn has decided to make the chaos work in their favor.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Investigate a series of unexplained disappearances",
+			"recruit_dc": 14,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Elga Irongrasp",
+			"lineage": "Bloodsilk Human",
+			"personality": "Quiet Hunter",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Bloodsilk Human has decided to make the chaos work in their favor.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Identify the source of a mysterious blight on local crops",
+			"recruit_dc": 11,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Hesta Dawnstrider",
+			"lineage": "Bloatfen Whisperer",
+			"personality": "Cheerful Tinker",
+			"backstory": "A Bloatfen Whisperer pilgrim on a journey whose destination keeps quietly changing the closer they think they've come.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Locate the spring that holds the cure for a wasting illness",
+			"recruit_dc": 10,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Cori Brightwood",
+			"lineage": "Bogtender",
+			"personality": "Wry Strategist",
+			"backstory": "A Bogtender survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Hunt down a deserter who betrayed their unit",
+			"recruit_dc": 11,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Mok Fellgrove",
+			"lineage": "Bookborn",
+			"personality": "Pragmatic Quartermaster",
+			"backstory": "A Bookborn apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Bring proof of a noble's treachery before the council",
+			"recruit_dc": 11,
+			"combat_class": "support"
+		},
+		{
+			"name": "Lemil Underhollow",
+			"lineage": "Bouncian",
+			"personality": "Boisterous Performer",
+			"backstory": "A traveling Bouncian who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Escort a refugee elder to safety in the next region",
+			"recruit_dc": 14,
+			"combat_class": "support"
+		},
+		{
+			"name": "Roen Owlhaven",
+			"lineage": "Brain Eater",
+			"personality": "Devout Pilgrim",
+			"backstory": "A Brain Eater apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Find the missing scout who failed to return from patrol",
+			"recruit_dc": 13,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Caelis Hammerfall",
+			"lineage": "Bramblekin",
+			"personality": "Curious Scholar",
+			"backstory": "A Bramblekin healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 15,
+			"combat_class": "support"
+		},
+		{
+			"name": "Xara Fawnstone",
+			"lineage": "Candlites",
+			"personality": "Cautious Survivor",
+			"backstory": "Once a celebrated figure among their people, this Candlites bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 13,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Wren Jorvic",
+			"lineage": "Canidar",
+			"personality": "Eccentric Sage",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Canidar has decided to make the chaos work in their favor.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 13,
+			"combat_class": "support"
+		},
+		{
+			"name": "Zane Jadeflame",
+			"lineage": "Carrionari",
+			"personality": "Restless Drifter",
+			"backstory": "Once a celebrated figure among their people, this Carrionari bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Find the missing scout who failed to return from patrol",
+			"recruit_dc": 10,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Pell Umberlock",
+			"lineage": "Cervin",
+			"personality": "Faithful Companion",
+			"backstory": "A Cervin pilgrim on a journey whose destination keeps quietly changing the closer they think they've come.",
+			"skill_affinity": "Crafting",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Faro Verdantfall",
+			"lineage": "Chokeling",
+			"personality": "Wry Strategist",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Chokeling hunts redemption with patient determination.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Recover a stolen ledger that incriminates a corrupt official",
+			"recruit_dc": 12,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Pell Ravenwood",
+			"lineage": "Chronogears",
+			"personality": "Brooding Veteran",
+			"backstory": "A Chronogears pilgrim on a journey whose destination keeps quietly changing the closer they think they've come.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 16,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Nyx Oathbreaker",
+			"lineage": "Cindervolk",
+			"personality": "Stoic Wanderer",
+			"backstory": "A Cindervolk apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Arcane",
+			"recruit_quest": "Deliver a sealed message to a contact across the wilderness",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Iva Kestrelwing",
+			"lineage": "Cloudling",
+			"personality": "Cynical Mercenary",
+			"backstory": "Caught between two duties and bound by neither, this Cloudling sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Deliver a sealed message to a contact across the wilderness",
+			"recruit_dc": 12,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Fiora Stonecourse",
+			"lineage": "Convergents",
+			"personality": "Cheerful Tinker",
+			"backstory": "A traveling Convergents who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 10,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Corwin Umberhill",
+			"lineage": "Corrupted Wyrmblood",
+			"personality": "Cautious Survivor",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Corrupted Wyrmblood has decided to make the chaos work in their favor.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Negotiate a truce between two warring villages",
+			"recruit_dc": 10,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Xara Xenos",
+			"lineage": "Cragborn Human",
+			"personality": "Reckless Adventurer",
+			"backstory": "A traveling Cragborn Human who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Investigate a series of unexplained disappearances",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Caelis Xenos",
+			"lineage": "Crimson Veil",
+			"personality": "Brooding Veteran",
+			"backstory": "A Crimson Veil runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 10,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Torven Fogvein",
+			"lineage": "Cryptkin Human",
+			"personality": "Quiet Hunter",
+			"backstory": "A Cryptkin Human apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Track down the band of raiders that attacked their caravan",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Tora Whorlmane",
+			"lineage": "Disjointed Hounds",
+			"personality": "Stoic Wanderer",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Disjointed Hounds answers only to the road and the work it provides.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Find the missing scout who failed to return from patrol",
+			"recruit_dc": 12,
+			"combat_class": "support"
+		},
+		{
+			"name": "Olin Kestrelwing",
+			"lineage": "Drakari",
+			"personality": "Hopeful Idealist",
+			"backstory": "Driven from their homeland by tragedy, this Drakari now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 13,
+			"combat_class": "support"
+		},
+		{
+			"name": "Ravis Riftborn",
+			"lineage": "Dregspawn",
+			"personality": "Wry Strategist",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Dregspawn answers only to the road and the work it provides.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Identify the source of a mysterious blight on local crops",
+			"recruit_dc": 12,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Dorin Nettlestrand",
+			"lineage": "Driftwood Woken",
+			"personality": "Curious Scholar",
+			"backstory": "A Driftwood Woken chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Recover a stolen ledger that incriminates a corrupt official",
+			"recruit_dc": 10,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Aldric Ochrebrook",
+			"lineage": "Duckslings",
+			"personality": "Hopeful Idealist",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Duckslings hunts redemption with patient determination.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Map an unexplored stretch of dangerous terrain",
+			"recruit_dc": 14,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Nera Jadeflame",
+			"lineage": "Dustborn",
+			"personality": "Cautious Survivor",
+			"backstory": "A traveling Dustborn who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Negotiate a truce between two warring villages",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Dorin Briarwhisp",
+			"lineage": "Duskling",
+			"personality": "Wry Strategist",
+			"backstory": "A Duskling apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Investigate strange dreams plaguing their kin",
+			"recruit_dc": 10,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Maren Brightwood",
+			"lineage": "Echo-Touched",
+			"personality": "Haunted Outcast",
+			"backstory": "Driven from their homeland by tragedy, this Echo-Touched now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 13,
+			"combat_class": "support"
+		},
+		{
+			"name": "Gareth Thornwhisper",
+			"lineage": "Echoform Warden",
+			"personality": "Boisterous Performer",
+			"backstory": "Driven from their homeland by tragedy, this Echoform Warden now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Othis Verdantfall",
+			"lineage": "Emberkin",
+			"personality": "Hopeful Idealist",
+			"backstory": "A Emberkin survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Acquire rare ingredients for a forgotten ritual",
+			"recruit_dc": 13,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Lios Hollowfen",
+			"lineage": "Fae-Touched Human",
+			"personality": "Quiet Hunter",
+			"backstory": "A traveling Fae-Touched Human who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 15,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Quen Snowsong",
+			"lineage": "Fathomari",
+			"personality": "Curious Scholar",
+			"backstory": "A Fathomari chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Find a long-lost sibling thought dead for years",
+			"recruit_dc": 12,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Ulric Coldhearth",
+			"lineage": "Filthlit Spawn",
+			"personality": "Wry Strategist",
+			"backstory": "A traveling Filthlit Spawn who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Investigate a series of unexplained disappearances",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Mok Fernshade",
+			"lineage": "Flenskin",
+			"personality": "Cheerful Tinker",
+			"backstory": "Touched by something they don't fully understand, this Flenskin pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 11,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Aelin Jadetread",
+			"lineage": "Galesworn Human",
+			"personality": "Restless Drifter",
+			"backstory": "A Galesworn Human runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 16,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Corwin Briarwhisp",
+			"lineage": "Gilded Human",
+			"personality": "Charming Rogue",
+			"backstory": "Reluctantly competent and openly tired, this Gilded Human mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Shut down an illegal arena exploiting their kinfolk",
+			"recruit_dc": 14,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Bel Yarrowtide",
+			"lineage": "Glassborn",
+			"personality": "Devout Pilgrim",
+			"backstory": "A traveling Glassborn who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Bring proof of a noble's treachery before the council",
+			"recruit_dc": 10,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Joran Inklock",
+			"lineage": "Gloomling",
+			"personality": "Faithful Companion",
+			"backstory": "A Gloomling chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 10,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Vesa Drypen",
+			"lineage": "Goldscale",
+			"personality": "Boisterous Performer",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Goldscale has decided to make the chaos work in their favor.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 14,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Orin Fogvein",
+			"lineage": "Gravari",
+			"personality": "Reckless Adventurer",
+			"backstory": "A Gravari runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 10,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Mira Mournwood",
+			"lineage": "Graveleaps",
+			"personality": "Charming Rogue",
+			"backstory": "Reluctantly competent and openly tired, this Graveleaps mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Investigate a series of unexplained disappearances",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Vesa Drovewell",
+			"lineage": "Gravemantle",
+			"personality": "Reckless Adventurer",
+			"backstory": "Once a celebrated figure among their people, this Gravemantle bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Crafting",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Quill Caskwell",
+			"lineage": "Gremlin",
+			"personality": "Cautious Survivor",
+			"backstory": "Caught between two duties and bound by neither, this Gremlin sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Escort a refugee elder to safety in the next region",
+			"recruit_dc": 13,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Hilde Embershield",
+			"lineage": "Gremlidian",
+			"personality": "Haunted Outcast",
+			"backstory": "A Gremlidian chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Recover a family heirloom from a collapsed ruin",
+			"recruit_dc": 16,
+			"combat_class": "support"
+		},
+		{
+			"name": "Reva Gildenwall",
+			"lineage": "Grimshell",
+			"personality": "Cunning Diplomat",
+			"backstory": "A Grimshell apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Deliver a sealed message to a contact across the wilderness",
+			"recruit_dc": 11,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Lemil Emberhowl",
+			"lineage": "Groblodyte",
+			"personality": "Quiet Hunter",
+			"backstory": "Once a celebrated figure among their people, this Groblodyte bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 13,
+			"combat_class": "support"
+		},
+		{
+			"name": "Jora Crowfeather",
+			"lineage": "Gullet Mimes",
+			"personality": "Devout Pilgrim",
+			"backstory": "Caught between two duties and bound by neither, this Gullet Mimes sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Quen Fellgrove",
+			"lineage": "Hagborn Crone",
+			"personality": "Wry Strategist",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Hagborn Crone answers only to the road and the work it provides.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Acquire rare ingredients for a forgotten ritual",
+			"recruit_dc": 15,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Yara Yarrowmark",
+			"lineage": "Hearthkin",
+			"personality": "Cunning Diplomat",
+			"backstory": "A Hearthkin survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 13,
+			"combat_class": "support"
+		},
+		{
+			"name": "Ina Limbglow",
+			"lineage": "Hellforged",
+			"personality": "Reckless Adventurer",
+			"backstory": "A Hellforged pilgrim on a journey whose destination keeps quietly changing the closer they think they've come.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Investigate strange dreams plaguing their kin",
+			"recruit_dc": 14,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Brina Gildenwall",
+			"lineage": "Hexkin",
+			"personality": "Eccentric Sage",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Hexkin answers only to the road and the work it provides.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Tora Voidkin",
+			"lineage": "Hexshell",
+			"personality": "Devout Pilgrim",
+			"backstory": "A Hexshell healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Arcane",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Eira Emberlock",
+			"lineage": "Hollowborn Human",
+			"personality": "Pragmatic Quartermaster",
+			"backstory": "A Hollowborn Human healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Hunt down a deserter who betrayed their unit",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Aldric Lichenkin",
+			"lineage": "Hollowroot",
+			"personality": "Charming Rogue",
+			"backstory": "Touched by something they don't fully understand, this Hollowroot pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Discover what woke the slumbering beast in the canyon",
+			"recruit_dc": 15,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Tora Briarwhisp",
+			"lineage": "Huskdrone",
+			"personality": "Reckless Adventurer",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Huskdrone hunts redemption with patient determination.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Track down the band of raiders that attacked their caravan",
+			"recruit_dc": 10,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Aldric Ivybind",
+			"lineage": "Hydrakari",
+			"personality": "Hopeful Idealist",
+			"backstory": "A Hydrakari survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 12,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Lemil Loomshade",
+			"lineage": "Ironhide",
+			"personality": "Quiet Hunter",
+			"backstory": "Touched by something they don't fully understand, this Ironhide pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Recover a stolen ledger that incriminates a corrupt official",
+			"recruit_dc": 10,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Yara Tinforge",
+			"lineage": "Ironjaw",
+			"personality": "Sober Healer",
+			"backstory": "Caught between two duties and bound by neither, this Ironjaw sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Arcane",
+			"recruit_quest": "Negotiate a truce between two warring villages",
+			"recruit_dc": 16,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Yara Irongrasp",
+			"lineage": "Jackal Human",
+			"personality": "Cunning Diplomat",
+			"backstory": "A Jackal Human apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Find a long-lost sibling thought dead for years",
+			"recruit_dc": 14,
+			"combat_class": "support"
+		},
+		{
+			"name": "Ilias Brightwood",
+			"lineage": "Kelpheart Human",
+			"personality": "Cynical Mercenary",
+			"backstory": "A Kelpheart Human survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 11,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Ulric Snowsong",
+			"lineage": "Kettlekyn",
+			"personality": "Charming Rogue",
+			"backstory": "Touched by something they don't fully understand, this Kettlekyn pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Discover what woke the slumbering beast in the canyon",
+			"recruit_dc": 14,
+			"combat_class": "support"
+		},
+		{
+			"name": "Elga Yarrowtide",
+			"lineage": "Kindlekin",
+			"personality": "Pragmatic Quartermaster",
+			"backstory": "A Kindlekin survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Thane Nookbarrow",
+			"lineage": "Lanternborn",
+			"personality": "Charming Rogue",
+			"backstory": "Touched by something they don't fully understand, this Lanternborn pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Recover a stolen ledger that incriminates a corrupt official",
+			"recruit_dc": 13,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Edran Limbglow",
+			"lineage": "Lifeborne",
+			"personality": "Stoic Wanderer",
+			"backstory": "Touched by something they don't fully understand, this Lifeborne pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Arcane",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Aldric Vellumstride",
+			"lineage": "Lightbound",
+			"personality": "Wry Strategist",
+			"backstory": "A Lightbound runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Crafting",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Bran Fernshade",
+			"lineage": "Lithari",
+			"personality": "Hopeful Idealist",
+			"backstory": "Reluctantly competent and openly tired, this Lithari mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Find the lost master who can answer a haunting question",
+			"recruit_dc": 12,
+			"combat_class": "support"
+		},
+		{
+			"name": "Ina Whorlmane",
+			"lineage": "Lost",
+			"personality": "Restless Drifter",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Lost hunts redemption with patient determination.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Discover what woke the slumbering beast in the canyon",
+			"recruit_dc": 13,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Caelis Owlhaven",
+			"lineage": "Luminar Human",
+			"personality": "Quiet Hunter",
+			"backstory": "Once a celebrated figure among their people, this Luminar Human bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Cleanse a corrupted shrine in the nearby wilds",
+			"recruit_dc": 11,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Fenric Underhollow",
+			"lineage": "Madness-Touched Human",
+			"personality": "Reckless Adventurer",
+			"backstory": "Once a celebrated figure among their people, this Madness-Touched Human bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 11,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Eira Marchwarden",
+			"lineage": "Marionox",
+			"personality": "Stoic Wanderer",
+			"backstory": "Reluctantly competent and openly tired, this Marionox mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 14,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Dav Crowfeather",
+			"lineage": "Mireborn Human",
+			"personality": "Quiet Hunter",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Mireborn Human has decided to make the chaos work in their favor.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Deliver a sealed message to a contact across the wilderness",
+			"recruit_dc": 14,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Cori Fellgrove",
+			"lineage": "Mireling",
+			"personality": "Faithful Companion",
+			"backstory": "Reluctantly competent and openly tired, this Mireling mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 11,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Orin Tinforge",
+			"lineage": "Mirevenom",
+			"personality": "Faithful Companion",
+			"backstory": "A Mirevenom survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Reva Nightreach",
+			"lineage": "Mistborn Human",
+			"personality": "Faithful Companion",
+			"backstory": "A Mistborn Human healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Arcane",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 11,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Quill Oathbreaker",
+			"lineage": "Mistborne Hatchling",
+			"personality": "Cheerful Tinker",
+			"backstory": "A Mistborne Hatchling chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Hunt down a deserter who betrayed their unit",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Ravis Karsten",
+			"lineage": "Moonkin",
+			"personality": "Hopeful Idealist",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Moonkin hunts redemption with patient determination.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Deliver a sealed message to a contact across the wilderness",
+			"recruit_dc": 15,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Brina Inklock",
+			"lineage": "Mossling",
+			"personality": "Devout Pilgrim",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Mossling has decided to make the chaos work in their favor.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Investigate a series of unexplained disappearances",
+			"recruit_dc": 16,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Corwin Xenos",
+			"lineage": "Myconid",
+			"personality": "Eccentric Sage",
+			"backstory": "Touched by something they don't fully understand, this Myconid pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Investigate strange dreams plaguing their kin",
+			"recruit_dc": 12,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Zane Umberhill",
+			"lineage": "Myrrhkin",
+			"personality": "Cautious Survivor",
+			"backstory": "A Myrrhkin chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 13,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Nyssa Limbglow",
+			"lineage": "Nightborne Human",
+			"personality": "Pragmatic Quartermaster",
+			"backstory": "A traveling Nightborne Human who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Crafting",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Mok Ashclaw",
+			"lineage": "Nihilian",
+			"personality": "Brooding Veteran",
+			"backstory": "Reluctantly competent and openly tired, this Nihilian mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Find the lost master who can answer a haunting question",
+			"recruit_dc": 11,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Ina Coldhearth",
+			"lineage": "Nullborn",
+			"personality": "Haunted Outcast",
+			"backstory": "Touched by something they don't fully understand, this Nullborn pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Track down the band of raiders that attacked their caravan",
+			"recruit_dc": 16,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Xara Jadetread",
+			"lineage": "Nullborn Ascetic",
+			"personality": "Cynical Mercenary",
+			"backstory": "Driven from their homeland by tragedy, this Nullborn Ascetic now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Bring proof of a noble's treachery before the council",
+			"recruit_dc": 13,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Othis Briarwhisp",
+			"lineage": "Oblivari Human",
+			"personality": "Charming Rogue",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Oblivari Human hunts redemption with patient determination.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Map an unexplored stretch of dangerous terrain",
+			"recruit_dc": 15,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Halric Yarrowbrand",
+			"lineage": "Obsidian",
+			"personality": "Boisterous Performer",
+			"backstory": "A Obsidian healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Arcane",
+			"recruit_quest": "Retrieve research notes lost in a hostile region",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Veska Yarrowbrand",
+			"lineage": "Oozeling",
+			"personality": "Brooding Veteran",
+			"backstory": "A traveling Oozeling who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 13,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Hilde Xenos",
+			"lineage": "Pangol",
+			"personality": "Boisterous Performer",
+			"backstory": "A Pangol healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Steal back a captured artifact from a smuggler's vault",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Orin Joyhammer",
+			"lineage": "Panoplian",
+			"personality": "Faithful Companion",
+			"backstory": "Once a celebrated figure among their people, this Panoplian bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Deliver a sealed message to a contact across the wilderness",
+			"recruit_dc": 15,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Iva Underhollow",
+			"lineage": "Parallax Watchers",
+			"personality": "Charming Rogue",
+			"backstory": "Touched by something they don't fully understand, this Parallax Watchers pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Crafting",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 16,
+			"combat_class": "support"
+		},
+		{
+			"name": "Jaren Umberhill",
+			"lineage": "Porcelari",
+			"personality": "Curious Scholar",
+			"backstory": "A Porcelari survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Find the missing scout who failed to return from patrol",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Nyssa Vellumstride",
+			"lineage": "Prismari",
+			"personality": "Quiet Hunter",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Prismari hunts redemption with patient determination.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Negotiate a truce between two warring villages",
+			"recruit_dc": 11,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Petra Tidemark",
+			"lineage": "Pulsebound Hierophant",
+			"personality": "Reckless Adventurer",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Pulsebound Hierophant answers only to the road and the work it provides.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Discover what woke the slumbering beast in the canyon",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Nera Ashclaw",
+			"lineage": "Quillari",
+			"personality": "Charming Rogue",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Quillari has decided to make the chaos work in their favor.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 11,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Roen Gildenwall",
+			"lineage": "Regal Human",
+			"personality": "Restless Drifter",
+			"backstory": "A Regal Human apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Disrupt a smuggling ring operating from the outskirts",
+			"recruit_dc": 13,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Vesa Coraldrift",
+			"lineage": "Riftborn Human",
+			"personality": "Boisterous Performer",
+			"backstory": "A Riftborn Human survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Shut down an illegal arena exploiting their kinfolk",
+			"recruit_dc": 14,
+			"combat_class": "support"
+		},
+		{
+			"name": "Wren Jadeflame",
+			"lineage": "Rotborn Herald",
+			"personality": "Reckless Adventurer",
+			"backstory": "Reluctantly competent and openly tired, this Rotborn Herald mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Recover a family heirloom from a collapsed ruin",
+			"recruit_dc": 15,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Sable Galemoor",
+			"lineage": "Runeborn Human",
+			"personality": "Reckless Adventurer",
+			"backstory": "A traveling Runeborn Human who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Recover a relic stolen from their ancestral home",
+			"recruit_dc": 14,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Olin Knottoak",
+			"lineage": "Rustspawn",
+			"personality": "Charming Rogue",
+			"backstory": "A Rustspawn chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Roen Vellumstride",
+			"lineage": "Sable",
+			"personality": "Boisterous Performer",
+			"backstory": "Driven from their homeland by tragedy, this Sable now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Find the missing scout who failed to return from patrol",
+			"recruit_dc": 12,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Nyx Thornglass",
+			"lineage": "Sandstrider Human",
+			"personality": "Brooding Veteran",
+			"backstory": "A Sandstrider Human pilgrim on a journey whose destination keeps quietly changing the closer they think they've come.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Shut down an illegal arena exploiting their kinfolk",
+			"recruit_dc": 14,
+			"combat_class": "support"
+		},
+		{
+			"name": "Nyx Zephyrling",
+			"lineage": "Saurian",
+			"personality": "Reckless Adventurer",
+			"backstory": "A traveling Saurian who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Fiora Quintrose",
+			"lineage": "Scavenger Human",
+			"personality": "Pragmatic Quartermaster",
+			"backstory": "Caught between two duties and bound by neither, this Scavenger Human sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 14,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Lyra Greymane",
+			"lineage": "Scornshard",
+			"personality": "Faithful Companion",
+			"backstory": "Touched by something they don't fully understand, this Scornshard pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Olin Limbglow",
+			"lineage": "Scourling Human",
+			"personality": "Restless Drifter",
+			"backstory": "A Scourling Human chronicler with a half-finished book and a dwindling supply of patience for stationary pursuits.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Shut down an illegal arena exploiting their kinfolk",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Lemil Nettleblade",
+			"lineage": "Serpentine",
+			"personality": "Cautious Survivor",
+			"backstory": "A Serpentine runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 12,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Jaren Gildenwall",
+			"lineage": "Shardkin",
+			"personality": "Stoic Wanderer",
+			"backstory": "Born to a quiet life and dragged into a louder one, this Shardkin has decided to make the chaos work in their favor.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Escort a refugee elder to safety in the next region",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Dara Marshlight",
+			"lineage": "Shardwraith",
+			"personality": "Faithful Companion",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Shardwraith answers only to the road and the work it provides.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Shut down an illegal arena exploiting their kinfolk",
+			"recruit_dc": 15,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Dorin Zephyrling",
+			"lineage": "Silverblood",
+			"personality": "Stoic Wanderer",
+			"backstory": "A Silverblood apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Kira Embershield",
+			"lineage": "Skulkin",
+			"personality": "Sober Healer",
+			"backstory": "Driven from their homeland by tragedy, this Skulkin now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 10,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Cori Emberlock",
+			"lineage": "Skysworn",
+			"personality": "Faithful Companion",
+			"backstory": "Caught between two duties and bound by neither, this Skysworn sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 13,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Brina Greythistle",
+			"lineage": "Sludgeling",
+			"personality": "Cheerful Tinker",
+			"backstory": "Driven from their homeland by tragedy, this Sludgeling now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Find the lost master who can answer a haunting question",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Gareth Hammerfall",
+			"lineage": "Snareling",
+			"personality": "Wry Strategist",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Snareling answers only to the road and the work it provides.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Settle a longstanding feud with a rival clan",
+			"recruit_dc": 14,
+			"combat_class": "support"
+		},
+		{
+			"name": "Halric Gildenwall",
+			"lineage": "Sparkforged Human",
+			"personality": "Haunted Outcast",
+			"backstory": "A Sparkforged Human healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Survive three nights in a haunted ruin to lift a curse",
+			"recruit_dc": 12,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Gell Yarrowbrand",
+			"lineage": "Starborn",
+			"personality": "Hopeful Idealist",
+			"backstory": "Driven from their homeland by tragedy, this Starborn now wanders in search of purpose and a road that leads somewhere worth arriving at.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Investigate strange dreams plaguing their kin",
+			"recruit_dc": 13,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Wren Wickerstaff",
+			"lineage": "Stormclad",
+			"personality": "Cynical Mercenary",
+			"backstory": "Once a soldier, then a deserter, now a wanderer — this Stormclad answers only to the road and the work it provides.",
+			"skill_affinity": "Crafting",
+			"recruit_quest": "Recover a stolen ledger that incriminates a corrupt official",
+			"recruit_dc": 10,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Wren Crowfeather",
+			"lineage": "Sunderborn Human",
+			"personality": "Pragmatic Quartermaster",
+			"backstory": "Caught between two duties and bound by neither, this Sunderborn Human sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Cunning",
+			"recruit_quest": "Bring justice to a forgotten crime nobody else remembers",
+			"recruit_dc": 10,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Aldric Caskwell",
+			"lineage": "Taurin",
+			"personality": "Cunning Diplomat",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Taurin hunts redemption with patient determination.",
+			"skill_affinity": "Survival",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 13,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Othis Karsten",
+			"lineage": "Tetrasimian",
+			"personality": "Hopeful Idealist",
+			"backstory": "Caught between two duties and bound by neither, this Tetrasimian sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Map an unexplored stretch of dangerous terrain",
+			"recruit_dc": 16,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Gell Coraldrift",
+			"lineage": "Thornwrought Human",
+			"personality": "Quiet Hunter",
+			"backstory": "A traveling Thornwrought Human who lost everything but a single keepsake — and the conviction that the next horizon will explain everything.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Find the lost master who can answer a haunting question",
+			"recruit_dc": 16,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Fenric Pinewatch",
+			"lineage": "Threnody Warden",
+			"personality": "Haunted Outcast",
+			"backstory": "Reluctantly competent and openly tired, this Threnody Warden mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Investigate a series of unexplained disappearances",
+			"recruit_dc": 11,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Roen Inklock",
+			"lineage": "Tiderunner Human",
+			"personality": "Curious Scholar",
+			"backstory": "Reluctantly competent and openly tired, this Tiderunner Human mostly wants the work to be honest and the company tolerable.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Hunt the beast that decimated their birthplace",
+			"recruit_dc": 10,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Hesta Ashclaw",
+			"lineage": "Tidewoven",
+			"personality": "Cautious Survivor",
+			"backstory": "An exile whose name no longer sits well on the lips of their kin, this Tidewoven hunts redemption with patient determination.",
+			"skill_affinity": "Creature Handling",
+			"recruit_quest": "Negotiate a truce between two warring villages",
+			"recruit_dc": 15,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Zane Briarwhisp",
+			"lineage": "Trenchborn",
+			"personality": "Reckless Adventurer",
+			"backstory": "A Trenchborn apprentice whose master vanished without warning, leaving them with half a craft and a head full of unanswered questions.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 16,
+			"combat_class": "warrior"
+		},
+		{
+			"name": "Iva Yarrowmark",
+			"lineage": "Ursari",
+			"personality": "Stoic Wanderer",
+			"backstory": "A Ursari survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Perform",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 14,
+			"combat_class": "healer"
+		},
+		{
+			"name": "Ilias Tidemark",
+			"lineage": "Venari",
+			"personality": "Stoic Wanderer",
+			"backstory": "A Venari survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Find a long-lost sibling thought dead for years",
+			"recruit_dc": 10,
+			"combat_class": "support"
+		},
+		{
+			"name": "Eira Jorvic",
+			"lineage": "Verdant",
+			"personality": "Hopeful Idealist",
+			"backstory": "A Verdant healer whose first patient died under their hands; they have not stopped paying penance since.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Bring proof of a noble's treachery before the council",
+			"recruit_dc": 14,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Gareth Greythistle",
+			"lineage": "Volcant",
+			"personality": "Cunning Diplomat",
+			"backstory": "Touched by something they don't fully understand, this Volcant pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 11,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Fenric Hammerfall",
+			"lineage": "Voxilite",
+			"personality": "Sober Healer",
+			"backstory": "Caught between two duties and bound by neither, this Voxilite sells their skills to whoever asks and accepts the consequences without complaint.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Defend a roadside shrine from nightly assaults",
+			"recruit_dc": 15,
+			"combat_class": "ranger"
+		},
+		{
+			"name": "Ravis Ravenstride",
+			"lineage": "Voxshell",
+			"personality": "Cheerful Tinker",
+			"backstory": "A Voxshell survivor of a calamity that erased their hometown, now haunted by faces they couldn't save.",
+			"skill_affinity": "Intuition",
+			"recruit_quest": "Retrieve research notes lost in a hostile region",
+			"recruit_dc": 13,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Caelis Ochrebrook",
+			"lineage": "Watchling",
+			"personality": "Cheerful Tinker",
+			"backstory": "A Watchling pilgrim on a journey whose destination keeps quietly changing the closer they think they've come.",
+			"skill_affinity": "Nimble",
+			"recruit_quest": "Hunt the beast that decimated their birthplace",
+			"recruit_dc": 12,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Alda Quintrose",
+			"lineage": "Weirkin Human",
+			"personality": "Cheerful Tinker",
+			"backstory": "Once a celebrated figure among their people, this Weirkin Human bears a quiet grief that no song or sword has yet been able to cut loose.",
+			"skill_affinity": "Medical",
+			"recruit_quest": "Rescue a friend held by a regional warlord",
+			"recruit_dc": 10,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Zoric Iceshank",
+			"lineage": "Whisperspawn",
+			"personality": "Hopeful Idealist",
+			"backstory": "A Whisperspawn runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Perception",
+			"recruit_quest": "Bring proof of a noble's treachery before the council",
+			"recruit_dc": 16,
+			"combat_class": "support"
+		},
+		{
+			"name": "Cori Ivybind",
+			"lineage": "Zephyrkin",
+			"personality": "Charming Rogue",
+			"backstory": "A Zephyrkin runaway who fled an arranged life and found, instead, an unarranged one full of strangers worth meeting.",
+			"skill_affinity": "Exertion",
+			"recruit_quest": "Track down the band of raiders that attacked their caravan",
+			"recruit_dc": 14,
+			"combat_class": "mage"
+		},
+		{
+			"name": "Quen Crowfeather",
+			"lineage": "Zephyrite",
+			"personality": "Devout Pilgrim",
+			"backstory": "Touched by something they don't fully understand, this Zephyrite pursues answers across regions, hoping to outrun the dread.",
+			"skill_affinity": "Learnedness",
+			"recruit_quest": "Negotiate a truce between two warring villages",
+			"recruit_dc": 16,
+			"combat_class": "healer"
 		}
 	]
 

@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://cpkq8kvi5e8tq"
+path="res://.godot/imported/roof-gable-top.obj-2d8ec87c8fbc0ee641ae231d86fbc8fb.mesh"
+
+[deps]
+
+files=["res://.godot/imported/roof-gable-top.obj-2d8ec87c8fbc0ee641ae231d86fbc8fb.mesh"]
+
+source_file="res://fantasy-town-kit/Models/OBJ format/roof-gable-top.obj"
+dest_files=["res://.godot/imported/roof-gable-top.obj-2d8ec87c8fbc0ee641ae231d86fbc8fb.mesh", "res://.godot/imported/roof-gable-top.obj-2d8ec87c8fbc0ee641ae231d86fbc8fb.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

@@ -85,7 +85,47 @@ func _build_nav_bar() -> Control:
 		_tab_buttons.append(btn)
 		hbox.add_child(btn)
 
+	# ── Auto-save / Save indicator (top-right corner of the nav bar) ───
+	_save_indicator = Label.new()
+	_save_indicator.text = ""
+	_save_indicator.add_theme_font_size_override("font_size", 12)
+	_save_indicator.add_theme_color_override("font_color", Color(0.55, 0.95, 0.55))
+	_save_indicator.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_save_indicator.add_theme_constant_override("outline_size", 4)
+	_save_indicator.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_save_indicator.offset_left = -200
+	_save_indicator.offset_top = 8
+	_save_indicator.offset_right = -10
+	_save_indicator.offset_bottom = 32
+	_save_indicator.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_save_indicator.modulate = Color(1, 1, 1, 0)
+	_save_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(_save_indicator)
+	if not GameState.save_completed.is_connected(_on_save_completed):
+		GameState.save_completed.connect(_on_save_completed)
+
 	return bar
+
+
+# ── Save indicator behaviour ─────────────────────────────────────────────────
+var _save_indicator: Label = null
+var _save_indicator_tween: Tween = null
+
+func _on_save_completed(kind: String, _slot_id: String, _path: String) -> void:
+	if _save_indicator == null: return
+	if kind == "manual":
+		_save_indicator.text = "💾  Manual Save Complete"
+		_save_indicator.add_theme_color_override("font_color", Color(0.95, 0.85, 0.30))
+	else:
+		_save_indicator.text = "💾  Auto-Saved"
+		_save_indicator.add_theme_color_override("font_color", Color(0.55, 0.95, 0.55))
+	if _save_indicator_tween != null and _save_indicator_tween.is_valid():
+		_save_indicator_tween.kill()
+	_save_indicator.modulate = Color(1, 1, 1, 0)
+	_save_indicator_tween = create_tween()
+	_save_indicator_tween.tween_property(_save_indicator, "modulate:a", 1.0, 0.18)
+	_save_indicator_tween.tween_interval(1.4)
+	_save_indicator_tween.tween_property(_save_indicator, "modulate:a", 0.0, 0.6)
 
 func _make_tab_button(label_txt: String, idx: int) -> Button:
 	var btn = Button.new()

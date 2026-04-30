@@ -739,6 +739,11 @@ func _build_hero_card(handle: int) -> Control:
 	if char_age >= 90: age_col = RimvaleColors.DANGER
 	elif char_age >= 80: age_col = RimvaleColors.ORANGE
 	sub_row.add_child(RimvaleUtils.label("Age %d" % char_age, 11, age_col))
+	# Debug-only: show the secret max_age (death age) right after Age.
+	if GameState.debug_mode:
+		var death_age: int = _e.get_character_max_age(handle) if _e.has_method("get_character_max_age") else 0
+		sub_row.add_child(RimvaleUtils.label(
+			"/ Dies at %d" % death_age, 11, Color(0.85, 0.55, 0.35)))
 	if insanity > 0:
 		sub_row.add_child(RimvaleUtils.label("Insanity %d" % insanity, 11, RimvaleColors.DANGER))
 	var sp_filler = Control.new()
@@ -819,6 +824,19 @@ func _build_hero_card(handle: int) -> Control:
 		var fuse_btn = RimvaleUtils.button("⚗ Fuse", Color(0.55, 0.25, 0.85, 1.0), 32, 11)
 		fuse_btn.pressed.connect(func(): _on_start_fusion(cap))
 		bcol.add_child(fuse_btn)
+
+		# Debug-only: subtract a year from the character's base age. Hidden
+		# unless debug_mode is on. Useful for testing the aging / cemetery
+		# loop without skipping a full year of game time on every unit.
+		if GameState.debug_mode:
+			var age_btn = RimvaleUtils.button(
+				"−1 yr", Color(0.85, 0.55, 0.35), 28, 10)
+			age_btn.pressed.connect(func():
+				if _e.has_method("dec_character_age"):
+					_e.dec_character_age(cap, 1)
+				_refresh_collection()
+			)
+			bcol.add_child(age_btn)
 	else:
 		if is_target:
 			bcol.add_child(RimvaleUtils.label("TARGET", 11, RimvaleColors.ORANGE))

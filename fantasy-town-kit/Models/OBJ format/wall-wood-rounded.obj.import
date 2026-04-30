@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://7cmbvgqr4b0x"
+path="res://.godot/imported/wall-wood-rounded.obj-0f19e03b5a7c8f0615121a57f2ce2373.mesh"
+
+[deps]
+
+files=["res://.godot/imported/wall-wood-rounded.obj-0f19e03b5a7c8f0615121a57f2ce2373.mesh"]
+
+source_file="res://fantasy-town-kit/Models/OBJ format/wall-wood-rounded.obj"
+dest_files=["res://.godot/imported/wall-wood-rounded.obj-0f19e03b5a7c8f0615121a57f2ce2373.mesh", "res://.godot/imported/wall-wood-rounded.obj-0f19e03b5a7c8f0615121a57f2ce2373.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

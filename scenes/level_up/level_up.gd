@@ -699,6 +699,9 @@ func _build_feats(parent: VBoxContainer) -> void:
 	# ── Safeguard stat chooser (shown on Feats tab when Safeguard is unlocked) ──
 	_build_safeguard_chooser(parent)
 
+	# ── Weapon Mastery chooser (shown when Weapon Mastery feat is taken) ──
+	_build_weapon_mastery_chooser(parent)
+
 	# Tiers to display
 	var tiers_to_show: Array = []
 	if _feat_filter_tier == 0:
@@ -984,6 +987,12 @@ func _build_safeguard_chooser(parent: VBoxContainer) -> void:
 	if safeguard_tier == 3: max_choices = 3
 	elif safeguard_tier == 4: max_choices = 4
 
+	# Collapsible wrapper — saving-throw stat picker is hidden by default
+	# so the feat tab stays uncluttered; user expands to adjust.
+	var chosen_pre: Array = Array(_e.get_safeguard_chosen_stats(_handle))
+	var collapsible_body := _build_collapsible(parent,
+		"Saving Throw Stats — %d/%d selected" % [chosen_pre.size(), max_choices])
+
 	var saf_card = PanelContainer.new()
 	saf_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var saf_style = StyleBoxFlat.new()
@@ -1049,7 +1058,138 @@ func _build_safeguard_chooser(parent: VBoxContainer) -> void:
 		)
 		chip_row.add_child(chip)
 
-	parent.add_child(saf_card)
+	collapsible_body.add_child(saf_card)
+
+
+# ── Weapon Mastery chooser ────────────────────────────────────────────────────
+# Shown when the character has the Weapon Mastery feat at any tier. Lets them
+# pick which proficient weapons receive the +1/+2/+3 hit and damage bonus.
+# Slot count: T1=2, T2=4, T3=6. Re-pickable on long rest.
+func _build_weapon_mastery_chooser(parent: VBoxContainer) -> void:
+	if _handle == -1: return
+	if not _e.has_method("get_weapon_mastery_slots"): return
+	var slots: int = _e.get_weapon_mastery_slots(_handle)
+	if slots <= 0: return
+
+	# Collapsible wrapper — chooser hidden by default to keep the feat tab
+	# compact; user expands to pick weapons.
+	var chosen_for_title: Array = []
+	if _e.has_method("get_mastered_weapons"):
+		chosen_for_title = _e.get_mastered_weapons(_handle)
+	var collapsible_body := _build_collapsible(parent,
+		"Weapon Mastery — %d/%d selected" % [chosen_for_title.size(), slots])
+
+	var card = PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var card_s = StyleBoxFlat.new()
+	card_s.bg_color = Color(0.16, 0.10, 0.18, 1.0)
+	card_s.set_corner_radius_all(6)
+	card_s.content_margin_left = 10; card_s.content_margin_right = 10
+	card_s.content_margin_top = 10; card_s.content_margin_bottom = 10
+	card.add_theme_stylebox_override("panel", card_s)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	card.add_child(vbox)
+
+	var tier: int = _e.get_character_feat_tier(_handle, "Weapon Mastery")
+	var hint: String = "Pick the weapons you've trained to mastery. " + \
+		"You only get the Weapon Mastery hit/damage bonus when wielding one " + \
+		"of these. Long rest unlocks re-picking."
+	var title := RimvaleUtils.label(
+		"Weapon Mastery T%d — Choose %d Weapon%s" % [tier, slots, "" if slots == 1 else "s"],
+		14, RimvaleColors.ACCENT)
+	vbox.add_child(title)
+	var hint_lbl := RimvaleUtils.label(hint, 11, RimvaleColors.TEXT_GRAY)
+	hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(hint_lbl)
+
+	# Surface re-pick eligibility so the user knows
+	if _e.has_method("can_rechoose_mastered_weapons"):
+		if _e.can_rechoose_mastered_weapons(_handle):
+			var reroll_lbl := RimvaleUtils.label(
+				"✓ Long rest taken — selection unlocked.", 10,
+				Color(0.55, 0.95, 0.55))
+			vbox.add_child(reroll_lbl)
+		else:
+			var reroll_lbl2 := RimvaleUtils.label(
+				"Selection locked until next long rest.", 10,
+				RimvaleColors.TEXT_DIM)
+			vbox.add_child(reroll_lbl2)
+
+	# Currently chosen
+	var chosen: Array = []
+	if _e.has_method("get_mastered_weapons"):
+		chosen = _e.get_mastered_weapons(_handle)
+	var status_lbl := RimvaleUtils.label(
+		"Selected: %d / %d" % [chosen.size(), slots], 11,
+		RimvaleColors.GOLD if chosen.size() == slots else RimvaleColors.CYAN)
+	vbox.add_child(status_lbl)
+
+	# Available weapons — pull the mundane-weapon list from the engine
+	var weapon_pool: Array = []
+	if _e.has_method("get_all_registry_weapons"):
+		weapon_pool = Array(_e.get_all_registry_weapons())
+	if weapon_pool.is_empty() and _e.has_method("get_all_registry_mundane_items"):
+		# Fallback: pull weapons by name from the mundane list. Filter by
+		# names we recognise as weapons to avoid offering armor as a weapon.
+		var mundane: Array = Array(_e.get_all_registry_mundane_items())
+		var weapon_names: Array = [
+			"Dagger","Club","Greatclub","Handaxe","Javelin","Light Hammer","Mace",
+			"Quarterstaff","Sickle","Spear","Shortsword","Chakram",
+			"Dart","Light Crossbow","Shortbow","Sling",
+			"Battleaxe","Flail","Glaive","Greataxe","Greatsword","Halberd","Katana",
+			"Lance","Longsword","Maul","Morningstar","Pike","Rapier","Scimitar",
+			"Trident","Warhammer","War Pick","Whip",
+			"Blowgun","Hand Crossbow","Heavy Crossbow","Longbow","Heavy Sling",
+			"Musket","Pistol",
+		]
+		for n in mundane:
+			if str(n) in weapon_names:
+				weapon_pool.append(str(n))
+
+	# Build a chip grid — toggle to add/remove from chosen.
+	var grid_scroll = ScrollContainer.new()
+	grid_scroll.custom_minimum_size = Vector2(0, 220)
+	grid_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(grid_scroll)
+	var grid = GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 6)
+	grid_scroll.add_child(grid)
+
+	var locked: bool = false
+	if _e.has_method("can_rechoose_mastered_weapons"):
+		locked = not _e.can_rechoose_mastered_weapons(_handle) and chosen.size() >= slots
+
+	for w in weapon_pool:
+		var wname: String = str(w)
+		var is_picked: bool = wname in chosen
+		var btn_color: Color = RimvaleColors.GOLD if is_picked else RimvaleColors.TEXT_GRAY
+		var chip = RimvaleUtils.button(
+			("✓ " if is_picked else "") + wname,
+			btn_color, 32, 11)
+		chip.disabled = locked and not is_picked
+		chip.pressed.connect(func():
+			var cur: Array = []
+			if _e.has_method("get_mastered_weapons"):
+				cur = _e.get_mastered_weapons(_handle)
+			if wname in cur:
+				cur.erase(wname)
+			else:
+				if cur.size() >= slots:
+					return  # full — can't add more without removing one
+				cur.append(wname)
+			if _e.has_method("set_mastered_weapons"):
+				_e.set_mastered_weapons(_handle, cur)
+			GameState.save_game()
+			_render_section()
+		)
+		grid.add_child(chip)
+
+	collapsible_body.add_child(card)
+
 
 # ── Magic: main builder ───────────────────────────────────────────────────────
 
@@ -1848,6 +1988,12 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 		parent.add_child(RimvaleUtils.label("Inventory is empty.", 13, RimvaleColors.TEXT_DIM))
 		return
 
+	# Increase the parent's separation so cards breathe a bit
+	parent.add_theme_constant_override("separation", 10)
+
+	# Bucket items into magical / mundane after the filter+search pass.
+	var magical: Array = []
+	var mundane: Array = []
 	for item_raw in items_raw:
 		var item_name: String = str(item_raw)
 		var details_raw = _e.get_item_details(_handle, item_name)
@@ -1855,9 +2001,11 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 		var cur_hp: int = int(str(details_raw[1])) if details_raw.size() > 1 else 0
 		var max_hp: int = int(str(details_raw[2])) if details_raw.size() > 2 else 0
 		var item_type: String = str(details_raw[4]) if details_raw.size() > 4 else "General"
+		var desc: String = ""
+		if details_raw.size() > 5:
+			desc = str(details_raw[details_raw.size() - 1])
 		var is_magical: bool = rarity != "Mundane"
 
-		# Category filter
 		var pass_filter: bool = _inv_filter == "All"
 		match _inv_filter:
 			"Weapons":    pass_filter = item_type == "Weapon" and not is_magical
@@ -1865,62 +2013,46 @@ func _build_inventory_list(parent: VBoxContainer) -> void:
 			"Consumable": pass_filter = item_type == "Consumable" and not is_magical
 			"Magic":      pass_filter = is_magical
 			"Misc":       pass_filter = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and item_type != "Consumable" and not is_magical
+		if not pass_filter: continue
+		if _equip_search != "" and _equip_search not in item_name.to_lower(): continue
 
-		if not pass_filter:
-			continue
+		var d := {
+			"name": item_name, "rarity": rarity, "cur_hp": cur_hp, "max_hp": max_hp,
+			"type": item_type, "desc": desc, "magical": is_magical,
+		}
+		if is_magical:
+			magical.append(d)
+		else:
+			mundane.append(d)
 
-		# Search filter
-		if _equip_search != "" and _equip_search not in item_name.to_lower():
-			continue
+	if magical.is_empty() and mundane.is_empty():
+		parent.add_child(RimvaleUtils.label("No items match.", 13, RimvaleColors.TEXT_DIM))
+		return
 
-		var rarity_col: Color = _rarity_color(rarity)
-		var row = HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		row.custom_minimum_size = Vector2(0, 46)
-		parent.add_child(row)
-
-		var info = VBoxContainer.new()
-		info.custom_minimum_size = Vector2(220, 0)
-		info.add_theme_constant_override("separation", 2)
-		row.add_child(info)
-
-		var name_col: Color = rarity_col if is_magical else RimvaleColors.TEXT_WHITE
-		var prefix: String = "✦ " if is_magical else ""
-		info.add_child(RimvaleUtils.label(prefix + item_name, 14, name_col))
-		info.add_child(RimvaleUtils.label("%s  Dur: %d/%d" % [item_type, cur_hp, max_hp], 10, RimvaleColors.TEXT_DIM))
-
-		var in_cap: String = item_name
-		if item_type == "Consumable":
-			var use_btn = RimvaleUtils.button("Use", RimvaleColors.SUCCESS, 34, 12)
-			use_btn.pressed.connect(func(): _e.use_consumable(_handle, in_cap); _render_section())
-			row.add_child(use_btn)
-		elif item_type != "General":
-			var eq_btn = RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 34, 12)
-			eq_btn.pressed.connect(func(): _e.equip_item(_handle, in_cap); _render_section())
-			row.add_child(eq_btn)
-
-		var stash_btn = RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 34, 12)
-		stash_btn.pressed.connect(func():
-			_e.remove_item_from_inventory(_handle, in_cap)
-			if in_cap not in GameState.stash:
-				GameState.stash.append(in_cap)
-			_render_section()
-		)
-		row.add_child(stash_btn)
-
-		var row_spacer = Control.new()
-		row_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(row_spacer)
+	if not magical.is_empty() and (_inv_filter == "All" or _inv_filter == "Magic"):
+		parent.add_child(_build_inv_section_header("✦ Magical", RimvaleColors.ACCENT, false))
+		for d in magical:
+			parent.add_child(_build_inv_item_card(d, false))
+	if not mundane.is_empty() and not magical.is_empty() and (_inv_filter == "All" or _inv_filter == "Magic"):
+		parent.add_child(_build_inv_section_header("Mundane", RimvaleColors.TEXT_DIM, true))
+	for d in mundane:
+		parent.add_child(_build_inv_item_card(d, false))
 
 func _build_stash_list(parent: VBoxContainer) -> void:
 	if GameState.stash.size() == 0:
 		parent.add_child(RimvaleUtils.label("The stash is empty.", 13, RimvaleColors.TEXT_DIM))
 		return
+	parent.add_theme_constant_override("separation", 10)
 
+	var magical: Array = []
+	var mundane: Array = []
 	for item_name in GameState.stash:
 		var details_raw = _e.get_registry_item_details(item_name)
-		var item_type: String = str(details_raw[4]) if details_raw.size() > 4 else "General"
 		var rarity: String = str(details_raw[0]) if details_raw.size() > 0 else "Mundane"
+		var item_type: String = str(details_raw[4]) if details_raw.size() > 4 else "General"
+		var desc: String = ""
+		if details_raw.size() > 5:
+			desc = str(details_raw[details_raw.size() - 1])
 		var is_magical: bool = rarity != "Mundane"
 
 		var pass_filter: bool = _stash_filter == "All"
@@ -1930,40 +2062,311 @@ func _build_stash_list(parent: VBoxContainer) -> void:
 			"Consumable": pass_filter = item_type == "Consumable" and not is_magical
 			"Magic":      pass_filter = is_magical
 			"Misc":       pass_filter = item_type != "Weapon" and item_type != "Armor" and item_type != "Shield" and item_type != "Consumable" and not is_magical
+		if not pass_filter: continue
+		if _equip_search != "" and _equip_search not in item_name.to_lower(): continue
 
-		if not pass_filter:
-			continue
+		var d := {
+			"name": item_name, "rarity": rarity, "cur_hp": 0, "max_hp": 0,
+			"type": item_type, "desc": desc, "magical": is_magical,
+		}
+		if is_magical:
+			magical.append(d)
+		else:
+			mundane.append(d)
 
-		# Search filter
-		if _equip_search != "" and _equip_search not in item_name.to_lower():
-			continue
+	if magical.is_empty() and mundane.is_empty():
+		parent.add_child(RimvaleUtils.label("No items match.", 13, RimvaleColors.TEXT_DIM))
+		return
 
-		var row = HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		row.custom_minimum_size = Vector2(0, 46)
-		parent.add_child(row)
+	if not magical.is_empty() and (_stash_filter == "All" or _stash_filter == "Magic"):
+		parent.add_child(_build_inv_section_header("✦ Magical", RimvaleColors.ACCENT, false))
+		for d in magical:
+			parent.add_child(_build_inv_item_card(d, true))
+	if not mundane.is_empty() and not magical.is_empty() and (_stash_filter == "All" or _stash_filter == "Magic"):
+		parent.add_child(_build_inv_section_header("Mundane", RimvaleColors.TEXT_DIM, true))
+	for d in mundane:
+		parent.add_child(_build_inv_item_card(d, true))
 
-		var info = VBoxContainer.new()
-		info.custom_minimum_size = Vector2(220, 0)
-		info.add_theme_constant_override("separation", 2)
-		row.add_child(info)
-		info.add_child(RimvaleUtils.label(item_name, 14, RimvaleColors.TEXT_WHITE))
-		info.add_child(RimvaleUtils.label(item_type, 10, RimvaleColors.TEXT_DIM))
+## Section header with optional top breathing room.
+func _build_inv_section_header(text: String, color: Color, with_top_pad: bool) -> Control:
+	var box := VBoxContainer.new()
+	if with_top_pad:
+		var top_pad := Control.new()
+		top_pad.custom_minimum_size = Vector2(0, 8)
+		box.add_child(top_pad)
+	box.add_child(RimvaleUtils.label(text, 13, color))
+	var bot_pad := Control.new()
+	bot_pad.custom_minimum_size = Vector2(0, 4)
+	box.add_child(bot_pad)
+	return box
 
-		var in_cap: String = item_name
-		var take_btn = RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 34, 12)
+## Per-rarity attunement SP cost. Mirrors _attunement_cost_for_item() in the engine.
+func _attunement_cost_for_rarity(rarity: String) -> int:
+	match rarity:
+		"Common":    return 1
+		"Uncommon":  return 2
+		"Rare":      return 3
+		"Very Rare": return 4
+		"Legendary": return 5
+		"Apex":      return 5
+	return 0
+
+## Build a single item card. `is_stash=false` → inventory card with Equip/Use/
+## Attune/Give/Stash. `is_stash=true` → stash card with Take/Drop.
+func _build_inv_item_card(d: Dictionary, is_stash: bool) -> Control:
+	var item_name: String = d["name"]
+	var rarity: String = d["rarity"]
+	var cur_hp: int = d["cur_hp"]
+	var max_hp: int = d["max_hp"]
+	var item_type: String = d["type"]
+	var desc: String = d["desc"]
+	var is_magical: bool = d["magical"]
+	var rarity_col: Color = _rarity_color(rarity)
+
+	var card := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	if is_magical:
+		sb.bg_color = Color(rarity_col.r, rarity_col.g, rarity_col.b, 0.07)
+		sb.border_color = Color(rarity_col.r, rarity_col.g, rarity_col.b, 0.55)
+	else:
+		sb.bg_color = Color(0.10, 0.10, 0.14, 1.0)
+		sb.border_color = Color(0.30, 0.30, 0.36, 0.55)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 12
+	sb.content_margin_bottom = 12
+	card.add_theme_stylebox_override("panel", sb)
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	card.add_child(vbox)
+
+	# Title row: name + rarity chip
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(title_row)
+	var prefix: String = "✦ " if is_magical else ""
+	var name_lbl := RimvaleUtils.label(prefix + item_name, 15,
+		rarity_col if is_magical else RimvaleColors.TEXT_WHITE)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title_row.add_child(name_lbl)
+	if is_magical:
+		var rarity_chip := PanelContainer.new()
+		var chip_sb := StyleBoxFlat.new()
+		chip_sb.bg_color = Color(rarity_col.r, rarity_col.g, rarity_col.b, 0.18)
+		chip_sb.border_color = Color(rarity_col.r, rarity_col.g, rarity_col.b, 0.55)
+		chip_sb.set_border_width_all(1)
+		chip_sb.set_corner_radius_all(10)
+		chip_sb.content_margin_left = 8; chip_sb.content_margin_right = 8
+		chip_sb.content_margin_top = 2;  chip_sb.content_margin_bottom = 2
+		rarity_chip.add_theme_stylebox_override("panel", chip_sb)
+		rarity_chip.add_child(RimvaleUtils.label(rarity, 10, rarity_col))
+		title_row.add_child(rarity_chip)
+
+	# Meta row
+	var meta_parts: PackedStringArray = []
+	meta_parts.append(item_type)
+	if max_hp > 0:
+		meta_parts.append("Dur %d/%d" % [cur_hp, max_hp])
+	var attune_cost: int = _attunement_cost_for_rarity(rarity) if is_magical else 0
+	var is_attuned: bool = (not is_stash) and is_magical and _e.is_attuned(_handle, item_name)
+	if is_attuned:
+		meta_parts.append("Attuned (-%d SP)" % attune_cost)
+	var meta_col: Color = RimvaleColors.SP_PURPLE if is_attuned else RimvaleColors.TEXT_DIM
+	vbox.add_child(RimvaleUtils.label(" · ".join(meta_parts), 11, meta_col))
+
+	# Description (short blurbs only)
+	if not desc.is_empty() and desc.length() < 240:
+		var desc_lbl := RimvaleUtils.label(desc, 11, RimvaleColors.TEXT_GRAY)
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vbox.add_child(desc_lbl)
+
+	# Curse warning, if any
+	var item_full_eff: Dictionary = MagicItemData.ALL_MAGIC_ITEMS.get(item_name, {}).get("effects", {})
+	if bool(item_full_eff.get("requires_curse", false)):
+		var curse_str: String = str(item_full_eff.get("curse_text", "This item carries a curse — see GMG description."))
+		var curse_lbl := RimvaleUtils.label("⚠ Curse: " + curse_str, 11, Color(0.95, 0.45, 0.45))
+		curse_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vbox.add_child(curse_lbl)
+
+	# Action row
+	var action_row := HBoxContainer.new()
+	action_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(action_row)
+
+	var in_cap: String = item_name
+
+	if is_stash:
+		# Stash: Take + Drop
+		var take_btn := RimvaleUtils.button("Take", RimvaleColors.SUCCESS, 38, 12)
+		take_btn.custom_minimum_size = Vector2(78, 0)
 		take_btn.pressed.connect(func():
 			GameState.remove_from_stash(in_cap)
 			_e.add_item_to_inventory(_handle, in_cap)
 			_render_section()
 		)
-		row.add_child(take_btn)
+		action_row.add_child(take_btn)
 
-		var row_spacer = Control.new()
-		row_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(row_spacer)
+		var act_spacer := Control.new()
+		act_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		action_row.add_child(act_spacer)
 
-# ── Section 6: Lineage ────────────────────────────────────────────────────────
+		var drop_btn := RimvaleUtils.button("Drop", RimvaleColors.TEXT_GRAY, 38, 12)
+		drop_btn.custom_minimum_size = Vector2(74, 0)
+		drop_btn.pressed.connect(func():
+			GameState.remove_from_stash(in_cap)
+			_render_section()
+		)
+		action_row.add_child(drop_btn)
+		return card
+
+	# Inventory card
+	if item_type == "Consumable":
+		var use_btn := RimvaleUtils.button("Use", RimvaleColors.SUCCESS, 38, 12)
+		use_btn.custom_minimum_size = Vector2(78, 0)
+		use_btn.pressed.connect(func(): _e.use_consumable(_handle, in_cap); _render_section())
+		action_row.add_child(use_btn)
+	elif item_type != "General":
+		var eq_btn := RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 38, 12)
+		eq_btn.custom_minimum_size = Vector2(78, 0)
+		eq_btn.pressed.connect(func(): _e.equip_item(_handle, in_cap); _render_section())
+		action_row.add_child(eq_btn)
+
+	# Magical → Attune / Unattune (Apex items get a tier picker)
+	if is_magical and attune_cost > 0:
+		var in_cap2: String = item_name
+		if _e.is_apex_item(in_cap2):
+			var apex_tier: int = _e.apex_get_tier(_handle, in_cap2)
+			var apex_lbl_text: String = "Tier %d/5" % apex_tier if apex_tier > 0 else "Not Attuned"
+			action_row.add_child(RimvaleUtils.label(apex_lbl_text, 11, RimvaleColors.SP_PURPLE))
+			var pick_btn := RimvaleUtils.button(
+				"Attune Tier…", RimvaleColors.SP_PURPLE, 38, 12)
+			pick_btn.custom_minimum_size = Vector2(120, 0)
+			pick_btn.pressed.connect(func(): _show_apex_tier_picker(in_cap2))
+			action_row.add_child(pick_btn)
+		elif is_attuned:
+			var unattune_btn := RimvaleUtils.button(
+				"Unattune", Color(0.70, 0.30, 0.30), 38, 12)
+			unattune_btn.custom_minimum_size = Vector2(108, 0)
+			unattune_btn.pressed.connect(func():
+				_e.unattune_item(_handle, in_cap)
+				_render_section()
+			)
+			action_row.add_child(unattune_btn)
+		else:
+			var attune_btn := RimvaleUtils.button(
+				"Attune (%d SP)" % attune_cost, RimvaleColors.SP_PURPLE, 38, 12)
+			attune_btn.custom_minimum_size = Vector2(120, 0)
+			attune_btn.pressed.connect(func():
+				var result: String = _e.attune_item(_handle, in_cap)
+				if result != "":
+					_show_notice(result)
+				_render_section()
+			)
+			action_row.add_child(attune_btn)
+
+	# Push transfer / stash buttons to the right edge
+	var action_spacer := Control.new()
+	action_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	action_row.add_child(action_spacer)
+
+	var stash_btn := RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 38, 12)
+	stash_btn.custom_minimum_size = Vector2(74, 0)
+	stash_btn.pressed.connect(func():
+		_e.stash_item_from_character(_handle, in_cap)
+		_render_section()
+	)
+	action_row.add_child(stash_btn)
+
+	return card
+
+# ── Restored from HEAD: helpers needed by the level-up screen ────────────────
+
+func _show_rename_dialog() -> void:
+	if _handle == -1:
+		return
+	var dialog = ConfirmationDialog.new()
+	dialog.title = "Rename Agent"
+	dialog.get_ok_button().text = "Rename"
+	dialog.get_cancel_button().text = "Cancel"
+
+	var name_edit = LineEdit.new()
+	name_edit.text = str(_e.get_character_name(_handle))
+	name_edit.placeholder_text = "Enter name..."
+	name_edit.custom_minimum_size = Vector2(280, 36)
+	dialog.add_child(name_edit)
+
+	dialog.confirmed.connect(func():
+		var new_name: String = name_edit.text.strip_edges()
+		if not new_name.is_empty():
+			_e.set_character_name(_handle, new_name)
+			_refresh_header()
+		dialog.queue_free()
+	)
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2(320, 140))
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+func _get_alignment() -> String:
+	if _handle == -1:
+		return ""
+	var checks = [
+		["Unity Scholar Initiate", "Unity"],
+		["Unity Pact Initiate", "Unity"],
+		["Chaos Initiate", "Chaos"],
+		["Chaos Pact Initiate", "Chaos"],
+		["Void Initiate", "The Void"],
+		["Void Pact Initiate", "The Void"]
+	]
+	for check in checks:
+		if _e.get_character_feat_tier(_handle, check[0]) > 0:
+			return check[1]
+	return ""
+
+func _get_domain() -> String:
+	if _handle == -1:
+		return ""
+	for i in range(DOMAIN_FEAT_NAMES.size()):
+		if _e.get_character_feat_tier(_handle, DOMAIN_FEAT_NAMES[i]) > 0:
+			return DOMAIN_NAMES[i]
+	return ""
+
+func _find_search_input() -> LineEdit:
+	# Walk the rebuilt content tree to find the search LineEdit by name.
+	var nodes := _content_area.get_children()
+	for node in nodes:
+		var found = node.find_child("EquipSearchInput", true, false)
+		if found != null and found is LineEdit:
+			return found as LineEdit
+	return null
+
+func _rarity_color(rarity: String) -> Color:
+	match rarity:
+		"Common":    return Color(0.30, 0.69, 0.31)
+		"Uncommon":  return Color(0.13, 0.59, 0.95)
+		"Rare":      return Color(0.61, 0.15, 0.69)
+		"Very Rare": return Color(1.0, 0.60, 0.0)
+		"Legendary": return Color(0.96, 0.26, 0.21)
+		"Apex":      return Color(1.0, 0.92, 0.23)
+	return RimvaleColors.TEXT_DIM
+
+func _make_badge(text: String, col: Color) -> Control:
+	var bg = ColorRect.new()
+	bg.color = Color(col, 0.2)
+	bg.custom_minimum_size = Vector2(0, 26)
+	var mgn = MarginContainer.new()
+	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for s in ["left", "right", "top", "bottom"]:
+		mgn.add_theme_constant_override("margin_" + s, 4)
+	bg.add_child(mgn)
+	mgn.add_child(RimvaleUtils.label(text, 11, col))
+	return bg
 
 func _build_lineage(parent: VBoxContainer) -> void:
 	if _handle == -1:
@@ -2049,84 +2452,104 @@ func _build_lineage(parent: VBoxContainer) -> void:
 
 # ── Rename Dialog ─────────────────────────────────────────────────────────────
 
-func _show_rename_dialog() -> void:
-	if _handle == -1:
-		return
-	var dialog = ConfirmationDialog.new()
-	dialog.title = "Rename Agent"
-	dialog.get_ok_button().text = "Rename"
-	dialog.get_cancel_button().text = "Cancel"
 
-	var name_edit = LineEdit.new()
-	name_edit.text = str(_e.get_character_name(_handle))
-	name_edit.placeholder_text = "Enter name..."
-	name_edit.custom_minimum_size = Vector2(280, 36)
-	dialog.add_child(name_edit)
+## Collapsible wrapper. Adds a header-button to `parent` that toggles a
+## body VBoxContainer's visibility. Returns the body so callers can fill
+## it. Default state: collapsed (body hidden, header shows ▶).
+func _build_collapsible(parent: VBoxContainer, title: String) -> VBoxContainer:
+	var wrapper := VBoxContainer.new()
+	wrapper.add_theme_constant_override("separation", 4)
+	parent.add_child(wrapper)
 
-	dialog.confirmed.connect(func():
-		var new_name: String = name_edit.text.strip_edges()
-		if not new_name.is_empty():
-			_e.set_character_name(_handle, new_name)
-			_refresh_header()
-		dialog.queue_free()
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	body.visible = false
+
+	var header := Button.new()
+	header.text = "▶  " + title
+	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	header.add_theme_font_size_override("font_size", 13)
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var captured_title: String = title
+	header.pressed.connect(func():
+		body.visible = not body.visible
+		header.text = ("▼  " if body.visible else "▶  ") + captured_title
 	)
-	dialog.canceled.connect(func(): dialog.queue_free())
-	add_child(dialog)
-	dialog.popup_centered(Vector2(320, 140))
+	wrapper.add_child(header)
+	wrapper.add_child(body)
+	return body
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
-func _get_alignment() -> String:
-	if _handle == -1:
-		return ""
-	var checks = [
-		["Unity Scholar Initiate", "Unity"],
-		["Unity Pact Initiate", "Unity"],
-		["Chaos Initiate", "Chaos"],
-		["Chaos Pact Initiate", "Chaos"],
-		["Void Initiate", "The Void"],
-		["Void Pact Initiate", "The Void"]
-	]
-	for check in checks:
-		if _e.get_character_feat_tier(_handle, check[0]) > 0:
-			return check[1]
-	return ""
+## Toast helper for the level-up screen.
+func _show_notice(message: String) -> void:
+	var toast := Label.new()
+	toast.text = message
+	toast.add_theme_color_override("font_color", RimvaleColors.GOLD)
+	toast.add_theme_font_size_override("font_size", 13)
+	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	toast.offset_top = 60
+	toast.offset_bottom = 90
+	toast.z_index = 100
+	add_child(toast)
+	var tween := create_tween()
+	tween.tween_interval(2.0)
+	tween.tween_property(toast, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(func():
+		if is_instance_valid(toast):
+			toast.queue_free()
+	)
 
-func _get_domain() -> String:
-	if _handle == -1:
-		return ""
-	for i in range(DOMAIN_FEAT_NAMES.size()):
-		if _e.get_character_feat_tier(_handle, DOMAIN_FEAT_NAMES[i]) > 0:
-			return DOMAIN_NAMES[i]
-	return ""
-
-func _find_search_input() -> LineEdit:
-	# Walk the rebuilt content tree to find the search LineEdit by name.
-	var nodes := _content_area.get_children()
-	for node in nodes:
-		var found = node.find_child("EquipSearchInput", true, false)
-		if found != null and found is LineEdit:
-			return found as LineEdit
-	return null
-
-func _rarity_color(rarity: String) -> Color:
-	match rarity:
-		"Common":    return Color(0.30, 0.69, 0.31)
-		"Uncommon":  return Color(0.13, 0.59, 0.95)
-		"Rare":      return Color(0.61, 0.15, 0.69)
-		"Very Rare": return Color(1.0, 0.60, 0.0)
-		"Legendary": return Color(0.96, 0.26, 0.21)
-		"Apex":      return Color(1.0, 0.92, 0.23)
-	return RimvaleColors.TEXT_DIM
-
-func _make_badge(text: String, col: Color) -> Control:
-	var bg = ColorRect.new()
-	bg.color = Color(col, 0.2)
-	bg.custom_minimum_size = Vector2(0, 26)
-	var mgn = MarginContainer.new()
-	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for s in ["left", "right", "top", "bottom"]:
-		mgn.add_theme_constant_override("margin_" + s, 4)
-	bg.add_child(mgn)
-	mgn.add_child(RimvaleUtils.label(text, 11, col))
-	return bg
+## Apex tier picker — shows a dialog letting the player choose tiers 1-5
+## for the apex item. Falls back to a +1 tier bump if the engine has the
+## minimal apex_set_tier API available.
+func _show_apex_tier_picker(item_name: String) -> void:
+	if _e == null or not _e.has_method("apex_set_tier"):
+		_show_notice("Apex attunement requires engine support.")
+		return
+	var overlay := Control.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.z_index = 90
+	add_child(overlay)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.78)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.offset_left = -200; panel.offset_right = 200
+	panel.offset_top = -160; panel.offset_bottom = 160
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.10, 0.08, 0.16, 1.0)
+	bg.border_color = RimvaleColors.SP_PURPLE
+	bg.set_border_width_all(2); bg.set_corner_radius_all(8)
+	bg.set_content_margin_all(20)
+	panel.add_theme_stylebox_override("panel", bg)
+	overlay.add_child(panel)
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(vbox)
+	vbox.add_child(RimvaleUtils.label(
+		"Attune Tier — %s" % item_name, 14, RimvaleColors.SP_PURPLE))
+	var cur_tier: int = int(_e.apex_get_tier(_handle, item_name))
+	vbox.add_child(RimvaleUtils.label(
+		"Current: Tier %d/5" % cur_tier, 11, RimvaleColors.TEXT_GRAY))
+	for t in range(0, 6):
+		var tn: int = t
+		var btn := RimvaleUtils.button(
+			"Tier %d" % tn,
+			RimvaleColors.SP_PURPLE if tn != cur_tier else RimvaleColors.GOLD,
+			36, 12)
+		btn.pressed.connect(func():
+			var err: String = _e.apex_set_tier(_handle, item_name, tn)
+			if err != "":
+				_show_notice(err)
+			else:
+				_show_notice("Set %s to Tier %d." % [item_name, tn])
+			overlay.queue_free()
+			_render_section()
+		)
+		vbox.add_child(btn)
+	var cancel := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 32, 11)
+	cancel.pressed.connect(func(): overlay.queue_free())
+	vbox.add_child(cancel)

@@ -74,6 +74,7 @@ var _quest_board_vbox: VBoxContainer
 
 # ── Story tab refs ────────────────────────────────────────────────────────────
 var _story_sections_vbox: VBoxContainer  # rebuilt when badges change
+var _training_section_holder: VBoxContainer  # holder for the Training card so it can be rebuilt independently
 var _story_badge_lbl: Label
 
 # ── Story mission execution state ────────────────────────────────────────────
@@ -330,6 +331,9 @@ const MONSTER_ABILITY_CATEGORIES: Array = [
 # ── Contact NPCs ─────────────────────────────────────────────────────────────
 # Each entry: section_id -> {name, lineage, intro, sendoff}
 const STORY_CONTACTS: Dictionary = {
+	"training": {"name": "Lyra", "lineage": "Lyra",
+		"intro": "Lyra, ACF Field Trainer. You're greenhorn, and the Sinister Agent isn't going to wait for you to be ready.",
+		"sendoff": "Don't lose anyone you can't replace. Move."},
 	"plains": {"name": "Lyra", "lineage": "Lyra",
 		"intro": "Lyra, ACF Plains Liaison. I've been embedded here for weeks — this is worse than the reports suggest.",
 		"sendoff": "The Plains are counting on you. Good luck out there."},
@@ -798,6 +802,24 @@ func _ready() -> void:
 		# Deferred so the UI is fully built before we try to update it
 		_on_story_combat_resolved.call_deferred(victory)
 
+	# Restore an in-progress story mission across tab switches. The world scene
+	# is freed when the user changes tabs, so the live state must be re-read
+	# from GameState.quest_state and the execution overlay rebuilt.
+	if GameState.quest_state.has("exec_mission") and GameState.quest_state.has("exec_quest"):
+		_restore_story_exec.call_deferred()
+
+
+func _restore_story_exec() -> void:
+	# Skip if a combat just resolved (already handled by _on_story_combat_resolved)
+	if GameState.quest_state.has("story_combat_pending_result"): return
+	if not GameState.quest_state.has("exec_mission"): return
+	_story_exec_mission = Dictionary(GameState.quest_state["exec_mission"]).duplicate(true)
+	_story_exec_quest   = Dictionary(GameState.quest_state["exec_quest"]).duplicate(true)
+	# Make sure the Story sub-tab is active so the overlay shows.
+	GameState.world_sub_tab = 2
+	_on_tab_selected(2)
+	_build_quest_execution_overlay()
+
 func _on_tab_selected(idx: int) -> void:
 	current_tab = idx
 	GameState.world_sub_tab = idx
@@ -972,7 +994,12 @@ func _build_story_tab(parent: Control) -> void:
 	vbox.add_child(RimvaleUtils.spacer(2))
 
 	# ── Training Section ──────────────────────────────────────────────────────
-	vbox.add_child(_build_story_section_card(
+	# Wrapped in a holder VBox so _rebuild_story_sections() can refresh the
+	# "X/5 completed" counter after a training mission completes.
+	_training_section_holder = VBoxContainer.new()
+	_training_section_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(_training_section_holder)
+	_training_section_holder.add_child(_build_story_section_card(
 		"Training", "training", TRAINING_MISSIONS, false))
 
 	# ── Story Sections ────────────────────────────────────────────────────────
@@ -1001,6 +1028,12 @@ func _update_story_badge_lbl() -> void:
 	_story_badge_lbl.text = "Region Badges  %d/9" % count
 
 func _rebuild_story_sections() -> void:
+	# Rebuild the Training card so its "X/5 completed" counter refreshes.
+	if _training_section_holder != null:
+		for c in _training_section_holder.get_children():
+			c.queue_free()
+		_training_section_holder.add_child(_build_story_section_card(
+			"Training", "training", TRAINING_MISSIONS, false))
 	if _story_sections_vbox == null:
 		return
 	for c in _story_sections_vbox.get_children():
@@ -1375,87 +1408,223 @@ func _on_story_mission_play(m_data: Array) -> void:
 # ── Contact Dialogue Modal ────────────────────────────────────────────────────
 
 func _show_contact_dialogue(section_id: String, m_data: Array) -> void:
+	# Cinematic cutscene: giver portrait on the left, team row at the bottom,
+	# multi-line briefing dialogue advanced by clicking. Falls back to the
+	# legacy 3-line popup only if no per-mission briefing exists.
 	var contact: Dictionary = STORY_CONTACTS[section_id]
 	var mid: String = m_data[0]
+	var briefing = StoryBriefings.get_briefing(mid) if typeof(StoryBriefings) != TYPE_NIL else null
 
-	var overlay = PanelContainer.new()
+	# Compose the line list. Each line is a String; the briefing's lines
+	# already include the speaker name. If no briefing, synthesize a 3-line
+	# reproduction of the old popup style (intro, teaser quote, sendoff).
+	var lines: Array = []
+	var team_intro: String = ""
+	if briefing != null and briefing.has("lines"):
+		lines = Array(briefing["lines"])
+		team_intro = str(briefing.get("team_intro", ""))
+	else:
+		var nm: String = str(contact["name"])
+		lines = [
+			"%s: \"%s\"" % [nm, contact["intro"]],
+			"%s: \"%s\"" % [nm, m_data[3]],
+			"%s: \"%s\"" % [nm, contact["sendoff"]],
+		]
+		team_intro = "Your team prepares for the mission."
+
+	# ── Full-screen black overlay ────────────────────────────────────────────
+	var overlay := ColorRect.new()
+	overlay.color = Color(0, 0, 0, 0.94)
 	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var bg_style = StyleBoxFlat.new()
-	bg_style.bg_color = Color(0.0, 0.0, 0.0, 0.85)
-	overlay.add_theme_stylebox_override("panel", bg_style)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(overlay)
 
-	var center = CenterContainer.new()
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	overlay.add_child(center)
+	# ── Top letterbox bar (mission title + team intro flavor) ────────────────
+	var top_bar := PanelContainer.new()
+	top_bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	top_bar.offset_top = 0; top_bar.offset_bottom = 80
+	var top_s := StyleBoxFlat.new()
+	top_s.bg_color = Color(0.04, 0.03, 0.08, 1.0)
+	top_s.border_color = Color(0.55, 0.40, 0.85)
+	top_s.border_width_bottom = 2
+	top_s.content_margin_left = 24; top_s.content_margin_right = 24
+	top_s.content_margin_top = 12; top_s.content_margin_bottom = 12
+	top_bar.add_theme_stylebox_override("panel", top_s)
+	overlay.add_child(top_bar)
+	var top_v := VBoxContainer.new()
+	top_v.add_theme_constant_override("separation", 4)
+	top_bar.add_child(top_v)
+	var title_lbl := RimvaleUtils.label(str(m_data[1]), 20, Color(0.95, 0.85, 1.0))
+	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	top_v.add_child(title_lbl)
+	var sub_lbl := RimvaleUtils.label(str(m_data[2]) + " · BRIEFING", 11, Color(0.65, 0.55, 0.80))
+	sub_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	top_v.add_child(sub_lbl)
 
-	var card = PanelContainer.new()
-	card.custom_minimum_size = Vector2(440, 0)
-	var card_s = StyleBoxFlat.new()
-	card_s.bg_color = Color(0.10, 0.08, 0.16, 1.0)
-	card_s.corner_radius_top_left = 8; card_s.corner_radius_top_right = 8
-	card_s.corner_radius_bottom_left = 8; card_s.corner_radius_bottom_right = 8
-	card_s.content_margin_left = 20; card_s.content_margin_right = 20
-	card_s.content_margin_top = 16; card_s.content_margin_bottom = 16
-	card_s.border_width_top = 2; card_s.border_color = Color(0.45, 0.35, 0.70)
-	card.add_theme_stylebox_override("panel", card_s)
-	center.add_child(card)
+	# ── Giver portrait on the left ───────────────────────────────────────────
+	var giver_panel := VBoxContainer.new()
+	giver_panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+	giver_panel.offset_left = 24; giver_panel.offset_right = 224
+	giver_panel.offset_top = 100; giver_panel.offset_bottom = -240
+	overlay.add_child(giver_panel)
+	var giver_portrait := TextureRect.new()
+	giver_portrait.custom_minimum_size = Vector2(180, 220)
+	giver_portrait.expand_mode = TextureRect.EXPAND_FIT_HEIGHT_PROPORTIONAL
+	giver_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	giver_portrait.texture = RimvaleUtils.get_sprite_portrait(contact["lineage"])
+	giver_panel.add_child(giver_portrait)
+	var giver_name := RimvaleUtils.label(str(contact["name"]), 16, Color(0.95, 0.85, 1.0))
+	giver_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	giver_panel.add_child(giver_name)
+	var giver_role := RimvaleUtils.label(str(contact["lineage"]), 10, Color(0.60, 0.55, 0.75))
+	giver_role.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	giver_panel.add_child(giver_role)
 
-	var vbox = VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 10)
-	card.add_child(vbox)
+	# ── Dialogue card centered, right of giver ───────────────────────────────
+	var card_panel := PanelContainer.new()
+	card_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	card_panel.offset_left = 250; card_panel.offset_right = -40
+	card_panel.offset_top = 110; card_panel.offset_bottom = -240
+	var card_s := StyleBoxFlat.new()
+	card_s.bg_color = Color(0.10, 0.08, 0.16, 0.96)
+	card_s.set_corner_radius_all(8)
+	card_s.border_width_left = 4; card_s.border_color = Color(0.55, 0.40, 0.85)
+	card_s.content_margin_left = 22; card_s.content_margin_right = 22
+	card_s.content_margin_top = 18; card_s.content_margin_bottom = 18
+	card_panel.add_theme_stylebox_override("panel", card_s)
+	overlay.add_child(card_panel)
+	var card_v := VBoxContainer.new()
+	card_v.add_theme_constant_override("separation", 12)
+	card_panel.add_child(card_v)
+	if team_intro != "":
+		var intro := RimvaleUtils.label(team_intro, 12, Color(0.70, 0.70, 0.80))
+		intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		intro.add_theme_color_override("font_color", Color(0.65, 0.65, 0.78))
+		card_v.add_child(intro)
+		card_v.add_child(HSeparator.new())
+	var dialogue_lbl := RimvaleUtils.label("", 14, Color(0.96, 0.94, 0.90))
+	dialogue_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	dialogue_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	card_v.add_child(dialogue_lbl)
+	var progress_lbl := RimvaleUtils.label("", 10, Color(0.50, 0.50, 0.62))
+	progress_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	card_v.add_child(progress_lbl)
 
-	# Contact name + lineage
-	var name_lbl = RimvaleUtils.label(contact["name"], 16, Color(0.85, 0.75, 1.0))
-	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(name_lbl)
-	var lineage_lbl = RimvaleUtils.label(contact["lineage"], 11, RimvaleColors.TEXT_GRAY)
-	lineage_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(lineage_lbl)
+	# ── Team strip along the bottom ──────────────────────────────────────────
+	var team_panel := PanelContainer.new()
+	team_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	team_panel.offset_top = -210; team_panel.offset_bottom = -90
+	var team_s := StyleBoxFlat.new()
+	team_s.bg_color = Color(0.06, 0.05, 0.10, 1.0)
+	team_s.border_width_top = 2; team_s.border_color = Color(0.45, 0.30, 0.70)
+	team_s.content_margin_left = 24; team_s.content_margin_right = 24
+	team_s.content_margin_top = 10; team_s.content_margin_bottom = 10
+	team_panel.add_theme_stylebox_override("panel", team_s)
+	overlay.add_child(team_panel)
+	var team_v := VBoxContainer.new()
+	team_v.add_theme_constant_override("separation", 6)
+	team_panel.add_child(team_v)
+	var team_hdr := RimvaleUtils.label("DEPLOYMENT TEAM", 11, Color(0.55, 0.45, 0.70))
+	team_hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	team_v.add_child(team_hdr)
+	var team_row := HBoxContainer.new()
+	team_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	team_row.add_theme_constant_override("separation", 18)
+	team_v.add_child(team_row)
 
-	vbox.add_child(HSeparator.new())
+	# Track the snapshot of active handles so we can detect a roster change
+	# (e.g. the player swaps a member from another window) and rebuild.
+	var team_state := {"snapshot": []}
+	var rebuild_team := func():
+		# Clear existing slots
+		for c in team_row.get_children(): c.free()
+		var handles: Array = GameState.get_active_handles()
+		team_state["snapshot"] = handles.duplicate()
+		var eng = RimvaleAPI.engine
+		for h in handles:
+			if h < 0: continue
+			var c_name: String = "Agent"
+			var c_lineage: String = ""
+			if eng != null:
+				if eng.has_method("get_character_name"):
+					c_name = str(eng.get_character_name(h))
+				if eng.has_method("get_character_lineage_name"):
+					c_lineage = str(eng.get_character_lineage_name(h))
+			var slot := VBoxContainer.new()
+			slot.custom_minimum_size = Vector2(90, 0)
+			slot.alignment = BoxContainer.ALIGNMENT_CENTER
+			var pic := TextureRect.new()
+			pic.custom_minimum_size = Vector2(86, 86)
+			pic.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+			pic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			pic.texture = RimvaleUtils.get_sprite_portrait(c_lineage)
+			slot.add_child(pic)
+			var nlbl := RimvaleUtils.label(c_name.left(12), 11, Color(0.90, 0.85, 0.75))
+			nlbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			slot.add_child(nlbl)
+			team_row.add_child(slot)
+	rebuild_team.call()
 
-	# Intro line
-	var intro_lbl = RimvaleUtils.label(contact["intro"], 12, RimvaleColors.TEXT_WHITE)
-	intro_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(intro_lbl)
+	# Match/mismatch poll — every 0.5s while the cutscene is open, check if
+	# the active-team list has changed and rebuild the row if so. Cheap.
+	var watcher := Timer.new()
+	watcher.wait_time = 0.5
+	watcher.one_shot = false
+	watcher.timeout.connect(func():
+		var current: Array = GameState.get_active_handles()
+		if current != team_state["snapshot"]:
+			rebuild_team.call()
+	)
+	overlay.add_child(watcher)
+	watcher.start()
 
-	vbox.add_child(HSeparator.new())
-
-	# Mission teaser in italics
-	var teaser_lbl = RimvaleUtils.label(
-		"\"%s\"" % m_data[3], 11, Color(0.70, 0.70, 0.80))
-	teaser_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(teaser_lbl)
-
-	vbox.add_child(HSeparator.new())
-
-	# Sendoff
-	var sendoff_lbl = RimvaleUtils.label(contact["sendoff"], 12, Color(0.90, 0.85, 0.70))
-	sendoff_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(sendoff_lbl)
-
-	# Buttons
-	var btn_row = HBoxContainer.new()
-	btn_row.add_theme_constant_override("separation", 12)
+	# ── Bottom button row ────────────────────────────────────────────────────
+	var btn_row := HBoxContainer.new()
+	btn_row.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	btn_row.offset_top = -78; btn_row.offset_bottom = -20
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	vbox.add_child(btn_row)
-
-	var cancel_btn = RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 36, 12)
-	cancel_btn.custom_minimum_size = Vector2(100, 36)
-	var cap_overlay = overlay
-	cancel_btn.pressed.connect(func(): cap_overlay.queue_free())
+	btn_row.add_theme_constant_override("separation", 14)
+	overlay.add_child(btn_row)
+	var skip_btn := RimvaleUtils.button("Skip", RimvaleColors.TEXT_GRAY, 44, 13)
+	skip_btn.custom_minimum_size = Vector2(120, 44)
+	btn_row.add_child(skip_btn)
+	var advance_btn := RimvaleUtils.button("Continue ▶", RimvaleColors.ACCENT, 44, 13)
+	advance_btn.custom_minimum_size = Vector2(180, 44)
+	btn_row.add_child(advance_btn)
+	var cancel_btn := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 44, 13)
+	cancel_btn.custom_minimum_size = Vector2(120, 44)
 	btn_row.add_child(cancel_btn)
 
-	var deploy_btn = RimvaleUtils.button("Deploy", RimvaleColors.ACCENT, 36, 12)
-	deploy_btn.custom_minimum_size = Vector2(100, 36)
-	var cap_mid = mid; var cap_m_data = m_data.duplicate()
-	deploy_btn.pressed.connect(func():
-		GameState.story_shown_contacts.append(cap_mid)
-		cap_overlay.queue_free()
-		_start_quest_execution(cap_m_data)
+	# ── Dialogue advance state ───────────────────────────────────────────────
+	var idx_box := {"i": 0}
+	var update_dialogue := func():
+		var i: int = idx_box["i"]
+		dialogue_lbl.text = lines[i] if i < lines.size() else ""
+		progress_lbl.text = "%d / %d" % [i + 1, lines.size()]
+		if i >= lines.size() - 1:
+			advance_btn.text = "Deploy ▶"
+	update_dialogue.call()
+
+	var cap_overlay = overlay
+	var cap_mid = mid
+	var cap_m_data = m_data.duplicate()
+	advance_btn.pressed.connect(func():
+		var i: int = idx_box["i"]
+		if i >= lines.size() - 1:
+			GameState.story_shown_contacts.append(cap_mid)
+			cap_overlay.queue_free()
+			_start_quest_execution(cap_m_data)
+		else:
+			idx_box["i"] = i + 1
+			update_dialogue.call()
 	)
-	btn_row.add_child(deploy_btn)
+	skip_btn.pressed.connect(func():
+		idx_box["i"] = lines.size() - 1
+		update_dialogue.call()
+	)
+	cancel_btn.pressed.connect(func():
+		cap_overlay.queue_free()
+	)
 
 # ── Quest Execution Screen ────────────────────────────────────────────────────
 
@@ -1499,7 +1668,20 @@ func _start_quest_execution(m_data: Array) -> void:
 			"last_combat_result": -1, "completed": false,
 		}
 
+	_persist_story_exec()
 	_build_quest_execution_overlay()
+
+
+## Push the live story-mission state into GameState so a tab switch (which
+## frees the world scene) doesn't lose it. Restored in _ready / _restore_story_exec.
+func _persist_story_exec() -> void:
+	if _story_exec_mission == null or _story_exec_mission.is_empty():
+		GameState.quest_state.erase("exec_mission")
+		GameState.quest_state.erase("exec_quest")
+		return
+	GameState.quest_state["exec_mission"] = _story_exec_mission.duplicate(true)
+	GameState.quest_state["exec_quest"]   = _story_exec_quest.duplicate(true)
+
 
 func _build_quest_execution_overlay() -> void:
 	if _story_exec_overlay != null:
@@ -1522,7 +1704,9 @@ func _build_quest_execution_overlay() -> void:
 	margin.add_theme_constant_override("margin_left", 12)
 	margin.add_theme_constant_override("margin_right", 12)
 	margin.add_theme_constant_override("margin_top", 8)
-	margin.add_theme_constant_override("margin_bottom", 8)
+	# Bottom margin needs to be generous so the action buttons + Short Rest /
+	# Abort row aren't clipped by the parent shell on smaller windows.
+	margin.add_theme_constant_override("margin_bottom", 48)
 	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_story_exec_overlay.add_child(margin)
 
@@ -1610,20 +1794,23 @@ func _build_quest_execution_overlay() -> void:
 	var bottom_row = HBoxContainer.new()
 	bottom_row.add_theme_constant_override("separation", 8)
 	bottom_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bottom_row.custom_minimum_size = Vector2(0, 44)
 	content.add_child(bottom_row)
 
 	var exec_rest_btn = RimvaleUtils.button(
 		"Short Rest (%d/%d)" % [GameState.short_rests_used, GameState.MAX_SHORT_RESTS],
-		RimvaleColors.CYAN, 28, 11)
+		RimvaleColors.CYAN, 40, 13)
 	exec_rest_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	exec_rest_btn.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	exec_rest_btn.pressed.connect(func():
 		_do_tab_short_rest(exec_rest_btn)
 		_refresh_team_status()
 	)
 	bottom_row.add_child(exec_rest_btn)
 
-	var abort_btn = RimvaleUtils.button("Abort Mission", Color(0.80, 0.20, 0.20), 28, 11)
+	var abort_btn = RimvaleUtils.button("Abort Mission", Color(0.80, 0.20, 0.20), 40, 13)
 	abort_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	abort_btn.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	abort_btn.pressed.connect(_on_story_abort)
 	bottom_row.add_child(abort_btn)
 
@@ -1634,46 +1821,57 @@ func _refresh_team_status() -> void:
 	for c in _story_exec_team_hbox.get_children():
 		c.queue_free()
 	_story_exec_agent_bars.clear()
+	_story_exec_team_hbox.add_theme_constant_override("separation", 12)
 
 	var party: Array = GameState.get_active_handles()
 	for ph in party:
 		var name_str: String = RimvaleAPI.engine.get_character_name(ph)
+		var lineage: String = ""
+		if RimvaleAPI.engine.has_method("get_character_lineage_name"):
+			lineage = str(RimvaleAPI.engine.get_character_lineage_name(ph))
 		var hp: int = RimvaleAPI.engine.get_character_hp(ph)
 		var max_hp: int = RimvaleAPI.engine.get_character_max_hp(ph)
 		var sp: int = RimvaleAPI.engine.get_character_sp(ph)
 		var max_sp: int = RimvaleAPI.engine.get_character_max_sp(ph)
 
 		var agent_card = PanelContainer.new()
-		agent_card.custom_minimum_size = Vector2(70, 50)
+		# Big enough to actually read; portrait on top, name + bars below.
+		agent_card.custom_minimum_size = Vector2(150, 170)
 		var ac_s = StyleBoxFlat.new()
 		var is_sel: bool = _story_exec_quest.get("agent_handle", 0) == ph
-		ac_s.bg_color = Color(0.15, 0.18, 0.28, 1.0)
-		if is_sel:
-			ac_s.border_width_top = 2; ac_s.border_width_bottom = 2
-			ac_s.border_width_left = 2; ac_s.border_width_right = 2
-			ac_s.border_color = RimvaleColors.ACCENT
-		ac_s.corner_radius_top_left = 4; ac_s.corner_radius_top_right = 4
-		ac_s.corner_radius_bottom_left = 4; ac_s.corner_radius_bottom_right = 4
-		ac_s.content_margin_left = 4; ac_s.content_margin_right = 4
-		ac_s.content_margin_top = 3; ac_s.content_margin_bottom = 3
+		ac_s.bg_color = Color(0.13, 0.15, 0.24, 1.0)
+		ac_s.border_width_top = 2; ac_s.border_width_bottom = 2
+		ac_s.border_width_left = 2; ac_s.border_width_right = 2
+		ac_s.border_color = RimvaleColors.ACCENT if is_sel else Color(0.30, 0.30, 0.42)
+		ac_s.set_corner_radius_all(6)
+		ac_s.content_margin_left = 6; ac_s.content_margin_right = 6
+		ac_s.content_margin_top = 6; ac_s.content_margin_bottom = 6
 		agent_card.add_theme_stylebox_override("panel", ac_s)
 
 		var avbox = VBoxContainer.new()
-		avbox.add_theme_constant_override("separation", 2)
+		avbox.add_theme_constant_override("separation", 4)
 		agent_card.add_child(avbox)
 
-		var nlbl = RimvaleUtils.label(name_str, 9, RimvaleColors.TEXT_WHITE)
+		# Lineage portrait
+		var portrait = TextureRect.new()
+		portrait.custom_minimum_size = Vector2(0, 96)
+		portrait.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		portrait.texture = RimvaleUtils.get_sprite_portrait(lineage)
+		avbox.add_child(portrait)
+
+		var nlbl = RimvaleUtils.label(name_str, 12, RimvaleColors.TEXT_WHITE)
+		nlbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		nlbl.clip_text = true
 		avbox.add_child(nlbl)
 
-		# HP bar
+		# HP bar (taller so it's actually visible)
 		var hp_bar = ProgressBar.new()
 		hp_bar.min_value = 0; hp_bar.max_value = maxi(max_hp, 1)
 		hp_bar.value = hp; hp_bar.show_percentage = false
-		hp_bar.custom_minimum_size = Vector2(0, 4)
-		var hp_sb = StyleBoxFlat.new(); hp_sb.bg_color = Color(0.80, 0.20, 0.20)
-		hp_sb.corner_radius_top_left = 1; hp_sb.corner_radius_top_right = 1
-		hp_sb.corner_radius_bottom_left = 1; hp_sb.corner_radius_bottom_right = 1
+		hp_bar.custom_minimum_size = Vector2(0, 8)
+		var hp_sb = StyleBoxFlat.new(); hp_sb.bg_color = Color(0.85, 0.25, 0.25)
+		hp_sb.set_corner_radius_all(2)
 		hp_bar.add_theme_stylebox_override("fill", hp_sb)
 		avbox.add_child(hp_bar)
 
@@ -1681,10 +1879,9 @@ func _refresh_team_status() -> void:
 		var sp_bar = ProgressBar.new()
 		sp_bar.min_value = 0; sp_bar.max_value = maxi(max_sp, 1)
 		sp_bar.value = sp; sp_bar.show_percentage = false
-		sp_bar.custom_minimum_size = Vector2(0, 4)
-		var sp_sb = StyleBoxFlat.new(); sp_sb.bg_color = Color(0.20, 0.40, 0.90)
-		sp_sb.corner_radius_top_left = 1; sp_sb.corner_radius_top_right = 1
-		sp_sb.corner_radius_bottom_left = 1; sp_sb.corner_radius_bottom_right = 1
+		sp_bar.custom_minimum_size = Vector2(0, 8)
+		var sp_sb = StyleBoxFlat.new(); sp_sb.bg_color = Color(0.25, 0.45, 0.95)
+		sp_sb.set_corner_radius_all(2)
 		sp_bar.add_theme_stylebox_override("fill", sp_sb)
 		avbox.add_child(sp_bar)
 
@@ -1692,6 +1889,9 @@ func _refresh_team_status() -> void:
 		_story_exec_team_hbox.add_child(agent_card)
 
 func _refresh_quest_ui() -> void:
+	# Persist the current state to GameState every refresh so tab switches
+	# can restore the in-progress mission.
+	_persist_story_exec()
 	if _story_exec_action_vbox == null: return
 	for c in _story_exec_action_vbox.get_children():
 		c.queue_free()
@@ -1913,11 +2113,16 @@ func _on_story_trigger_combat() -> void:
 	GameState.ensure_ritual_spells_registered()
 
 	if is_boss and boss_apex >= 0:
-		# Boss fight — use apex encounter
+		# Boss fight — use apex encounter (contained boss arena)
 		RimvaleAPI.engine.start_apex_dungeon(party, boss_apex, 0)
 	else:
-		# Standard combat from failed skill check
-		RimvaleAPI.engine.start_dungeon(party, difficulty, 0, 0)
+		# Standard combat from failed skill check — use the 50×50 Dungeon Crawl
+		# variant so story missions get exploration, detection AI, and chests
+		# instead of the small standard arena.
+		if RimvaleAPI.engine.has_method("start_dungeon_crawl"):
+			RimvaleAPI.engine.start_dungeon_crawl(party, difficulty, 0)
+		else:
+			RimvaleAPI.engine.start_dungeon(party, difficulty, 0, 0)
 
 	# Mark source so dungeon returns to world scene (Story tab) not explore
 	GameState.dungeon_source = "tab"
@@ -2001,10 +2206,12 @@ func _on_story_mission_complete() -> void:
 
 	var party: Array = GameState.get_active_handles()
 	for ph in party:
-		RimvaleAPI.engine.add_xp(ph, xp_award, 20)
+		RimvaleAPI.engine.add_xp(ph, xp_award, GameState.player_level)
 
 	if not already_done:
 		GameState.story_completed_missions.append(mid)
+		# Mission time: 1d3 base months + ceil(fails/4) extra months.
+		GameState.advance_time_for_mission(0)
 
 	_check_and_award_story_badges()
 
@@ -2054,7 +2261,15 @@ func _on_story_mission_complete() -> void:
 		var badge_lbl = RimvaleUtils.label(new_badges.strip_edges(), 13, Color(1.0, 0.84, 0.0))
 		badge_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rvbox.add_child(badge_lbl)
-	reward_dialog.confirmed.connect(func(): reward_dialog.queue_free())
+	# After the dialog closes, force the visible tab to fully rebuild so
+	# completion state propagates to all sub-views (mission list, story
+	# section badges, region map highlights, etc.).
+	reward_dialog.confirmed.connect(func():
+		reward_dialog.queue_free()
+		_update_story_badge_lbl()
+		_rebuild_story_sections()
+		_on_tab_selected(GameState.world_sub_tab)
+	)
 	add_child(reward_dialog)
 	reward_dialog.popup_centered(Vector2(360, 200))
 
@@ -2068,7 +2283,7 @@ func _debug_auto_complete_mission(mid: String, mxp: int) -> void:
 	# Award XP to party
 	var party: Array = GameState.get_active_handles()
 	for ph in party:
-		RimvaleAPI.engine.add_xp(ph, mxp, 20)
+		RimvaleAPI.engine.add_xp(ph, mxp, GameState.player_level)
 
 	# Mark complete
 	GameState.story_completed_missions.append(mid)
@@ -4476,147 +4691,106 @@ func _populate_base_tab(vbox: VBoxContainer) -> void:
 	for c in vbox.get_children():
 		c.queue_free()
 
-	# Header + base stats overview
-	vbox.add_child(RimvaleUtils.label("ACF Headquarters", 22, RimvaleColors.ACCENT))
+	# ── Header ──────────────────────────────────────────────────────────
+	vbox.add_child(RimvaleUtils.label("ACF Bases — Field Log", 22, RimvaleColors.ACCENT))
 	var sub := RimvaleUtils.label(
-		"Manage your agency's facilities. Build and upgrade to unlock new capabilities.",
+		"A read-only summary of every base your agency has placed on the " +
+		"region maps. To build, upgrade, or place buildings, travel to a " +
+		"region and use the 🛠 Build Base panel.",
 		12, RimvaleColors.TEXT_GRAY)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(sub)
 	vbox.add_child(RimvaleUtils.separator())
 
-	# ── Base Stats Panel ──────────────────────────────────────────────────
-	var stats_card := PanelContainer.new()
-	stats_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var stats_sb := StyleBoxFlat.new()
-	stats_sb.bg_color = Color(0.08, 0.14, 0.22)
-	stats_sb.border_color = Color(RimvaleColors.CYAN, 0.45)
-	stats_sb.set_border_width_all(1)
-	stats_sb.set_corner_radius_all(6)
-	stats_sb.set_content_margin_all(12)
-	stats_card.add_theme_stylebox_override("panel", stats_sb)
-	vbox.add_child(stats_card)
-
-	var stats_vbox := VBoxContainer.new()
-	stats_vbox.add_theme_constant_override("separation", 6)
-	stats_card.add_child(stats_vbox)
-
-	var tier_row := HBoxContainer.new()
-	tier_row.add_theme_constant_override("separation", 12)
-	stats_vbox.add_child(tier_row)
-	tier_row.add_child(RimvaleUtils.label("Base Tier: %d / 5" % GameState.base_tier, 15, RimvaleColors.GOLD))
-	var fac_count: int = GameState.base_facilities.size()
-	var fac_max: int   = GameState.get_base_max_facilities()
-	tier_row.add_child(RimvaleUtils.label("Facilities: %d / %d" % [fac_count, fac_max], 12, RimvaleColors.TEXT_WHITE))
-
-	var stat_row := HBoxContainer.new()
-	stat_row.add_theme_constant_override("separation", 16)
-	stats_vbox.add_child(stat_row)
-	stat_row.add_child(RimvaleUtils.label("Supplies: %d" % GameState.base_supplies, 12, RimvaleColors.HP_GREEN))
-	stat_row.add_child(RimvaleUtils.label("Defense: %d (%+d)" % [GameState.base_defense, GameState.get_base_defense_mod()], 12, RimvaleColors.CYAN))
-	stat_row.add_child(RimvaleUtils.label("Morale: %d" % GameState.base_morale, 12, Color(0.90, 0.75, 0.20)))
-	stat_row.add_child(RimvaleUtils.label("Acreage: %d" % GameState.base_acreage, 12, RimvaleColors.TEXT_DIM))
-
-	var res_row := HBoxContainer.new()
-	res_row.add_theme_constant_override("separation", 16)
-	stats_vbox.add_child(res_row)
-	res_row.add_child(RimvaleUtils.label("Gold: %d" % GameState.gold, 12, RimvaleColors.GOLD))
-	res_row.add_child(RimvaleUtils.label("Remnant Fragments: %d" % GameState.remnant_fragments, 12, RimvaleColors.SP_PURPLE))
-
-	# Upgrade tier button
-	if GameState.base_tier < 5:
-		var tier_cost_g: int = 500 * GameState.base_tier
-		var tier_cost_rf: int = 3 * GameState.base_tier
-		var upgrade_btn = RimvaleUtils.button(
-			"Upgrade to Tier %d  (%dg + %d RF)" % [GameState.base_tier + 1, tier_cost_g, tier_cost_rf],
-			RimvaleColors.GOLD, 38, 13)
-		var can_upgrade: bool = (GameState.gold >= tier_cost_g and GameState.remnant_fragments >= tier_cost_rf)
-		upgrade_btn.disabled = not can_upgrade
-		upgrade_btn.modulate = Color.WHITE if can_upgrade else Color(1, 1, 1, 0.4)
-		var cap_vbox: VBoxContainer = vbox
-		upgrade_btn.pressed.connect(func():
-			if GameState.upgrade_base_tier():
-				_populate_base_tab(cap_vbox)
-		)
-		stats_vbox.add_child(upgrade_btn)
-
-	vbox.add_child(RimvaleUtils.separator())
-	vbox.add_child(RimvaleUtils.label("FACILITIES", 14, RimvaleColors.TEXT_DIM))
-
-	# ── Facility Cards ────────────────────────────────────────────────────
-	var fac_colors: Array = [
-		RimvaleColors.ACCENT,   RimvaleColors.ORANGE,   RimvaleColors.CYAN,
-		RimvaleColors.SUCCESS,  RimvaleColors.HP_GREEN,  Color(0.55, 0.55, 0.65),
-		RimvaleColors.SP_PURPLE, Color(0.25, 0.55, 0.75), Color(0.80, 0.50, 0.50),
-		Color(0.65, 0.40, 0.25), Color(0.60, 0.40, 0.80),
+	# ── Subregion log ───────────────────────────────────────────────────
+	# Bases are keyed PER SUBREGION (e.g. "The Argent Expanse"), not per
+	# region — each subregion's outskirts are a distinct map. Group cards
+	# under their parent region so the log reads naturally.
+	var region_groups := [
+		["plains",      "Argent Hall (Plains)"],
+		["frost",       "Frostmere (Frost)"],
+		["forest",      "Verdana (Forest)"],
+		["underground", "Shadows Beneath (Underground)"],
+		["city",        "Metropolitan (City)"],
+		["astral",      "Astral Tear"],
+		["arena",       "Mortal Arena"],
+		["throne",      "Crimson Throne"],
+		["islands",     "Wandering Isles"],
+		["titan",       "Titan's Rest"],
 	]
 
-	for fi in GameState.FACILITY_DEFS.size():
-		var fac: Dictionary = GameState.FACILITY_DEFS[fi]
-		var is_built: bool  = fi in GameState.base_facilities
-		var check: Dictionary = GameState.can_build_facility(fi)
-		var can_build: bool = bool(check["ok"])
-		var bcol: Color = fac_colors[fi % fac_colors.size()]
+	var any_built: bool = false
+	for region_entry in region_groups:
+		var rid: String = str(region_entry[0])
+		var rname: String = str(region_entry[1])
+		var subs: Dictionary = _WS.SUBREGIONS.get(rid, {})
+		if subs.is_empty(): continue
+		# Collect any subregions in this region with placed buildings.
+		var sub_keys: Array = subs.keys()
+		var region_has_any: bool = false
+		var region_header_added: bool = false
+		for sub_name in sub_keys:
+			var s_str: String = str(sub_name)
+			var buildings: Array = GameState.get_base_buildings(s_str)
+			if buildings.is_empty():
+				continue
+			region_has_any = true
+			any_built = true
+			# Add the region group header on first hit so empty regions stay quiet.
+			if not region_header_added:
+				vbox.add_child(RimvaleUtils.label(rname, 16, RimvaleColors.ACCENT))
+				region_header_added = true
+			# Subregion card
+			var card := PanelContainer.new()
+			card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var sb := StyleBoxFlat.new()
+			sb.bg_color = Color(0.08, 0.10, 0.18, 1.0)
+			sb.border_color = Color(RimvaleColors.GOLD, 0.40)
+			sb.set_border_width_all(1); sb.set_corner_radius_all(6); sb.set_content_margin_all(12)
+			card.add_theme_stylebox_override("panel", sb)
+			vbox.add_child(card)
+			var cv := VBoxContainer.new()
+			cv.add_theme_constant_override("separation", 4)
+			card.add_child(cv)
+			# Title row
+			var trow := HBoxContainer.new()
+			trow.add_theme_constant_override("separation", 8)
+			cv.add_child(trow)
+			trow.add_child(RimvaleUtils.label(s_str, 14, RimvaleColors.GOLD))
+			var spc := Control.new(); spc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			trow.add_child(spc)
+			trow.add_child(RimvaleUtils.label(
+				"%d building%s" % [buildings.size(),
+					"s" if buildings.size() != 1 else ""],
+				11, RimvaleColors.TEXT_DIM))
+			# Central tile
+			var ct: Vector2i = GameState.get_central_tile(s_str)
+			if ct.x >= 0:
+				cv.add_child(RimvaleUtils.label(
+					"Command Center at (%d, %d)" % [ct.x, ct.y], 11, RimvaleColors.TEXT_GRAY))
+			# Per-building rows
+			for b in buildings:
+				var bt: String = str(b.get("type", ""))
+				if not GameState.BASE_BUILDINGS.has(bt): continue
+				var def: Dictionary = GameState.BASE_BUILDINGS[bt]
+				var bname: String = str(def.get("name", bt.capitalize()))
+				var bx: int = int(b.get("x", 0))
+				var by: int = int(b.get("y", 0))
+				var lvl: int = int(b.get("level", 1))
+				var row := RimvaleUtils.label(
+					"  • %s — Lv %d  · tile (%d, %d)" % [bname, lvl, bx, by],
+					11, def.get("color", RimvaleColors.TEXT_WHITE))
+				cv.add_child(row)
+		if region_has_any:
+			vbox.add_child(RimvaleUtils.spacer(8))
 
-		var card := PanelContainer.new()
-		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var card_sb := StyleBoxFlat.new()
-		card_sb.bg_color     = Color(bcol, 0.14) if is_built else Color(bcol, 0.05)
-		card_sb.border_color = Color(bcol, 0.65) if is_built else Color(bcol, 0.25)
-		card_sb.set_border_width_all(1)
-		card_sb.set_corner_radius_all(6)
-		card_sb.set_content_margin_all(12)
-		card.add_theme_stylebox_override("panel", card_sb)
-		vbox.add_child(card)
-
-		var cvbox := VBoxContainer.new()
-		cvbox.add_theme_constant_override("separation", 4)
-		card.add_child(cvbox)
-
-		# Title row: icon + name | status
-		var title_row := HBoxContainer.new()
-		title_row.add_theme_constant_override("separation", 8)
-		var title_col: Color = bcol if is_built else Color(bcol, 0.55)
-		title_row.add_child(RimvaleUtils.label(
-			"%s %s" % [str(fac["icon"]), str(fac["name"])], 15, title_col))
-		var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		title_row.add_child(spacer)
-		if is_built:
-			title_row.add_child(RimvaleUtils.label("BUILT", 11, RimvaleColors.HP_GREEN))
-		else:
-			var tier_txt: String = "Tier %d" % int(fac["tier"])
-			title_row.add_child(RimvaleUtils.label(tier_txt, 11, RimvaleColors.TEXT_DIM))
-		cvbox.add_child(title_row)
-
-		# Description
-		var desc_lbl := RimvaleUtils.label(str(fac["desc"]), 11,
-				RimvaleColors.TEXT_WHITE if is_built else RimvaleColors.TEXT_GRAY)
-		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		cvbox.add_child(desc_lbl)
-
-		# Cost row + Build button (if not built)
-		if not is_built:
-			var cost_row := HBoxContainer.new()
-			cost_row.add_theme_constant_override("separation", 12)
-			cvbox.add_child(cost_row)
-			if int(fac["gold"]) > 0:
-				cost_row.add_child(RimvaleUtils.label("%dg" % int(fac["gold"]), 11, RimvaleColors.GOLD))
-			if int(fac["rf"]) > 0:
-				cost_row.add_child(RimvaleUtils.label("%d RF" % int(fac["rf"]), 11, RimvaleColors.SP_PURPLE))
-
-			if can_build:
-				var build_btn = RimvaleUtils.button("Build", bcol, 32, 12)
-				var cap_fi: int = fi
-				var cap_vbox2: VBoxContainer = vbox
-				build_btn.pressed.connect(func():
-					if GameState.build_facility(cap_fi):
-						_populate_base_tab(cap_vbox2)
-				)
-				cvbox.add_child(build_btn)
-			else:
-				var reason_lbl := RimvaleUtils.label(
-					str(check["reason"]), 10, RimvaleColors.TEXT_DIM)
-				cvbox.add_child(reason_lbl)
+	if not any_built:
+		var empty := RimvaleUtils.label(
+			"No bases placed yet. Travel to a subregion and use the 🛠 Build " +
+			"Base panel on the explore screen to build a Command Center first.",
+			12, RimvaleColors.TEXT_GRAY)
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vbox.add_child(empty)
 
 	vbox.add_child(RimvaleUtils.spacer(16))
 
@@ -5259,7 +5433,7 @@ func _start_quest(quest: Dictionary) -> void:
 		# Award XP
 		var xp_amt: int = int(quest.get("reward_xp", 0))
 		for ph in party:
-			RimvaleAPI.engine.add_xp(ph, xp_amt, 20)
+			RimvaleAPI.engine.add_xp(ph, xp_amt, GameState.player_level)
 		# Remove quest from list
 		quests.erase(quest)
 	else:
@@ -5633,13 +5807,9 @@ func _ow_noise(x: float, z: float) -> float:
 	return v
 
 func _ow_is_sublimini_unlocked() -> bool:
-	# Sublimini requires all 9 region badges
-	var badge_count: int = 0
-	for r in OVERWORLD_REGIONS:
-		var b: String = str(r.get("badge", ""))
-		if not b.is_empty() and b in GameState.story_earned_badges:
-			badge_count += 1
-	return badge_count >= 9
+	# Delegated to GameState so the world map and ACF transport read the
+	# same definition.
+	return GameState.is_sublimini_unlocked()
 
 func _ow_sample_terrain(uv_x: float, uv_z: float) -> Array:
 	var wx: float = (uv_x - 0.5) * OW_HALF * 2.0
@@ -6601,6 +6771,16 @@ func _launch_explore(region_id: String, subregion_name: String = "") -> void:
 		info.dialog_text = "Deploy a unit to your Active Team before exploring, Agent."
 		add_child(info); info.popup_centered()
 		return
+	# Travel time first — based on the destination subregion's terrain
+	# travel_days, divided by active-vehicle speed if one is deployed.
+	# Walking speed baseline ≈ 3 mph.
+	var dest_sub: String = subregion_name
+	if dest_sub.is_empty() and GameState.current_subregion.is_empty():
+		var region_for_sub: Dictionary = _overworld_find_region(region_id)
+		var subs_pre: Array = region_for_sub.get("subregions", [])
+		if not subs_pre.is_empty():
+			dest_sub = str(subs_pre[0])
+	GameState.advance_time_for_travel(region_id, dest_sub)
 	GameState.travel_to_region(region_id)
 	if not subregion_name.is_empty():
 		GameState.travel_to_subregion(subregion_name)
@@ -6939,6 +7119,7 @@ func _on_complete_quest(idx: int) -> void:
 	var qid: String = str(quest.get("id", quest.get("title", "")))
 	if qid != "" and qid not in GameState.completed_quest_ids:
 		GameState.completed_quest_ids.append(qid)
+		GameState.advance_time_for_mission(0)
 
 	GameState.active_quests.remove_at(idx)
 	GameState.save_game()

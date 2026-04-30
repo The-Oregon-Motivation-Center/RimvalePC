@@ -4,13 +4,20 @@
 
 extends Node
 
+## Emitted whenever a save successfully completes. Listeners (e.g. the main
+## shell's auto-save indicator) hook this to flash a "Saved" toast.
+##   kind: "auto" or "manual"
+##   slot_id: which slot was written to
+##   path: the save file's path
+signal save_completed(kind: String, slot_id: String, path: String)
+
 const _WS = preload("res://autoload/world_systems.gd")
 
 # ── Player / Summoner ─────────────────────────────────────────────────────────
 var player_name: String = "Agent"
 var player_level: int = 1
 var player_xp: int = 0
-var player_xp_required: int = 1000
+var player_xp_required: int = 10   # see _xp_for_level() — doubles per level, capped at 1000
 var player_rank: String = "Recruit"
 
 # ── Economy ───────────────────────────────────────────────────────────────────
@@ -30,6 +37,165 @@ var active_team: Array = [-1, -1, -1, -1, -1]
 ## Full character collection — all owned character handles
 var collection: Array = []
 
+## Graveyard for dead characters. Each entry is a serialized character dict
+## with at minimum {name, lineage, level, age_at_death, cause, revive_cost}.
+## Characters move here on natural death (advance_days) or on death-save
+## failure in dungeons. They can be brought back via revive_from_cemetery
+## for a gold cost (10000 + 1000 * level).
+var cemetery: Array = []
+
+# ── Tile-placed bases (region-map base building) ─────────────────────────────
+##
+## A separate spatial system from the older base_tier/base_supplies fields.
+## Tracks user-placed buildings on the outskirts of region maps. Each
+## region (key = region_id like "plains", "frost") can have ONE base
+## anchored by a Command Center; subsequent buildings must be within 8
+## tiles of the central anchor.
+##
+## Structure:
+##   placed_bases[region_id] = {
+##       "central_tile": [x, y] | null,
+##       "buildings": [
+##           {"type": "central", "x": int, "y": int, "level": 1},
+##           ...
+##       ]
+##   }
+var placed_bases: Dictionary = {}
+
+## Catalogue of placeable buildings. `anchor` marks the Command Center.
+## `color` drives the 3D render tint until per-building meshes ship.
+## Range constraint (8 tiles Manhattan from central) applies to anchor=false.
+const BASE_BUILDINGS: Dictionary = {
+	"central": {
+		"name": "Command Center",
+		"cost": 5000,
+		"desc": "Anchors a base. Houses the Agent's command staff and " +
+			"sets the radius (8 tiles) within which other buildings can be placed.",
+		"color": Color(0.55, 0.45, 0.30),
+		"anchor": true,
+	},
+	"barracks": {
+		"name": "Barracks",
+		"cost": 1500,
+		"desc": "Sleeping quarters for the active team. Improves long-rest recovery.",
+		"color": Color(0.35, 0.30, 0.40),
+		"anchor": false,
+	},
+	"armory": {
+		"name": "Armory",
+		"cost": 1200,
+		"desc": "Stores weapons and equipment. Enables in-base quick re-equip.",
+		"color": Color(0.45, 0.35, 0.20),
+		"anchor": false,
+	},
+	"infirmary": {
+		"name": "Infirmary",
+		"cost": 2000,
+		"desc": "Medical wing. Heals injuries faster between missions.",
+		"color": Color(0.30, 0.50, 0.40),
+		"anchor": false,
+	},
+	"watchtower": {
+		"name": "Watchtower",
+		"cost": 1000,
+		"desc": "Adds an extra defender on raids and reveals nearby threats.",
+		"color": Color(0.45, 0.25, 0.25),
+		"anchor": false,
+	},
+	"granary": {
+		"name": "Granary",
+		"cost": 800,
+		"desc": "Stockpiles supplies. Reduces upkeep and travel rations.",
+		"color": Color(0.50, 0.45, 0.20),
+		"anchor": false,
+	},
+	"smithy": {
+		"name": "Smithy",
+		"cost": 1500,
+		"desc": "Repair and craft equipment in-base at reduced cost.",
+		"color": Color(0.40, 0.30, 0.25),
+		"anchor": false,
+	},
+}
+
+## Manhattan-distance radius enforced for non-anchor buildings.
+const BASE_BUILD_RADIUS: int = 8
+
+func has_central_building(region_id: String) -> bool:
+	if not placed_bases.has(region_id): return false
+	var b: Dictionary = placed_bases[region_id]
+	return b.get("central_tile", null) != null
+
+func get_central_tile(region_id: String) -> Vector2i:
+	if not has_central_building(region_id):
+		return Vector2i(-1, -1)
+	var ct = placed_bases[region_id].get("central_tile", null)
+	if ct is Array and ct.size() == 2:
+		return Vector2i(int(ct[0]), int(ct[1]))
+	return Vector2i(-1, -1)
+
+func get_base_buildings(region_id: String) -> Array:
+	if not placed_bases.has(region_id): return []
+	return Array(placed_bases[region_id].get("buildings", []))
+
+## Add a building. Returns "" on success, error string on failure.
+## Caller is expected to have validated placement (tile outskirts, range,
+## walkability, occupancy) — this function only handles the gold/state path.
+func add_base_building(region_id: String, building_type: String,
+		x: int, y: int) -> String:
+	if not BASE_BUILDINGS.has(building_type):
+		return "Unknown building type."
+	var def: Dictionary = BASE_BUILDINGS[building_type]
+	var cost: int = int(def.get("cost", 0))
+	var is_anchor: bool = bool(def.get("anchor", false))
+	if gold < cost:
+		return "Not enough gold (need %d)." % cost
+	# Anchor must be first; non-anchors require an existing anchor.
+	var has_anchor: bool = has_central_building(region_id)
+	if is_anchor and has_anchor:
+		return "This region already has a Command Center."
+	if not is_anchor and not has_anchor:
+		return "Build a Command Center first."
+	# Allocate the base record if absent
+	if not placed_bases.has(region_id):
+		placed_bases[region_id] = {"central_tile": null, "buildings": []}
+	var b: Dictionary = placed_bases[region_id]
+	var buildings: Array = b.get("buildings", [])
+	# Reject duplicate-tile placements
+	for existing in buildings:
+		if int(existing.get("x", -99)) == x and int(existing.get("y", -99)) == y:
+			return "Tile already has a building."
+	gold -= cost
+	buildings.append({
+		"type": building_type,
+		"x": x, "y": y,
+		"level": 1,
+	})
+	b["buildings"] = buildings
+	if is_anchor:
+		b["central_tile"] = [x, y]
+	placed_bases[region_id] = b
+	save_game()
+	return ""
+
+func remove_base_building(region_id: String, building_idx: int) -> String:
+	if not placed_bases.has(region_id):
+		return "No base in this region."
+	var b: Dictionary = placed_bases[region_id]
+	var buildings: Array = b.get("buildings", [])
+	if building_idx < 0 or building_idx >= buildings.size():
+		return "Invalid building index."
+	var entry: Dictionary = buildings[building_idx]
+	# Removing the central tears down the whole base.
+	if str(entry.get("type", "")) == "central":
+		placed_bases.erase(region_id)
+	else:
+		buildings.remove_at(building_idx)
+		b["buildings"] = buildings
+		placed_bases[region_id] = b
+	save_game()
+	return ""
+
 ## Handles currently busy with crafting / foraging tasks
 var busy_handles: Array = []
 
@@ -46,13 +212,225 @@ func advance_days(days: int) -> Array:
 	game_day += days
 	propagate_reputation()  # Spread reputation events to neighboring regions
 	var deaths: Array = []  # names of characters who died of old age
-	var e = Engine.get_singleton("RimvaleFallbackEngine") if Engine.has_singleton("RimvaleFallbackEngine") else get_node_or_null("/root/RimvaleFallbackEngine")
+	var e = RimvaleAPI.engine if RimvaleAPI != null else null
 	if e == null: return deaths
-	for h in collection:
+	# Snapshot the collection because move_to_cemetery mutates it.
+	var snapshot: Array = collection.duplicate()
+	for h in snapshot:
+		if not collection.has(h): continue   # already moved this pass
 		e.update_age_insanity(h)
+		# PHB age-HP scaling (3 → 2 → 1 per level past 80 / 90) lives in
+		# recalculate_derived_stats. Re-run it whenever age advances so
+		# the HP cap actually drops the moment a character crosses a
+		# threshold instead of waiting for another trigger (level-up,
+		# equip change, etc.).
+		if e.has_method("recalculate_derived_stats"):
+			e.recalculate_derived_stats(int(h))
 		if e.check_natural_death(h):
-			deaths.append(e.get_character_name(h))
+			var nm: String = e.get_character_name(h)
+			deaths.append(nm)
+			move_to_cemetery(int(h), "old age")
 	return deaths
+
+# ── Cemetery ─────────────────────────────────────────────────────────────────
+
+## Cost to revive a buried character: 10,000 base + 1,000 per level.
+## (User's stated example: a level 5 unit costs 15,000 gold.)
+func cemetery_revive_cost(level: int) -> int:
+	return 10000 + 1000 * maxi(1, level)
+
+## Endgame gate — Sublimini Dominus unlocks once the player has earned all
+## 9 region badges (one per main region). Same condition the world map
+## uses to reveal the floating island; ACF transport reads this so the
+## transport list can't bypass the story gate.
+const SUBLIMINI_REGION_BADGES: Array = [
+	"Plains Badge",
+	"Peaks of Isolation Badge",
+	"Shadows Beneath Badge",
+	"Glass Passage Badge",
+	"Isles Badge",
+	"Metropolitan Badge",
+	"Astral Tear Badge",
+	"Terminus Volarus Badge",
+	"Titan's Lament Badge",
+]
+
+func is_sublimini_unlocked() -> bool:
+	for b in SUBLIMINI_REGION_BADGES:
+		if not (b in story_earned_badges):
+			return false
+	return true
+
+## Move a character handle from the live engine collection into the cemetery.
+## Stores enough data to revive them later. Removes from active_team if they
+## were in it. Idempotent — calling on a handle already buried is a no-op.
+func move_to_cemetery(handle: int, cause: String = "killed in action") -> void:
+	var e = RimvaleAPI.engine if RimvaleAPI != null else null
+	if e == null:
+		return
+	if not collection.has(handle):
+		return
+	# Serialize what we need to revive them. Use the engine's serialize call
+	# so we round-trip through the same code path the save system uses.
+	var serialized: String = ""
+	if e.has_method("serialize_character"):
+		serialized = e.serialize_character(handle)
+	var grave: Dictionary = {
+		"name":          e.get_character_name(handle),
+		"lineage":       e.get_character_lineage_name(handle),
+		"level":         e.get_character_level(handle),
+		"age_at_death":  e.get_character_age(handle),
+		"cause":         cause,
+		"day_of_death":  game_day,
+		"serialized":    serialized,
+	}
+	cemetery.append(grave)
+	# Remove from active team if present
+	for i in range(active_team.size()):
+		if int(active_team[i]) == handle:
+			active_team[i] = -1
+	# Remove from collection and tear down the engine character
+	collection.erase(handle)
+	if e.has_method("destroy_character"):
+		e.destroy_character(handle)
+	# If the player has been wiped out (no active units left), grant a
+	# free Summon token so they can rebuild without grinding RF.
+	if get_active_handles().is_empty():
+		tokens += 1
+
+## Cost to extend a revived character's lifespan past their original
+## death age. Old-age deaths require extension; killed-in-action deaths
+## don't.
+const REVIVE_LIFE_EXTENSION_COST_PER_YEAR: int = 10000
+
+## Total cost to revive a grave with optional lifespan extension.
+## Base cost (10000 + 1000 * level) plus 10000 per year of extension.
+func revive_total_cost(grave_idx: int, extend_years: int = 0) -> int:
+	if grave_idx < 0 or grave_idx >= cemetery.size(): return 0
+	var lvl: int = int(cemetery[grave_idx].get("level", 1))
+	var ext: int = maxi(0, extend_years)
+	return cemetery_revive_cost(lvl) + ext * REVIVE_LIFE_EXTENSION_COST_PER_YEAR
+
+## Returns true if a grave is an old-age death and needs lifespan extension.
+func grave_needs_extension(grave_idx: int) -> bool:
+	if grave_idx < 0 or grave_idx >= cemetery.size(): return false
+	var cause: String = str(cemetery[grave_idx].get("cause", "")).to_lower()
+	return cause.find("old age") >= 0
+
+## Bring a grave back to life. For old-age deaths the caller must specify
+## extend_years > 0 — without that the character would die again instantly
+## from natural-death check. Each year of extension costs 10,000 gold AND
+## permanently reduces max_hp by 1; if the resulting max_hp would be ≤ 0
+## the character is permanently dead and the revive is refused.
+func revive_from_cemetery(grave_idx: int, extend_years: int = 0) -> String:
+	if grave_idx < 0 or grave_idx >= cemetery.size():
+		return "Invalid grave."
+	var grave: Dictionary = cemetery[grave_idx]
+	var ext: int = maxi(0, extend_years)
+	var needs_ext: bool = grave_needs_extension(grave_idx)
+	if needs_ext and ext < 1:
+		return "Old-age deaths must be extended by at least 1 year."
+	var cost: int = revive_total_cost(grave_idx, ext)
+	if gold < cost:
+		return "Not enough gold (need %d)." % cost
+	var e = RimvaleAPI.engine if RimvaleAPI != null else null
+	if e == null:
+		return "Engine unavailable."
+	# Restore via deserialize if we have the blob, otherwise fall back to a
+	# fresh character with the right name/lineage at level 1.
+	var serialized: String = str(grave.get("serialized", ""))
+	var new_handle: int = -1
+	if serialized != "" and e.has_method("deserialize_character"):
+		new_handle = int(e.deserialize_character(serialized))
+	if new_handle < 0:
+		new_handle = int(e.create_character(
+			str(grave.get("name", "Risen")),
+			str(grave.get("lineage", "Boreal Human")),
+			int(grave.get("age_at_death", 25))
+		))
+	if new_handle < 0:
+		return "Failed to revive — engine could not recreate character."
+	# Apply extension. The character's max_age must end up greater than
+	# their effective age, otherwise they'll die again on the next aging
+	# tick. Each year extended also chips 1 off max_hp permanently;
+	# if max_hp would reach 0, the character is permadead.
+	if e.has_method("get_char_dict"):
+		var c: Dictionary = e.get_char_dict(new_handle)
+		if c != null:
+			# Bump max_age past their current effective age + extension.
+			var cur_age: int = int(e.get_character_age(new_handle))
+			c["max_age"] = cur_age + ext
+			# Reduce max_hp + clamp current hp.
+			var old_max_hp: int = int(c.get("max_hp", 1))
+			var new_max_hp: int = old_max_hp - ext
+			if new_max_hp <= 0:
+				# Permadead — tear down the just-created handle and refund
+				# the engine call (no gold paid yet).
+				if e.has_method("destroy_character"):
+					e.destroy_character(new_handle)
+				return ("Cannot revive: %d years of extension would drop max HP to %d. " +
+					"Character is permanently dead.") % [ext, new_max_hp]
+			c["max_hp"] = new_max_hp
+			c["hp"] = mini(int(c.get("hp", new_max_hp)), new_max_hp)
+	# All checks passed — pay and finalise.
+	gold -= cost
+	collection.append(new_handle)
+	cemetery.remove_at(grave_idx)
+	return ""
+
+## Roll mission completion time and advance the calendar.
+##
+## Per design: each mission ends with a 1d3 base months roll. Each "fail"
+## during the mission contributes one extra week. The week-bucket rounds
+## UP to whole months at the end (1 wk → +1 month, 4 wk → +1 month,
+## 5 wk → +2 months, etc.). Returns total months added.
+##
+## Hook this from any mission-completion path (story missions, quests,
+## ACF ops, debug auto-complete) with the in-mission fail count if known
+## or 0 for a clean run.
+func advance_time_for_mission(fail_count: int = 0) -> int:
+	var base_months: int = randi_range(1, 3)
+	var fail_weeks: int = maxi(0, fail_count)
+	var fail_months: int = 0
+	if fail_weeks > 0:
+		fail_months = (fail_weeks + 3) / 4   # ceil(weeks/4) — int division
+	var total_months: int = base_months + fail_months
+	advance_days(total_months * 30)
+	return total_months
+
+## Compute and apply travel time when the party moves to a new subregion.
+## Uses world_systems.gd SUBREGIONS[region][subregion]["travel_days"] as the
+## walking baseline. If a vehicle is deployed, scales by (walking_speed /
+## vehicle_speed) so faster vehicles cut the trip down. Returns days spent.
+##
+## No-op when the destination matches the current subregion (within-region
+## hops still advance via mission/encounter ticks elsewhere).
+func advance_time_for_travel(to_region: String, to_subregion: String = "") -> int:
+	# Same subregion → no travel
+	if to_region == current_region and to_subregion == current_subregion:
+		return 0
+	var WS = load("res://autoload/world_systems.gd")
+	if WS == null:
+		advance_days(1)
+		return 1
+	var subregions: Dictionary = WS.SUBREGIONS.get(to_region, {})
+	# Pick destination subregion's travel_days; fall back to first or to 1
+	var travel_days: int = 1
+	if to_subregion != "" and subregions.has(to_subregion):
+		travel_days = int(subregions[to_subregion].get("travel_days", 1))
+	elif not subregions.is_empty():
+		var first_key: String = subregions.keys()[0]
+		travel_days = int(subregions[first_key].get("travel_days", 1))
+	# Vehicle speed multiplier — walking baseline ≈ 3 mph (8 hr/day pace).
+	var effective_days: float = float(travel_days)
+	if active_vehicle != "":
+		var stats: Dictionary = VehicleData.get_stats(active_vehicle)
+		var speed_paved: float = float(stats.get("speed_paved", 0))
+		if speed_paved >= 4.0:
+			effective_days = float(travel_days) * (3.0 / speed_paved)
+	var days: int = maxi(1, int(ceil(effective_days)))
+	advance_days(days)
+	return days
 
 # ── Director ──────────────────────────────────────────────────────────────────
 var director_message: String = "Welcome back, Agent. Your units await orders."
@@ -952,6 +1330,131 @@ const MAX_SHORT_RESTS: int = 3
 var stash: Array = []   # Array of item name Strings
 var stash_hp: Dictionary = {}  # item_name -> Array[int] of HP values per copy (-1 = full HP)
 
+# ── Owned vehicles (Specialty subsystem) ──────────────────────────────────────
+## Map of vehicle_name → {st_current, hp_current, in_metropolitan}
+## Populated when the player acquires a vehicle. Spark-tank levels are tracked
+## per-vehicle and refilled with party SP via refill_vehicle_st(). When the
+## player travels back to the Metropolitan, set in_metropolitan true so
+## refill costs use the cheap rate.
+var owned_vehicles: Dictionary = {}
+var party_in_metropolitan: bool = false
+
+## Currently deployed vehicle name, or "" if the party is on foot. While set:
+##  - The region-map party token renders as the vehicle marker instead.
+##  - Dungeon events the party traverses on the world map are skipped, but the
+##    vehicle takes 1 HP of damage per skipped event.
+##  - Vehicle HP at 0 triggers an auto-recall and the next event will land
+##    on the party normally.
+var active_vehicle: String = ""
+
+## Add a vehicle to the player's garage. Idempotent.
+func acquire_vehicle(name: String) -> bool:
+	if owned_vehicles.has(name): return false
+	var stats: Dictionary = VehicleData.get_stats(name)
+	if stats.is_empty(): return false
+	owned_vehicles[name] = {
+		"st_current": int(stats.get("st_max", 1)),
+		"hp_current": int(stats.get("hp", 50)),
+	}
+	return true
+
+## Remove a vehicle from the garage (sold, lost, etc.)
+func remove_vehicle(name: String) -> bool:
+	if not owned_vehicles.has(name): return false
+	owned_vehicles.erase(name)
+	return true
+
+## Refill a vehicle's spark tanks. Pulls SP from the active team. Cost depends
+## on whether the party is currently inside the Metropolitan.
+##
+## Returns "" on success or an error string explaining why it failed.
+func refill_vehicle_st(name: String) -> String:
+	if not owned_vehicles.has(name): return "You don't own this vehicle."
+	var stats: Dictionary = VehicleData.get_stats(name)
+	if stats.is_empty(): return "Unknown vehicle."
+	var v: Dictionary = owned_vehicles[name]
+	var st_max: int = int(stats.get("st_max", 1))
+	var st_now: int = int(v.get("st_current", 0))
+	if st_now >= st_max: return "Tanks already full."
+	var cost_key: String = "sp_refill_in_metro" if party_in_metropolitan else "sp_refill_outside"
+	var sp_cost: int = int(stats.get(cost_key, 99))
+	# Try to pay from the first active hero with enough SP
+	var paid: bool = false
+	var e = RimvaleAPI.engine
+	for h in active_team:
+		var ih: int = int(h)
+		if ih == -1 or not e._chars.has(ih): continue
+		var sp_avail: int = int(e.get_character_sp(ih))
+		if sp_avail >= sp_cost:
+			e._chars[ih]["sp"] = sp_avail - sp_cost
+			paid = true
+			break
+	if not paid:
+		return "No active hero has %d SP to refill the tank." % sp_cost
+	v["st_current"] = st_max
+	owned_vehicles[name] = v
+	return ""
+
+## Spend N spark tanks on a vehicle (e.g., to use a special ability or
+## traverse 1 hour). Returns true if successful.
+func spend_vehicle_st(name: String, amount: int = 1) -> bool:
+	if not owned_vehicles.has(name): return false
+	var v: Dictionary = owned_vehicles[name]
+	var st: int = int(v.get("st_current", 0))
+	if st < amount: return false
+	v["st_current"] = st - amount
+	owned_vehicles[name] = v
+	return true
+
+## Deploy a vehicle from the garage so it becomes the active region-map token.
+## Recalls any previously-active vehicle. Returns "" on success or an error.
+func deploy_vehicle(name: String) -> String:
+	if not owned_vehicles.has(name):
+		return "You don't own this vehicle."
+	var v: Dictionary = owned_vehicles[name]
+	if int(v.get("hp_current", 0)) <= 0:
+		return "%s is disabled — repair it before deploying." % name
+	active_vehicle = name
+	return ""
+
+## Stow the active vehicle. Idempotent.
+func recall_vehicle() -> void:
+	active_vehicle = ""
+
+## Damage the active (or named) vehicle by `amount` HP. Returns true if the
+## hit destroyed the vehicle (HP reached 0). Auto-recalls on destruction.
+func damage_vehicle(amount: int = 1, name: String = "") -> bool:
+	var target: String = name if name != "" else active_vehicle
+	if target == "" or not owned_vehicles.has(target):
+		return false
+	var v: Dictionary = owned_vehicles[target]
+	var hp: int = int(v.get("hp_current", 0))
+	hp = maxi(0, hp - amount)
+	v["hp_current"] = hp
+	owned_vehicles[target] = v
+	if hp == 0:
+		# Disabled — auto-recall if this was the deployed vehicle so the party
+		# stops appearing as a vehicle marker.
+		if active_vehicle == target:
+			active_vehicle = ""
+		return true
+	return false
+
+## Repair the active (or named) vehicle by `amount` HP, capped at the vehicle's
+## stat-block HP max. Used by repair items / blacksmith services.
+func repair_vehicle(amount: int, name: String = "") -> int:
+	var target: String = name if name != "" else active_vehicle
+	if target == "" or not owned_vehicles.has(target):
+		return 0
+	var stats: Dictionary = VehicleData.get_stats(target)
+	var hp_max: int = int(stats.get("hp", 50))
+	var v: Dictionary = owned_vehicles[target]
+	var hp: int = int(v.get("hp_current", 0))
+	var new_hp: int = mini(hp_max, hp + amount)
+	v["hp_current"] = new_hp
+	owned_vehicles[target] = v
+	return new_hp - hp
+
 func add_to_stash(item_name: String, hp: int = -1) -> void:
 	stash.append(item_name)
 	if not stash_hp.has(item_name):
@@ -1004,7 +1507,298 @@ var selected_hero_handle: int = -1
 # Team helpers
 # ── ─────────────────────────────────────────────────────────────────────────
 
-const SAVE_PATH: String = "user://rimvale_save.json"
+# ── Multi-slot save system ────────────────────────────────────────────────────
+# Layout:
+#   user://saves/<slot_id>/meta.json              ← slot metadata
+#   user://saves/<slot_id>/auto_01.json           ← most recent auto-save
+#   user://saves/<slot_id>/auto_02.json           ← previous auto
+#   user://saves/<slot_id>/auto_03.json           ← oldest kept auto (3 max)
+#   user://saves/<slot_id>/manual_<timestamp>.json← named manual saves (any count)
+#
+# `SAVE_PATH` (legacy single-file path) is preserved so existing code that
+# calls save_game()/load_game() keeps working — those now route through the
+# active slot's auto rotation.
+
+const SAVE_DIR_ROOT: String = "user://saves"
+const LEGACY_SAVE_PATH: String = "user://rimvale_save.json"
+const AUTO_SAVES_KEPT: int = 3
+
+## The currently-active slot. New games and continues set this; auto-save
+## writes go into this slot. Defaults to "slot_01" on first run.
+var current_save_slot: String = "slot_01"
+
+## Computed path for the most-recent auto-save in the active slot.
+## Used by save_game() / load_game() so the legacy single-file calls now
+## transparently target the multi-slot system.
+var SAVE_PATH: String:
+	get: return _slot_auto_path(current_save_slot, 1)
+
+
+# ── Slot helpers ──────────────────────────────────────────────────────────────
+
+func _slot_dir(slot_id: String) -> String:
+	return "%s/%s" % [SAVE_DIR_ROOT, slot_id]
+
+func _slot_auto_path(slot_id: String, index: int) -> String:
+	return "%s/auto_%02d.json" % [_slot_dir(slot_id), index]
+
+func _slot_meta_path(slot_id: String) -> String:
+	return "%s/meta.json" % _slot_dir(slot_id)
+
+func _slot_manual_path(slot_id: String, label: String) -> String:
+	# Sanitize the label so it's safe for a filename, then add a timestamp
+	# so manual saves don't collide.
+	var safe: String = label.to_lower().replace(" ", "_")
+	var allowed: String = "abcdefghijklmnopqrstuvwxyz0123456789_-"
+	var clean: String = ""
+	for c in safe:
+		if c in allowed: clean += c
+	if clean.is_empty(): clean = "save"
+	var ts: String = Time.get_datetime_string_from_system().replace(":", "").replace("-", "").replace("T", "_")
+	return "%s/manual_%s_%s.json" % [_slot_dir(slot_id), clean, ts]
+
+## Make sure the saves directory + the requested slot's directory exist.
+func _ensure_slot_dir(slot_id: String) -> void:
+	if not DirAccess.dir_exists_absolute(SAVE_DIR_ROOT):
+		DirAccess.make_dir_recursive_absolute(SAVE_DIR_ROOT)
+	var d: String = _slot_dir(slot_id)
+	if not DirAccess.dir_exists_absolute(d):
+		DirAccess.make_dir_recursive_absolute(d)
+
+## Returns sorted list of slot ids (e.g. ["slot_01", "slot_02"]).
+func list_save_slots() -> Array:
+	var out: Array = []
+	if not DirAccess.dir_exists_absolute(SAVE_DIR_ROOT):
+		return out
+	var d := DirAccess.open(SAVE_DIR_ROOT)
+	if d == null: return out
+	d.list_dir_begin()
+	while true:
+		var name := d.get_next()
+		if name == "": break
+		if d.current_is_dir() and name.begins_with("slot_"):
+			out.append(name)
+	d.list_dir_end()
+	out.sort()
+	return out
+
+## Pick the next available slot id (smallest unused number ≥ 1).
+func _next_slot_id() -> String:
+	var existing := list_save_slots()
+	for i in range(1, 100):
+		var id := "slot_%02d" % i
+		if id not in existing:
+			return id
+	return "slot_99"
+
+## Create a brand-new save slot with the given display name and become
+## active in it. Returns the slot id.
+func create_save_slot(display_name: String = "") -> String:
+	var slot_id := _next_slot_id()
+	_ensure_slot_dir(slot_id)
+	if display_name.is_empty():
+		display_name = "Save " + slot_id.replace("slot_", "")
+	var meta: Dictionary = {
+		"slot_id":      slot_id,
+		"display_name": display_name,
+		"created_at":   Time.get_datetime_string_from_system(),
+		"last_played":  Time.get_datetime_string_from_system(),
+		"playtime_secs": 0,
+	}
+	_write_meta(slot_id, meta)
+	current_save_slot = slot_id
+	return slot_id
+
+## Permanently remove a slot and all its saves.
+func delete_save_slot(slot_id: String) -> bool:
+	var d: String = _slot_dir(slot_id)
+	if not DirAccess.dir_exists_absolute(d): return false
+	var dir := DirAccess.open(d)
+	if dir == null: return false
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "": break
+		if not dir.current_is_dir():
+			DirAccess.remove_absolute("%s/%s" % [d, name])
+	dir.list_dir_end()
+	DirAccess.remove_absolute(d)
+	return true
+
+## Switch the active save slot. Subsequent save_game() calls write here.
+func set_active_slot(slot_id: String) -> void:
+	current_save_slot = slot_id
+	_ensure_slot_dir(slot_id)
+
+func _write_meta(slot_id: String, meta: Dictionary) -> void:
+	_ensure_slot_dir(slot_id)
+	var f := FileAccess.open(_slot_meta_path(slot_id), FileAccess.WRITE)
+	if f == null: return
+	f.store_string(JSON.stringify(meta, "\t"))
+	f.close()
+
+func _read_meta(slot_id: String) -> Dictionary:
+	var p := _slot_meta_path(slot_id)
+	if not FileAccess.file_exists(p): return {}
+	var f := FileAccess.open(p, FileAccess.READ)
+	if f == null: return {}
+	var txt: String = f.get_as_text()
+	f.close()
+	var j := JSON.new()
+	if j.parse(txt) != OK: return {}
+	if typeof(j.data) == TYPE_DICTIONARY: return j.data
+	return {}
+
+## Returns slot summaries for the title screen.
+##   [{slot_id, display_name, last_played, latest_save_path, hero_summary}, ...]
+func get_slot_summaries() -> Array:
+	var out: Array = []
+	for sid in list_save_slots():
+		var meta := _read_meta(sid)
+		var sum := {
+			"slot_id":      sid,
+			"display_name": str(meta.get("display_name", sid)),
+			"last_played":  str(meta.get("last_played", "")),
+			"playtime_secs": int(meta.get("playtime_secs", 0)),
+			"latest_save":  _newest_save_in_slot(sid),
+		}
+		out.append(sum)
+	return out
+
+## Path of the most recently modified save (auto OR manual) in a slot, or "".
+func _newest_save_in_slot(slot_id: String) -> String:
+	var d: String = _slot_dir(slot_id)
+	if not DirAccess.dir_exists_absolute(d): return ""
+	var dir := DirAccess.open(d)
+	if dir == null: return ""
+	var newest: String = ""
+	var newest_mt: int = -1
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "": break
+		if dir.current_is_dir(): continue
+		if name == "meta.json": continue
+		if not name.ends_with(".json"): continue
+		var p: String = "%s/%s" % [d, name]
+		var mt: int = FileAccess.get_modified_time(p)
+		if mt > newest_mt:
+			newest_mt = mt
+			newest = p
+	dir.list_dir_end()
+	return newest
+
+## All saves in a slot (auto + manual), newest-first. Returns array of dicts:
+##   [{path, filename, kind: "auto"|"manual", label, modified_time}, ...]
+func list_saves_in_slot(slot_id: String) -> Array:
+	var out: Array = []
+	var d: String = _slot_dir(slot_id)
+	if not DirAccess.dir_exists_absolute(d): return out
+	var dir := DirAccess.open(d)
+	if dir == null: return out
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "": break
+		if dir.current_is_dir(): continue
+		if name == "meta.json": continue
+		if not name.ends_with(".json"): continue
+		var path: String = "%s/%s" % [d, name]
+		var kind: String = "manual"
+		var label: String = name.replace(".json", "")
+		if name.begins_with("auto_"):
+			kind = "auto"
+			label = name.replace("auto_", "Auto-save ").replace(".json", "")
+		elif name.begins_with("manual_"):
+			# Strip prefix + trailing timestamp for a cleaner label
+			label = name.replace("manual_", "").replace(".json", "")
+			# Also keep the timestamp portion separate for display
+		out.append({
+			"path":          path,
+			"filename":      name,
+			"kind":          kind,
+			"label":         label,
+			"modified_time": FileAccess.get_modified_time(path),
+		})
+	dir.list_dir_end()
+	out.sort_custom(func(a, b): return int(a["modified_time"]) > int(b["modified_time"]))
+	return out
+
+## Rotate auto saves: auto_03 ← auto_02, auto_02 ← auto_01, auto_01 ← new write
+## Used right before writing a new auto-save so we keep the last 3 generations.
+func _rotate_auto_saves(slot_id: String) -> void:
+	for i in range(AUTO_SAVES_KEPT - 1, 0, -1):
+		var src := _slot_auto_path(slot_id, i)
+		var dst := _slot_auto_path(slot_id, i + 1)
+		if FileAccess.file_exists(src):
+			# Copy then delete (DirAccess.rename has spotty Windows behaviour)
+			if FileAccess.file_exists(dst):
+				DirAccess.remove_absolute(dst)
+			var rf := FileAccess.open(src, FileAccess.READ)
+			if rf != null:
+				var wf := FileAccess.open(dst, FileAccess.WRITE)
+				if wf != null:
+					wf.store_buffer(rf.get_buffer(rf.get_length()))
+					wf.close()
+				rf.close()
+				DirAccess.remove_absolute(src)
+
+## Manual save with a player-supplied label. Returns the saved path or "".
+func save_manual(label: String = "Manual Save") -> String:
+	_ensure_slot_dir(current_save_slot)
+	var save_payload: String = _build_save_payload()
+	var path := _slot_manual_path(current_save_slot, label)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null: return ""
+	f.store_string(save_payload)
+	f.close()
+	_touch_meta()
+	save_completed.emit("manual", current_save_slot, path)
+	return path
+
+## Load a specific save file by path. Routes through the existing load
+## pipeline.
+func load_specific_save(path: String) -> bool:
+	if not FileAccess.file_exists(path): return false
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null: return false
+	var text: String = f.get_as_text()
+	f.close()
+	return _apply_save_text(text)
+
+func _touch_meta() -> void:
+	var meta := _read_meta(current_save_slot)
+	if meta.is_empty():
+		meta = {"slot_id": current_save_slot, "display_name": "Save",
+				"created_at": Time.get_datetime_string_from_system()}
+	meta["last_played"] = Time.get_datetime_string_from_system()
+	# Best-guess hero summary for title-screen preview
+	var hero_names: Array = []
+	for h in get_active_handles():
+		if h < 0: continue
+		var nm: String = ""
+		if RimvaleAPI.engine != null and RimvaleAPI.engine.has_method("get_character_name"):
+			nm = str(RimvaleAPI.engine.get_character_name(h))
+		if nm != "": hero_names.append(nm)
+	meta["heroes"] = hero_names
+	_write_meta(current_save_slot, meta)
+
+## Migrate the legacy single-file save into slot_01 on first multi-slot use.
+func migrate_legacy_save_if_needed() -> void:
+	if list_save_slots().size() > 0:
+		return  # something already in slots — leave alone
+	if not FileAccess.file_exists(LEGACY_SAVE_PATH):
+		return
+	create_save_slot("Migrated Save")
+	var src := FileAccess.open(LEGACY_SAVE_PATH, FileAccess.READ)
+	if src == null: return
+	var data: String = src.get_as_text()
+	src.close()
+	var dst := FileAccess.open(_slot_auto_path(current_save_slot, 1), FileAccess.WRITE)
+	if dst == null: return
+	dst.store_string(data)
+	dst.close()
+	_touch_meta()
 
 ## Whether the game state has been initialised (by title screen or fallback).
 var _game_loaded: bool = false
@@ -1017,16 +1811,42 @@ func _ready() -> void:
 
 ## Called by the title screen when the player chooses "Continue".
 ## Returns true if the save loaded successfully.
-func continue_game() -> bool:
-	var ok := load_game()
+##
+## If a slot id is passed, that slot becomes active and we load its newest
+## save (auto OR manual). Otherwise we use whichever slot is currently
+## active, falling back to the most recent across all slots.
+func continue_game(slot_id: String = "") -> bool:
+	migrate_legacy_save_if_needed()
+	if slot_id != "":
+		current_save_slot = slot_id
+	else:
+		# Auto-pick: most recently played slot.
+		var newest_slot: String = ""
+		var newest_mt: int = -1
+		for sid in list_save_slots():
+			var p := _newest_save_in_slot(sid)
+			if p == "": continue
+			var mt: int = FileAccess.get_modified_time(p)
+			if mt > newest_mt:
+				newest_mt = mt; newest_slot = sid
+		if newest_slot != "":
+			current_save_slot = newest_slot
+	var newest := _newest_save_in_slot(current_save_slot)
+	var ok: bool = false
+	if newest != "":
+		ok = load_specific_save(newest)
+	else:
+		ok = load_game()
 	_game_loaded = true
 	if not ok:
 		_ensure_starter_units()
 	return ok
 
 ## Called by the title screen when the player chooses "New Game".
-func start_new_game() -> void:
+## Creates a fresh slot so it doesn't trample existing saves.
+func start_new_game(display_name: String = "") -> void:
 	wipe_all()
+	create_save_slot(display_name)
 	_game_loaded = true
 
 ## Safety net: if a gameplay scene runs before the title screen has set up
@@ -1121,13 +1941,24 @@ func spend_gold(amount: int) -> bool:
 
 ## XP required to reach the given level (from current level).
 ## Matches Rimvale Mobile thresholds: 1000 × level.
+## XP needed to advance from `lv` to `lv + 1`.
+##   L1=10  L2=20  L3=40  L4=80  L5=160  L6=320  L7=640  L8+=1000
+## Doubles each level, capped at 1000 XP per level so high-level players
+## don't face an exponential wall.
 func _xp_for_level(lv: int) -> int:
-	return lv * 1000
+	var level: int = maxi(1, lv)
+	var shift: int = mini(level - 1, 30)   # avoid overflow at very high levels
+	var req: int = 10 * (1 << shift)
+	return mini(1000, req)
 
 ## Check if accumulated XP triggers a level-up. Returns true if the player leveled up.
 ## PHB: each level grants 1 stat point + 3 skill points to every active character.
 func check_level_up() -> bool:
 	var leveled: bool = false
+	# Always recompute the threshold from the live formula. A stored
+	# player_xp_required from before the curve was tuned would otherwise
+	# leave the player stuck (e.g. 428 XP at level 1 with a stale 1000 cap).
+	player_xp_required = _xp_for_level(player_level)
 	while player_xp >= player_xp_required:
 		player_xp      -= player_xp_required
 		player_level   += 1
@@ -1267,7 +2098,7 @@ func wipe_all() -> void:
 	remnant_fragments = 0
 	player_level = 1
 	player_xp = 0
-	player_xp_required = 1000
+	player_xp_required = _xp_for_level(player_level)
 	player_rank = "Recruit"
 	short_rests_used = 0
 	stash.clear()
@@ -1302,7 +2133,7 @@ func save_game() -> bool:
 			"sacrifice_dc":  int(cd.get("sacrifice_dc", 10)),
 			"level":         int(cd.get("level",      1)),
 			"xp":            int(cd.get("xp",         0)),
-			"xp_req":        int(cd.get("xp_req",   100)),
+			"xp_req":        int(cd.get("xp_req",   _xp_for_level(int(cd.get("level", 1))))),
 			"hp":            int(cd.get("hp",        20)),
 			"max_hp":        int(cd.get("max_hp",    20)),
 			"ac":            int(cd.get("ac",        12)),
@@ -1334,8 +2165,13 @@ func save_game() -> bool:
 			"injuries":      Array(cd.get("injuries", [])),
 			"items":         Array(cd.get("items",    [])),
 			"attuned":       Array(cd.get("attuned",  [])),
+			"apex_tiers":    Dictionary(cd.get("apex_tiers", {})),
+			"mi_active_toggles": Dictionary(cd.get("mi_active_toggles", {})),
+			"attuned_vehicles":  Dictionary(cd.get("attuned_vehicles", {})),
 			"safeguard_stats":Array(cd.get("safeguard_stats", [])),
 			"favored_skills":Array(cd.get("favored_skills", [])),
+			"mastered_weapons": Array(cd.get("mastered_weapons", [])),
+			"wm_can_rechoose": bool(cd.get("wm_can_rechoose", true)),
 		}
 		chars_data.append(entry)
 
@@ -1429,8 +2265,13 @@ func save_game() -> bool:
 		"base_facilities":           base_facilities,
 		"recruited_allies":          recruited_allies,
 		"custom_monsters":           custom_monsters,
+		"cemetery":                  cemetery,
+		"placed_bases":              placed_bases,
 		"stash":                     stash,
 		"stash_hp":                  stash_hp,
+		"owned_vehicles":            owned_vehicles,
+		"party_in_metropolitan":     party_in_metropolitan,
+		"active_vehicle":            active_vehicle,
 		"team_indices":              team_indices,
 		"characters":                chars_data,
 		"crafting_tasks":            craft_data,
@@ -1440,13 +2281,61 @@ func save_game() -> bool:
 		"last_login_date":           last_login_date,
 	}
 
-	var file := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	# Multi-slot routing — rotate previous autos and write the new one to
+	# auto_01 in the active slot. The legacy single-file path is no longer
+	# the source of truth; SAVE_PATH now resolves to the active slot's
+	# auto_01.json via the property getter above.
+	_ensure_slot_dir(current_save_slot)
+	_rotate_auto_saves(current_save_slot)
+	var path: String = _slot_auto_path(current_save_slot, 1)
+	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		push_warning("GameState: failed to open save file for writing")
 		return false
 	file.store_string(JSON.stringify(data, "\t"))
 	file.close()
+	_touch_meta()
+	save_completed.emit("auto", current_save_slot, path)
 	return true
+
+
+## Same payload as save_game() but returns the JSON string instead of writing.
+## Used by save_manual() so manual saves get an identical snapshot.
+func _build_save_payload() -> String:
+	# We can re-use save_game() by capturing the auto-save it produces.
+	# Calling save_game() first writes auto_01.json in the active slot, then
+	# we read that file back. Avoids duplicating the entire payload-build
+	# function (which is ~150 lines of dict assembly).
+	save_game()
+	var auto_path: String = _slot_auto_path(current_save_slot, 1)
+	if not FileAccess.file_exists(auto_path):
+		return ""
+	var f := FileAccess.open(auto_path, FileAccess.READ)
+	if f == null: return ""
+	var s: String = f.get_as_text()
+	f.close()
+	return s
+
+
+## Apply a save-text string (JSON) to live state. Used by load_specific_save().
+func _apply_save_text(text: String) -> bool:
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		push_warning("GameState: save file JSON parse error")
+		return false
+	var data = json.data
+	if typeof(data) != TYPE_DICTIONARY:
+		return false
+	# Stage the data into a temporary in-memory file path — the existing
+	# load_game() reads from SAVE_PATH, so write the picked save into the
+	# active slot's auto_01 and call load_game().
+	_ensure_slot_dir(current_save_slot)
+	var path: String = _slot_auto_path(current_save_slot, 1)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null: return false
+	f.store_string(text)
+	f.close()
+	return load_game()
 
 ## Load game state from disk. Returns true on success.
 func load_game() -> bool:
@@ -1485,7 +2374,7 @@ func load_game() -> bool:
 	player_name         = str(data.get("player_name",    "Agent"))
 	player_level        = int(data.get("player_level",   1))
 	player_xp           = int(data.get("player_xp",      0))
-	player_xp_required  = int(data.get("player_xp_required", 1000))
+	player_xp_required  = int(data.get("player_xp_required", _xp_for_level(player_level)))
 	player_rank         = str(data.get("player_rank",    "Recruit"))
 	game_day            = int(data.get("game_day",         1))
 	debug_mode          = bool(data.get("debug_mode",     false))
@@ -1536,8 +2425,13 @@ func load_game() -> bool:
 	base_facilities          = Array(data.get("base_facilities", [0]))
 	recruited_allies         = Array(data.get("recruited_allies", []))
 	custom_monsters          = Array(data.get("custom_monsters", []))
+	cemetery                 = Array(data.get("cemetery",                 []))
+	placed_bases             = Dictionary(data.get("placed_bases",             {}))
 	stash                    = Array(data.get("stash",                    []))
 	stash_hp                 = data.get("stash_hp", {}) as Dictionary
+	owned_vehicles           = data.get("owned_vehicles", {}) as Dictionary
+	party_in_metropolitan    = bool(data.get("party_in_metropolitan", false))
+	active_vehicle           = str(data.get("active_vehicle", ""))
 	last_login_date          = str(data.get("last_login_date", ""))
 
 	# Restore quest state
@@ -1600,7 +2494,7 @@ func load_game() -> bool:
 			char_dict["sacrifice_dc"]      = int(cd.get("sacrifice_dc", 10))
 			char_dict["level"]         = int(cd.get("level",      1))
 			char_dict["xp"]            = int(cd.get("xp",         0))
-			char_dict["xp_req"]        = int(cd.get("xp_req",   100))
+			char_dict["xp_req"]        = int(cd.get("xp_req",   _xp_for_level(int(cd.get("level", 1)))))
 			char_dict["hp"]            = int(cd.get("hp",        20))
 			char_dict["max_hp"]        = int(cd.get("max_hp",    20))
 			char_dict["ac"]            = int(cd.get("ac",        12))

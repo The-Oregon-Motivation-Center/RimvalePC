@@ -1,7 +1,11 @@
 ## explore_maps.gd
 ## Map data for all explorable subregions in Rimvale.
-## Each map is a 30×22 tile grid with associated palette, buildings, POIs, and content.
-## Used by explore.gd to drive the data-driven exploration engine.
+## Each map here is a 30×22 hand-authored CITY grid with palette, buildings,
+## POIs, and content. At load time `explore.gd._expand_to_outskirts()` wraps
+## each city in a procedurally-generated 8-cell ring of wilderness, producing
+## a final 90×66 region (city centered at x=30..59, y=22..43, with
+## outskirts filling the rest). Author the city portion here; outskirts are
+## procedural and seeded by region name for stable layout.
 
 
 ## Look up the map config for a given subregion name.
@@ -540,7 +544,7 @@ static func _kingdom_of_qunorum() -> Dictionary:
 static func _house_of_arachana() -> Dictionary:
 	return {
 		"name": "House of Arachana",
-		"region_id": "shadows",
+		"region_id": "plains",
 		"hud_title": "🕷️ House of Arachana",
 		"terrain_style": 0,
 		"encounter_rate": 0.25,
@@ -992,7 +996,7 @@ static func _forest_of_subeden() -> Dictionary:
 static func _eternal_library() -> Dictionary:
 	return {
 		"name": "Eternal Library",
-		"region_id": "metro",
+		"region_id": "plains",
 		"hud_title": "📚 Eternal Library",
 		"terrain_style": 6,
 		"encounter_rate": 0.08,
@@ -1143,7 +1147,7 @@ static func _eternal_library() -> Dictionary:
 static func _mortal_arena() -> Dictionary:
 	return {
 		"name": "Mortal Arena",
-		"region_id": "plains",
+		"region_id": "titans",
 		"hud_title": "⚔️ Mortal Arena",
 		"terrain_style": 3,
 		"encounter_rate": 0.15,
@@ -1440,7 +1444,7 @@ static func _pharaohs_den() -> Dictionary:
 static func _corrupted_marshes() -> Dictionary:
 	return {
 		"name": "Corrupted Marshes",
-		"region_id": "isles",
+		"region_id": "shadows",
 		"hud_title": "🌑 Corrupted Marshes",
 		"terrain_style": 9,
 		"encounter_rate": 0.22,
@@ -1911,7 +1915,7 @@ static func _crypt_at_end_of_valley() -> Dictionary:
 static func _argent_hall() -> Dictionary:
 	return {
 		"name": "Argent Hall",
-		"region_id": "glass",
+		"region_id": "peaks",
 		"hud_title": "❄️ Argent Hall",
 		"terrain_style": 8,
 		"encounter_rate": 0.18,
@@ -2225,7 +2229,7 @@ static func _sacral_separation() -> Dictionary:
 static func _infernal_machine() -> Dictionary:
 	return {
 		"name": "Infernal Machine",
-		"region_id": "titans",
+		"region_id": "glass",
 		"hud_title": "🔥 Infernal Machine",
 		"terrain_style": 13,
 		"encounter_rate": 0.30,
@@ -3162,7 +3166,7 @@ static func _lito() -> Dictionary:
 static func _west_end_gullet() -> Dictionary:
 	return {
 		"name": "West End Gullet",
-		"region_id": "metro",
+		"region_id": "astral",
 		"hud_title": "👁️ West End Gullet",
 		"terrain_style": 19,
 		"encounter_rate": 0.20,
@@ -3317,7 +3321,7 @@ static func _west_end_gullet() -> Dictionary:
 static func _cradling_depths() -> Dictionary:
 	return {
 		"name": "Cradling Depths",
-		"region_id": "metro",
+		"region_id": "astral",
 		"hud_title": "💎 Cradling Depths",
 		"terrain_style": 12,
 		"encounter_rate": 0.22,
@@ -3784,7 +3788,7 @@ static func _hallowed_sacrament() -> Dictionary:
 static func _land_of_tomorrow() -> Dictionary:
 	return {
 		"name": "Land of Tomorrow",
-		"region_id": "astral",
+		"region_id": "terminus",
 		"hud_title": "🛸 Lunar Station",
 		"terrain_style": 14,
 		"encounter_rate": 0.16,
@@ -4097,7 +4101,7 @@ static func _beating_heart_of_the_void() -> Dictionary:
 static func _the_darkness() -> Dictionary:
 	return {
 		"name": "The Darkness",
-		"region_id": "shadows",
+		"region_id": "peaks",
 		"hud_title": "🌑 Forsaken Town",
 		"terrain_style": 19,
 		"encounter_rate": 0.22,
@@ -4253,7 +4257,7 @@ static func _the_darkness() -> Dictionary:
 static func _arcane_collapse() -> Dictionary:
 	return {
 		"name": "Arcane Collapse",
-		"region_id": "astral",
+		"region_id": "peaks",
 		"hud_title": "✨ Reality Fracture",
 		"terrain_style": 6,
 		"encounter_rate": 0.24,

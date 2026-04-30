@@ -5110,6 +5110,20 @@ func _update_3d_overlays() -> void:
 			var mx: float = float(int(v.x)) + 0.5
 			var mz: float = float(int(v.y)) + 0.5
 			_make_mesh_inst(hl_mesh, explore_mat, mx, slab_y, mz, _overlay_root)
+		# Warm orange tint on walls/obstacles that border reachable area —
+		# tells the player "click past me to smash through and reveal more."
+		var break_mat := _make_mat(Color(0.95, 0.55, 0.20, 0.32), 0.0, 0.4,
+			Color(1.00, 0.70, 0.30), 0.30)
+		break_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		var breakable: Array = []
+		if _e.has_method("crawl_breakable_wall_tiles"):
+			breakable = _e.crawl_breakable_wall_tiles()
+		for v in breakable:
+			var bx: float = float(int(v.x)) + 0.5
+			var bz: float = float(int(v.y)) + 0.5
+			# Sit slightly higher than the floor slab so the tint shows on
+			# top of the wall mesh rather than under it.
+			_make_mesh_inst(hl_mesh, break_mat, bx, slab_y + 0.85, bz, _overlay_root)
 	else:
 		var move_mat := _make_mat(Color(0.15, 0.85, 0.20, 0.55), 0.0, 0.5,
 			Color(0.20, 1.0, 0.30), 0.3)
@@ -6165,6 +6179,24 @@ func _on_action_pressed(action: Dictionary) -> void:
 		_open_shapeshift_dialog(action)
 		return
 
+	# Rest: open Spark Point investment popup before dispatching
+	if action_id == 3:  # ACT_REST
+		_open_rest_dialog(action)
+		return
+
+	# Magic-item active with ally target — enter friendly target-selection mode
+	if action_id == 80:  # ACT_MAGIC_ITEM
+		var item_name: String = str(action.get("matrix_id", ""))
+		var item_eff: Dictionary = MagicItemData.ALL_MAGIC_ITEMS.get(item_name, {}).get("effects", {})
+		var item_active: Dictionary = item_eff.get("active", {})
+		var item_target: String = str(item_active.get("target", "self"))
+		if item_target == "ally":
+			_pending_action = action.duplicate()
+			_pending_action["_target_friendly"] = true
+			_action_mode_lbl.text = "Click an ally to target with %s…  [ESC to cancel]" % item_name
+			_update_3d_view()
+			return
+
 	# Summon / Construct spells: open builder dialog
 	# Must be checked BEFORE the generic target-selection intercepts below
 	if action_id == 10:  # ACT_CAST_SPELL
@@ -6291,6 +6323,87 @@ func _cancel_pending_action() -> void:
 	_multi_target_max    = 1
 	_action_mode_lbl.text = ""
 	_update_3d_view()
+
+
+
+## Modal SP-investment dialog for the Rest action. The engine reads
+## `_pending_rest_sp` off the entity before computing rest dice, so the
+## dialog stashes that value, then dispatches the action via the standard
+## perform_action path.
+func _open_rest_dialog(action: Dictionary) -> void:
+	var ent = _e.get_dungeon_entities()
+	var sel = null
+	for e in ent:
+		if str(e.get("id", "")) == _selected_id:
+			sel = e
+			break
+	var available_sp: int = 0
+	if sel != null:
+		available_sp = int(sel.get("sp", 0))
+	var max_invest: int = clampi(available_sp, 0, 5)
+
+	var overlay := Control.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.z_index = 90
+	add_child(overlay)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.78)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.offset_left = -240; panel.offset_right = 240
+	panel.offset_top = -160; panel.offset_bottom = 160
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.10, 0.08, 0.16, 1.0)
+	bg.border_color = RimvaleColors.HP_GREEN
+	bg.set_border_width_all(2); bg.set_corner_radius_all(8)
+	bg.set_content_margin_all(20)
+	panel.add_theme_stylebox_override("panel", bg)
+	overlay.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(vbox)
+
+	vbox.add_child(RimvaleUtils.label(
+		"💤  Rest — Spark Investment", 15, RimvaleColors.HP_GREEN))
+	vbox.add_child(RimvaleUtils.label(
+		"Catch your breath. Each Spark Point spent escalates the rest " +
+		"dice (base 1d4 + STR; +1 die / +2 sides per SP, cap 5d12).",
+		11, RimvaleColors.TEXT_GRAY))
+	vbox.add_child(RimvaleUtils.label(
+		"Available SP: %d (max invest %d)" % [available_sp, max_invest],
+		11, RimvaleColors.SP_PURPLE))
+
+	# Per-SP option buttons (0..max_invest)
+	var btn_grid := HBoxContainer.new()
+	btn_grid.add_theme_constant_override("separation", 6)
+	vbox.add_child(btn_grid)
+	for i in range(0, max_invest + 1):
+		var btn := RimvaleUtils.button(
+			"Spend %d SP" % i,
+			RimvaleColors.HP_GREEN if i == 0 else RimvaleColors.SP_PURPLE,
+			36, 12)
+		var captured_sp: int = i
+		var captured_action: Dictionary = action
+		btn.pressed.connect(func():
+			# Stash SP investment on the entity dict so the engine's
+			# _dung_dispatch_rest reads it via "_pending_rest_sp".
+			if sel != null:
+				sel["_pending_rest_sp"] = captured_sp
+			overlay.queue_free()
+			var result: Dictionary = _e.dungeon_perform_action(
+				_selected_id, captured_action, "", 0, 0)
+			_handle_action_result(result)
+		)
+		btn_grid.add_child(btn)
+
+	var cancel := RimvaleUtils.button(
+		"Cancel", RimvaleColors.TEXT_GRAY, 32, 11)
+	cancel.pressed.connect(func(): overlay.queue_free())
+	vbox.add_child(cancel)
 
 func _handle_action_result(result: Dictionary) -> void:
 	var log_msg: String = str(result.get("log", ""))
@@ -6497,13 +6610,15 @@ func _update_entity_card() -> void:
 	var mount_data: Dictionary = {} if handle < 0 else _e.get_mount_data(handle)
 
 	if is_dying:
-		_badge_hp.text = "[color=#ff4444]DYING[/color]"
-		# Show death save tracker
-		var saves: int = int(ent.get("death_saves", 0))
-		var fails: int = int(ent.get("death_fails", 0))
-		_badge_hp.text += "\nSaves: %d/3  Fails: %d/3" % [saves, fails]
+		var saves: int = int(ent.get("death_save_successes", 0))
+		var fails: int = int(ent.get("death_save_failures", 0))
+		_badge_hp.text = "DYING\nSaves: %d/3  Fails: %d/3" % [saves, fails]
+		_badge_hp.add_theme_color_override(
+			"font_color", Color(1.0, 0.27, 0.27))
 	else:
 		_badge_hp.text  = "♥ %d/%d" % [hp, max_hp]
+		# Restore default tint when not dying.
+		_badge_hp.remove_theme_color_override("font_color")
 		# Show mount HP if mounted
 		if is_mounted and not mount_data.is_empty():
 			var mount_hp: int = int(mount_data.get("mount_hp", 0))
@@ -7336,7 +7451,6 @@ func _open_shapeshift_dialog(action: Dictionary) -> void:
 	sp_slider.custom_minimum_size = Vector2(120, 0)
 	sp_row.add_child(sp_slider)
 	var sp_val_lbl := RimvaleUtils.label("0", 12, Color(0.40, 0.85, 1.0))
-	sp_row.add_child(sp_val_lbl)
 	var sp_info_lbl := RimvaleUtils.label("Creature level: 0 (stats = 0, min 1 HP)", 11, Color(0.55, 0.55, 0.50))
 	vbox.add_child(sp_info_lbl)
 
