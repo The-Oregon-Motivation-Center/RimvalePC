@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://bru5ic7j5oxg5"
+path="res://.godot/imported/door-single.obj-ccfe3e71e4d5b321ba2e402641e22e8d.mesh"
+
+[deps]
+
+files=["res://.godot/imported/door-single.obj-ccfe3e71e4d5b321ba2e402641e22e8d.mesh"]
+
+source_file="res://kenney_space-station-kit/Models/OBJ format/door-single.obj"
+dest_files=["res://.godot/imported/door-single.obj-ccfe3e71e4d5b321ba2e402641e22e8d.mesh", "res://.godot/imported/door-single.obj-ccfe3e71e4d5b321ba2e402641e22e8d.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

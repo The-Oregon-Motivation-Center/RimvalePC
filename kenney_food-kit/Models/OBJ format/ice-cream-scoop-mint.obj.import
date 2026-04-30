@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://dmtk3l25x2vjt"
+path="res://.godot/imported/ice-cream-scoop-mint.obj-3d257fe37889afea4bedfb89d11085e9.mesh"
+
+[deps]
+
+files=["res://.godot/imported/ice-cream-scoop-mint.obj-3d257fe37889afea4bedfb89d11085e9.mesh"]
+
+source_file="res://kenney_food-kit/Models/OBJ format/ice-cream-scoop-mint.obj"
+dest_files=["res://.godot/imported/ice-cream-scoop-mint.obj-3d257fe37889afea4bedfb89d11085e9.mesh", "res://.godot/imported/ice-cream-scoop-mint.obj-3d257fe37889afea4bedfb89d11085e9.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

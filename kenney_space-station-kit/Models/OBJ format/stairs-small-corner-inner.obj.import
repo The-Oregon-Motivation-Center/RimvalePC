@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://tc4lyqwg7frs"
+path="res://.godot/imported/stairs-small-corner-inner.obj-7a8fc99ff3c49c4ddb4c2fc531e0bcbd.mesh"
+
+[deps]
+
+files=["res://.godot/imported/stairs-small-corner-inner.obj-7a8fc99ff3c49c4ddb4c2fc531e0bcbd.mesh"]
+
+source_file="res://kenney_space-station-kit/Models/OBJ format/stairs-small-corner-inner.obj"
+dest_files=["res://.godot/imported/stairs-small-corner-inner.obj-7a8fc99ff3c49c4ddb4c2fc531e0bcbd.mesh", "res://.godot/imported/stairs-small-corner-inner.obj-7a8fc99ff3c49c4ddb4c2fc531e0bcbd.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

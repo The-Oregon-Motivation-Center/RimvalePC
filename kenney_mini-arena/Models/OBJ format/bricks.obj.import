@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://bkdvw2jxvcwi2"
+path="res://.godot/imported/bricks.obj-636c7408309f53065fe6f11167db7406.mesh"
+
+[deps]
+
+files=["res://.godot/imported/bricks.obj-636c7408309f53065fe6f11167db7406.mesh"]
+
+source_file="res://kenney_mini-arena/Models/OBJ format/bricks.obj"
+dest_files=["res://.godot/imported/bricks.obj-636c7408309f53065fe6f11167db7406.mesh", "res://.godot/imported/bricks.obj-636c7408309f53065fe6f11167db7406.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

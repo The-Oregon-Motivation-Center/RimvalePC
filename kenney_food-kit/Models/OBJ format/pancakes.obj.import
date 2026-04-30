@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://co4co2u5ia4k5"
+path="res://.godot/imported/pancakes.obj-b0376bd0b11db25620ac0a3e533d634c.mesh"
+
+[deps]
+
+files=["res://.godot/imported/pancakes.obj-b0376bd0b11db25620ac0a3e533d634c.mesh"]
+
+source_file="res://kenney_food-kit/Models/OBJ format/pancakes.obj"
+dest_files=["res://.godot/imported/pancakes.obj-b0376bd0b11db25620ac0a3e533d634c.mesh", "res://.godot/imported/pancakes.obj-b0376bd0b11db25620ac0a3e533d634c.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

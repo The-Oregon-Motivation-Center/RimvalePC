@@ -1089,7 +1089,8 @@ func _build_horizon_scenery() -> void:
 		var node: Node3D = _build_biome_scatter_item(
 			tree_kind, foliage_col, trunk_col, scatter_rng)
 		if node == null: continue
-		node.position = Vector3(px, 0.0, pz)
+		# Sit on the displaced terrain so trees follow the hills.
+		node.position = Vector3(px, _terrain_height_at(px, pz), pz)
 		horizon_root.add_child(node)
 
 	# Rocks: biome-tinted boxes scattered.
@@ -1114,7 +1115,8 @@ func _build_horizon_scenery() -> void:
 		)
 		rock_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		rock_inst.material_override = rock_mat
-		rock_inst.position = Vector3(px, rock_mesh.size.y * 0.5, pz)
+		var ry: float = _terrain_height_at(px, pz)
+		rock_inst.position = Vector3(px, ry + rock_mesh.size.y * 0.5, pz)
 		rock_inst.rotate_y(scatter_rng.randf_range(0.0, TAU))
 		horizon_root.add_child(rock_inst)
 
@@ -1158,10 +1160,40 @@ func _build_horizon_scenery() -> void:
 ## Build one scatter item (tree / mushroom / palm / crystal) according to
 ## the biome's tree_kind. Returns null when the biome has scatter == "skip"
 ## (caller already short-circuits on count == 0, but defensive).
+##
+## When the nature-kit GLB pack is loaded, returns a real Kenney mesh
+## instead of the procedural cone. Falls back to procedural only if the
+## nature kit is missing or the kind has no GLB equivalent.
+const NATURE_TREE_POOLS: Dictionary = {
+	"deciduous": ["tree_default.glb", "tree_oak.glb", "tree_detailed.glb",
+				  "tree_fat.glb"],
+	"pine":      ["tree_cone.glb", "tree_blocks.glb",
+				  "tree_blocks_dark.glb"],
+	"palm":      ["tree_palm.glb", "tree_palmBend.glb"],
+	"mushroom":  ["mushroom_red.glb", "mushroom_redGroup.glb"],
+}
+
 func _build_biome_scatter_item(kind: String, foliage_col: Color,
 		trunk_col: Color, rng: RandomNumberGenerator) -> Node3D:
 	if kind == "skip":
 		return null
+	# Try the nature-kit GLB first if we have it and a mapping exists.
+	var nat_base: String = _pack_base("nature")
+	if nat_base != "" and NATURE_TREE_POOLS.has(kind):
+		var pool: Array = NATURE_TREE_POOLS[kind]
+		var fname: String = str(pool[rng.randi() % pool.size()])
+		var scn: PackedScene = _pack_scene(nat_base, fname)
+		if scn != null:
+			var inst: Node = scn.instantiate()
+			if inst is Node3D:
+				var n3: Node3D = inst as Node3D
+				# Random rotation for variety; nature kit is 1m authored
+				# so no scale needed.
+				n3.rotation.y = rng.randf_range(0.0, TAU)
+				# Slight random size variation 0.85-1.15.
+				var s: float = rng.randf_range(0.85, 1.15)
+				n3.scale = Vector3(s, s, s)
+				return n3
 	var holder := Node3D.new()
 	match kind:
 		"deciduous":
@@ -1485,6 +1517,33 @@ func _build_scene_roots() -> void:
 #  PHASE 1 — GROUND PLANE TILES
 # ══════════════════════════════════════════════════════════════════════════════
 
+## Smooth height field for outskirt tiles. Returns 0 inside the city and
+## a noise-based offset (~±1.0m) outside, with a 4-tile fade around the
+## city border so the transition is seamless.
+func _terrain_height_at(world_x: float, world_z: float) -> float:
+	# Inside city box → flat.
+	var tx: int = int(floor(world_x))
+	var ty: int = int(floor(world_z))
+	if (tx >= CITY_OFFSET_X and tx < CITY_OFFSET_X + CITY_W
+			and ty >= CITY_OFFSET_Y and ty < CITY_OFFSET_Y + CITY_H):
+		return 0.0
+	# Distance from city border (in tiles) → fade up over first 4 tiles.
+	var dx: float = max(float(CITY_OFFSET_X) - world_x,
+		world_x - float(CITY_OFFSET_X + CITY_W), 0.0)
+	var dz: float = max(float(CITY_OFFSET_Y) - world_z,
+		world_z - float(CITY_OFFSET_Y + CITY_H), 0.0)
+	var dist: float = sqrt(dx * dx + dz * dz)
+	var fade: float = clampf(dist / 4.0, 0.0, 1.0)
+	# Two-octave noise — gentle rolling hills.
+	# Region-tinted phase shift so each region has a different terrain layout.
+	var rseed: float = float(absi(hash(_region_id))) * 0.0001
+	var h: float = (
+		sin(world_x * 0.13 + rseed) * cos(world_z * 0.13 - rseed) * 0.55
+		+ sin(world_x * 0.06 + world_z * 0.07) * 0.30
+		+ cos(world_x * 0.09 - world_z * 0.05) * 0.20
+	)
+	return h * fade
+
 func _build_3d_tiles() -> void:
 	for y in range(GRID_H):
 		for x in range(GRID_W):
@@ -1496,7 +1555,12 @@ func _build_3d_tiles() -> void:
 
 			var tile_mesh := MeshInstance3D.new()
 			var box := BoxMesh.new()
-			box.size = Vector3(0.98, 0.08, 0.98)
+			# Outskirt tiles get a thicker box so the side faces hide any
+			# vertical gap between adjacent tiles at different heights.
+			# City tiles stay thin (always at y=0).
+			var elev: float = _terrain_height_at(float(x) + 0.5, float(y) + 0.5)
+			var box_h: float = 0.08 if absf(elev) < 0.001 else 0.6
+			box.size = Vector3(0.98, box_h, 0.98)
 			tile_mesh.mesh = box
 
 			var mat := StandardMaterial3D.new()
@@ -1510,7 +1574,11 @@ func _build_3d_tiles() -> void:
 			mat.albedo_color = mat.albedo_color.lightened(variation)
 
 			tile_mesh.material_override = mat
-			tile_mesh.position = Vector3(float(x) + 0.5, -0.04, float(y) + 0.5)
+			# Position so the TOP of the box is at the terrain height.
+			# (Box is centered on its origin, so center.y = top - height/2.)
+			var top_y: float = elev - 0.04   # original surface was at -0.04
+			tile_mesh.position = Vector3(float(x) + 0.5,
+				top_y - box_h * 0.5, float(y) + 0.5)
 			_tile_root.add_child(tile_mesh)
 
 			# Road markings — subtle lighter center line
@@ -1676,40 +1744,87 @@ func _add_rubble_debris(x: int, y: int, seed_val: int) -> void:
 #  KENNEY FANTASY TOWN — load GLB props into the city tile rendering
 # ══════════════════════════════════════════════════════════════════════════════
 
-## Pack base paths are resolved at runtime by probing both `res://<pack>/`
-## and `res://assets/<pack>/`. This makes the code work no matter where
-## the user dropped the asset folder.
-const _KENNEY_CANDIDATES: Array = [
-	"res://fantasy-town-kit/Models/GLB format/",
-	"res://assets/fantasy-town-kit/Models/GLB format/",
-]
-const _DUNGEON_CANDIDATES: Array = [
-	"res://modular-dungeon-kit/Models/GLB format/",
-	"res://assets/modular-dungeon-kit/Models/GLB format/",
-]
+## All available Kenney/asset packs with their candidate paths, probe
+## filename (used to detect import status), and scale factor. Each pack is
+## resolved lazily on first use — the path probe finds whichever copy
+## (top-level vs assets/) Godot has actually imported.
+const _PACK_DEFS: Dictionary = {
+	"town":      { "candidates": [
+			"res://fantasy-town-kit/Models/GLB format/",
+			"res://assets/fantasy-town-kit/Models/GLB format/",
+		], "probe": "wall.glb", "scale": 1.0 },
+	"dungeon":   { "candidates": [
+			"res://modular-dungeon-kit/Models/GLB format/",
+			"res://assets/modular-dungeon-kit/Models/GLB format/",
+		], "probe": "template-wall.glb", "scale": 0.25 },
+	"castle":    { "candidates": [
+			"res://kenney_castle-kit/Models/GLB format/",
+			"res://assets/kenney_castle-kit/Models/GLB format/",
+		], "probe": "wall.glb", "scale": 1.0 },
+	"space":     { "candidates": [
+			"res://kenney_space-station-kit/Models/GLB format/",
+			"res://assets/kenney_space-station-kit/Models/GLB format/",
+		], "probe": "wall.glb", "scale": 1.0 },
+	"nature":    { "candidates": [
+			"res://kenney_nature-kit/Models/GLTF format/",
+			"res://assets/kenney_nature-kit/Models/GLTF format/",
+		], "probe": "tree_default.glb", "scale": 1.0 },
+	"survival":  { "candidates": [
+			"res://kenney_survival-kit/Models/GLB format/",
+			"res://assets/kenney_survival-kit/Models/GLB format/",
+		], "probe": "barrel.glb", "scale": 1.0 },
+	"furniture": { "candidates": [
+			"res://kenney_furniture-kit/Models/GLTF format/",
+			"res://assets/kenney_furniture-kit/Models/GLTF format/",
+		], "probe": "chair.glb", "scale": 1.0 },
+	"food":      { "candidates": [
+			"res://kenney_food-kit/Models/GLB format/",
+			"res://assets/kenney_food-kit/Models/GLB format/",
+		], "probe": "apple.glb", "scale": 1.0 },
+	"building":  { "candidates": [
+			"res://kenney_building-kit/Models/GLB format/",
+			"res://assets/kenney_building-kit/Models/GLB format/",
+		], "probe": "wall.glb", "scale": 0.25 },
+}
 
-## Empty string means "not yet probed". Set on first use.
-var _kenney_base_resolved: String = ""
-var _dungeon_base_resolved: String = ""
+## Cache of resolved base paths. Key = pack name, value = "" if missing.
+var _pack_bases_resolved: Dictionary = {}
 
 ## Shared resource cache. Key = full res:// path, value = PackedScene or null.
 var _kenney_cache: Dictionary = {}
 
-func _resolve_pack_base(probe_filename: String, candidates: Array) -> String:
+## Returns the imported base path for a pack (e.g. "town"), or "" if the
+## pack isn't available.
+func _pack_base(pack_name: String) -> String:
+	if _pack_bases_resolved.has(pack_name):
+		return _pack_bases_resolved[pack_name]
+	var def: Dictionary = _PACK_DEFS.get(pack_name, {})
+	if def.is_empty():
+		_pack_bases_resolved[pack_name] = ""
+		return ""
+	var probe: String = str(def.get("probe", ""))
+	var candidates: Array = def.get("candidates", [])
+	var resolved: String = ""
 	for c in candidates:
-		if ResourceLoader.exists(str(c) + probe_filename):
-			return str(c)
-	return ""
+		if ResourceLoader.exists(str(c) + probe):
+			resolved = str(c)
+			break
+	_pack_bases_resolved[pack_name] = resolved
+	return resolved
 
+## Returns the placement scale for a pack so all its meshes fit on the
+## 1m tile grid. Modular packs (dungeon, castle, space, building) are
+## authored on a 4m grid → 0.25 scale.
+func _pack_scale(pack_name: String) -> float:
+	var def: Dictionary = _PACK_DEFS.get(pack_name, {})
+	return float(def.get("scale", 1.0))
+
+## Backwards-compat shims for the existing call sites.
 func _kenney_base() -> String:
-	if _kenney_base_resolved == "":
-		_kenney_base_resolved = _resolve_pack_base("wall.glb", _KENNEY_CANDIDATES)
-	return _kenney_base_resolved
+	return _pack_base("town")
 
 func _dungeon_base() -> String:
-	if _dungeon_base_resolved == "":
-		_dungeon_base_resolved = _resolve_pack_base("template-wall.glb", _DUNGEON_CANDIDATES)
-	return _dungeon_base_resolved
+	return _pack_base("dungeon")
 
 ## Generic loader — works with any pack base path.
 func _pack_scene(base: String, filename: String) -> PackedScene:
@@ -1829,6 +1944,50 @@ const DUNGEON_GATES: Array = [
 ## scale the meshes down to fit. Tune this if walls still look off-scale.
 const DUNGEON_MESH_SCALE: float = 0.25
 
+## ── Region → wall-pack assignment ─────────────────────────────────────────
+## Each region picks a different Kenney pack to render its city walls.
+## Land of Tomorrow (terminus) gets the space-station kit; Argent Hall and
+## the Mortal Arena (peaks/titans) get the castle kit; everything else
+## defaults to the modular-dungeon stone walls.
+const REGION_WALL_PACK: Dictionary = {
+	"terminus":  "space",
+	"peaks":     "castle",
+	"titans":    "castle",
+	"sublimini": "castle",
+}
+
+## Per-pack wall mesh pools. Keys: "rich", "poor", "default", "gates".
+const WALL_POOLS: Dictionary = {
+	"dungeon": {
+		"rich":    ["template-wall-detail-a.glb", "template-wall-top.glb",
+					"template-wall.glb"],
+		"poor":    ["template-wall-half.glb", "template-wall.glb"],
+		"default": ["template-wall.glb", "template-wall-top.glb",
+					"template-wall-corner.glb"],
+		"gates":   ["gate.glb", "gate-door.glb", "gate-door-window.glb",
+					"gate-metal-bars.glb"],
+	},
+	"castle": {
+		# Single consistent wall mesh keeps the silhouette clean. Rich
+		# tiles get the pillar accent for variety without clutter.
+		"rich":    ["wall.glb", "wall-pillar.glb"],
+		"poor":    ["wall.glb"],
+		"default": ["wall.glb"],
+		# Doorway-only gate set (no metal-gate / door which sit awkwardly
+		# in the wall plane).
+		"gates":   ["wall-doorway.glb"],
+	},
+	"space": {
+		"rich":    ["wall-pillar.glb", "wall-window.glb", "display-wall.glb",
+					"wall-corner-round.glb"],
+		"poor":    ["wall.glb", "wall-detail.glb", "wall-corner.glb"],
+		"default": ["wall.glb", "wall-window.glb", "wall-detail.glb"],
+		"gates":   ["wall-door.glb", "wall-door-center.glb",
+					"wall-door-wide.glb", "wall-door-edge.glb",
+					"door-double.glb", "door-single.glb"],
+	},
+}
+
 ## Build the full Kenney city-prop pass over the playable grid. Iterates
 ## every wall/plaza/market/park/rubble tile in the city block and instances
 ## the matching mesh under _wall_root. Skipped silently if the Kenney pack
@@ -1839,34 +1998,35 @@ const DUNGEON_MESH_SCALE: float = 0.25
 static var _kenney_status_logged: bool = false
 
 func _build_3d_kenney_props() -> void:
-	# Probe both packs once.
-	var town_base: String = _kenney_base()
-	var dungeon_base: String = _dungeon_base()
+	# Resolve the wall pack for the current region (defaults to dungeon).
+	var wall_pack_name: String = str(
+		REGION_WALL_PACK.get(_region_id, "dungeon"))
+	var wall_base: String = _pack_base(wall_pack_name)
+	var have_walls: bool = wall_base != ""
+	# Town kit is used for parks/markets/fountains/rubble in every region.
+	var town_base: String = _pack_base("town")
 	var have_town: bool = town_base != ""
-	var have_dungeon: bool = dungeon_base != ""
 	if not _kenney_status_logged:
 		_kenney_status_logged = true
-		print("[Packs] Fantasy Town Kit: %s · Modular Dungeon Kit: %s"
-			% ["LOADED ("+town_base+")" if have_town else "missing",
-			   "LOADED ("+dungeon_base+")" if have_dungeon else "missing"])
-		if not have_town:
-			var t_probe: String = "res://fantasy-town-kit/Models/GLB format/wall.glb"
-			push_warning(
-				"[Packs] Town Kit not imported. FileAccess raw: %s · " +
-				"ResourceLoader imported: %s · expected: %s · " +
-				"Fix: open project in Godot editor so it imports the GLBs."
-				% [str(FileAccess.file_exists(t_probe)),
-				   str(ResourceLoader.exists(t_probe)), t_probe])
-		if not have_dungeon:
-			var d_probe: String = "res://assets/modular-dungeon-kit/Models/GLB format/template-wall.glb"
-			push_warning(
-				"[Packs] Modular Dungeon Kit not imported. FileAccess raw: %s · " +
-				"ResourceLoader imported: %s · expected: %s · " +
-				"Fix: open project in Godot editor so it imports the GLBs."
-				% [str(FileAccess.file_exists(d_probe)),
-				   str(ResourceLoader.exists(d_probe)), d_probe])
-	if not have_town and not have_dungeon:
+		var pack_status: Array = []
+		for p in ["town", "dungeon", "castle", "space", "nature",
+				"survival", "furniture", "food", "building"]:
+			var b: String = _pack_base(p)
+			pack_status.append("%s=%s" % [p, "OK" if b != "" else "—"])
+		print("[Packs] " + " · ".join(pack_status))
+		print("[Packs] Region '%s' walls: %s (%s)"
+			% [_region_id, wall_pack_name,
+			   "loaded" if have_walls else "MISSING — boxes will show"])
+	if not have_walls and not have_town:
 		return
+	# Pull pools for the active wall pack.
+	var pools: Dictionary = WALL_POOLS.get(
+		wall_pack_name, WALL_POOLS["dungeon"])
+	var pool_rich: Array = pools.get("rich", [])
+	var pool_poor: Array = pools.get("poor", [])
+	var pool_default: Array = pools.get("default", [])
+	var pool_gates: Array = pools.get("gates", [])
+	var wall_scale: float = _pack_scale(wall_pack_name)
 	var rng := RandomNumberGenerator.new()
 	for y in range(GRID_H):
 		for x in range(GRID_W):
@@ -1879,29 +2039,30 @@ func _build_3d_kenney_props() -> void:
 			var base_for_tile: String = ""
 			match t:
 				T_WALL, T_WALL_RICH, T_WALL_POOR:
-					# Prefer dungeon kit walls; fall back to town kit if
-					# dungeon pack isn't loaded.
-					if have_dungeon:
+					# Use the region's selected wall pack. Fall back to
+					# town kit if the active pack isn't loaded.
+					if have_walls:
 						# Only render walls on edges (tiles facing a
 						# walkable street). Interior wall tiles are
 						# invisible to the player and just create clutter.
 						var face_dir: float = _wall_facing_dir(x, y)
 						if face_dir < 0.0:
 							continue   # interior wall — skip
-						base_for_tile = dungeon_base
+						base_for_tile = wall_base
 						# 1-in-8 chance an edge wall becomes a gate.
-						if rng.randi() % 8 == 0:
-							pick = str(DUNGEON_GATES[
-								rng.randi() % DUNGEON_GATES.size()])
+						if rng.randi() % 8 == 0 and pool_gates.size() > 0:
+							pick = str(pool_gates[
+								rng.randi() % pool_gates.size()])
 						else:
 							var dpool: Array
-							if t == T_WALL_RICH:
-								dpool = DUNGEON_WALLS_RICH
-							elif t == T_WALL_POOR:
-								dpool = DUNGEON_WALLS_POOR
+							if t == T_WALL_RICH and pool_rich.size() > 0:
+								dpool = pool_rich
+							elif t == T_WALL_POOR and pool_poor.size() > 0:
+								dpool = pool_poor
 							else:
-								dpool = DUNGEON_WALLS_DEFAULT
-							pick = str(dpool[rng.randi() % dpool.size()])
+								dpool = pool_default
+							if dpool.size() > 0:
+								pick = str(dpool[rng.randi() % dpool.size()])
 						# Always face outward toward the street.
 						rot = face_dir
 					elif have_town:
@@ -1944,17 +2105,17 @@ func _build_3d_kenney_props() -> void:
 					continue
 			if pick == "" or base_for_tile == "":
 				continue
-			# Dungeon kit pieces are 4m authored — scale to fit our 1m grid.
-			var mesh_scale: float = (DUNGEON_MESH_SCALE
-				if base_for_tile == dungeon_base else 1.0)
+			# Apply the appropriate per-pack scale so all packs fit on
+			# the 1m tile grid.
+			var mesh_scale: float = (wall_scale
+				if base_for_tile == wall_base else 1.0)
 			var inst := _pack_instance(
 				base_for_tile, pick, x, y, rot, mesh_scale)
 			if inst != null:
 				_wall_root.add_child(inst)
 			# For rich walls placed via the TOWN kit, drop a town-kit roof
-			# on top to suggest a proper building. The dungeon-kit walls
-			# already include a cap (template-wall-top), so we skip roofs
-			# when the dungeon kit was used.
+			# on top to suggest a proper building. Modular packs (dungeon,
+			# castle, space) include their own caps, so skip roofs there.
 			if (t == T_WALL_RICH and have_town and base_for_tile == town_base
 					and rng.randi() % 2 == 0):
 				var roof := str(KENNEY_ROOFS_RICH[
@@ -1965,11 +2126,13 @@ func _build_3d_kenney_props() -> void:
 					_wall_root.add_child(rinst)
 
 func _build_3d_walls() -> void:
-	# Skip the box-wall renderer entirely if EITHER asset pack is available —
-	# _build_3d_kenney_props() will draw the wall visuals using GLB meshes
-	# (dungeon kit preferred, town kit fallback). Building-name signposts
-	# (below) still run either way.
-	var _use_kenney: bool = (_kenney_base() != "") or (_dungeon_base() != "")
+	# Skip the box-wall renderer entirely if any GLB pack will draw walls
+	# for the current region. _build_3d_kenney_props() handles the rest.
+	# Building-name signposts (below) still run either way.
+	var wall_pack_name: String = str(
+		REGION_WALL_PACK.get(_region_id, "dungeon"))
+	var _use_kenney: bool = (_pack_base(wall_pack_name) != ""
+		or _pack_base("town") != "")
 	if not _use_kenney:
 		for y in range(GRID_H):
 			for x in range(GRID_W):
@@ -3792,8 +3955,27 @@ func _try_move(dir: Vector2i) -> void:
 		return
 	var tile: int = _get_tile(new_pos.x, new_pos.y)
 	if tile == T_DANGER:
-		_stop_auto_walk()
-		_on_danger_step()
+		# In-vehicle bypass: keep auto-walking and silently deduct vehicle HP.
+		# We only stop and dismount if the vehicle hits 0 HP and is destroyed.
+		if GameState.active_vehicle != "":
+			var v_name: String = GameState.active_vehicle
+			var destroyed: bool = GameState.damage_vehicle(1)
+			if destroyed:
+				_stop_auto_walk()
+				_show_message(
+					"⚠ %s is disabled — the party dismounts!" % v_name,
+					RimvaleColors.DANGER)
+			else:
+				var hp_now: int = int(
+					GameState.owned_vehicles.get(v_name, {})
+						.get("hp_current", 0))
+				_show_message(
+					"%s rolls through the hazard — %d HP remaining."
+						% [v_name, hp_now],
+					RimvaleColors.GOLD)
+		else:
+			_stop_auto_walk()
+			_on_danger_step()
 	elif tile == T_POI:
 		_on_poi_step(new_pos)
 	elif tile == T_MARKET:
@@ -4604,6 +4786,49 @@ func _show_tavern_panel() -> void:
 
 # ── Blacksmith ──────────────────────────────────────────────────────────────
 
+## Returns the number of owned vehicles whose hp_current is below their
+## stat-block max HP — used to show/hide repair buttons.
+func _count_damaged_vehicles() -> int:
+	var n: int = 0
+	for vname in GameState.owned_vehicles.keys():
+		var v: Dictionary = GameState.owned_vehicles[vname]
+		var hp_now: int = int(v.get("hp_current", 0))
+		var stats: Dictionary = VehicleData.get_stats(str(vname))
+		var hp_max: int = int(stats.get("hp", 0))
+		if hp_max > 0 and hp_now < hp_max:
+			n += 1
+	return n
+
+## Repair every damaged vehicle the player owns at `cost_per_hp` gold per
+## HP point restored. Stops if gold runs out — partially-repaired vehicles
+## stay at their current HP. Returns dict {hp, count, cost}.
+func _repair_all_vehicles(cost_per_hp: int) -> Dictionary:
+	var hp_total: int = 0
+	var cost_total: int = 0
+	var count: int = 0
+	for vname in GameState.owned_vehicles.keys():
+		var v: Dictionary = GameState.owned_vehicles[vname]
+		var hp_now: int = int(v.get("hp_current", 0))
+		var stats: Dictionary = VehicleData.get_stats(str(vname))
+		var hp_max: int = int(stats.get("hp", 0))
+		if hp_max <= 0 or hp_now >= hp_max:
+			continue
+		var missing: int = hp_max - hp_now
+		# Cap by remaining gold.
+		var affordable: int = mini(missing, GameState.gold / maxi(1, cost_per_hp))
+		if affordable <= 0:
+			continue
+		var spent: int = affordable * cost_per_hp
+		GameState.gold -= spent
+		var actually_healed: int = GameState.repair_vehicle(affordable, str(vname))
+		hp_total += actually_healed
+		cost_total += spent
+		if actually_healed > 0:
+			count += 1
+	if count > 0:
+		GameState.save_game()
+	return { "hp": hp_total, "count": count, "cost": cost_total }
+
 func _show_blacksmith_panel() -> void:
 	_clear_info()
 	var smith_name: String = _content.get("smith_name", "Blacksmith")
@@ -4645,6 +4870,27 @@ func _show_blacksmith_panel() -> void:
 			_show_message("Not enough gold.", RimvaleColors.DANGER, _show_blacksmith_panel)
 	)
 	_info_vbox.add_child(reinforce_btn)
+
+	# ── Vehicle repair (5g per HP) ───────────────────────────────────────────
+	var damaged_count: int = _count_damaged_vehicles()
+	if damaged_count > 0:
+		var vrepair_btn := RimvaleUtils.button(
+			"🔧 Repair Vehicles (%d damaged · 5g per HP)" % damaged_count,
+			RimvaleColors.CYAN, 44, 13)
+		vrepair_btn.pressed.connect(func():
+			var result: Dictionary = _repair_all_vehicles(5)
+			if int(result.get("hp", 0)) == 0:
+				_show_message("No vehicles in need of repair.",
+					RimvaleColors.TEXT_GRAY, _show_blacksmith_panel)
+			else:
+				_show_message(
+					"Repaired %d HP across %d vehicle%s for %d gold." % [
+						int(result.hp), int(result.count),
+						"s" if int(result.count) != 1 else "",
+						int(result.cost)],
+					RimvaleColors.CYAN, _show_blacksmith_panel)
+		)
+		_info_vbox.add_child(vrepair_btn)
 
 	# ── Crafting popup (mirrors world.gd's Crafting tab) ─────────────────────
 	var craft_btn := RimvaleUtils.button("🔨 Crafting…", RimvaleColors.GOLD, 44, 13)
@@ -7314,6 +7560,26 @@ func _show_building_features_panel(building: Dictionary) -> void:
 						RimvaleColors.GOLD, _show_location_info)
 			)
 			_info_vbox.add_child(repair_btn)
+			# Vehicle repair (5g/HP) — only show if any are damaged.
+			var armory_dmg: int = _count_damaged_vehicles()
+			if armory_dmg > 0:
+				var arm_vbtn := RimvaleUtils.button(
+					"🔧 Repair Vehicles (%d damaged · 5g per HP)" % armory_dmg,
+					RimvaleColors.CYAN, 36, 12)
+				arm_vbtn.pressed.connect(func():
+					var r: Dictionary = _repair_all_vehicles(5)
+					if int(r.get("hp", 0)) == 0:
+						_show_message("No vehicles in need of repair.",
+							RimvaleColors.TEXT_GRAY, _show_location_info)
+					else:
+						_show_message(
+							"Repaired %d HP across %d vehicle%s for %d gold." % [
+								int(r.hp), int(r.count),
+								"s" if int(r.count) != 1 else "",
+								int(r.cost)],
+							RimvaleColors.CYAN, _show_location_info)
+				)
+				_info_vbox.add_child(arm_vbtn)
 		"infirmary":
 			var heal_btn := RimvaleUtils.button(
 				"✚ Tend Injuries (200g per agent)",
@@ -7385,6 +7651,26 @@ func _show_building_features_panel(building: Dictionary) -> void:
 						RimvaleColors.ACCENT, _show_location_info)
 			)
 			_info_vbox.add_child(smith_btn)
+			# Discount vehicle repair (3g/HP) — only show if damaged.
+			var smithy_dmg: int = _count_damaged_vehicles()
+			if smithy_dmg > 0:
+				var sm_vbtn := RimvaleUtils.button(
+					"🔧 Discount Vehicle Repair (%d damaged · 3g per HP)" % smithy_dmg,
+					RimvaleColors.ACCENT, 36, 12)
+				sm_vbtn.pressed.connect(func():
+					var r: Dictionary = _repair_all_vehicles(3)
+					if int(r.get("hp", 0)) == 0:
+						_show_message("No vehicles in need of repair.",
+							RimvaleColors.TEXT_GRAY, _show_location_info)
+					else:
+						_show_message(
+							"Smith repaired %d HP across %d vehicle%s for %d gold." % [
+								int(r.hp), int(r.count),
+								"s" if int(r.count) != 1 else "",
+								int(r.cost)],
+							RimvaleColors.ACCENT, _show_location_info)
+				)
+				_info_vbox.add_child(sm_vbtn)
 
 	_info_vbox.add_child(RimvaleUtils.separator())
 	var back_btn := RimvaleUtils.button(

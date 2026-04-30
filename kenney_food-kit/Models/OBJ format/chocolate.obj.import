@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://6akpj4ia0j38"
+path="res://.godot/imported/chocolate.obj-cf30ebb4a57c00927eb778463bbf89cc.mesh"
+
+[deps]
+
+files=["res://.godot/imported/chocolate.obj-cf30ebb4a57c00927eb778463bbf89cc.mesh"]
+
+source_file="res://kenney_food-kit/Models/OBJ format/chocolate.obj"
+dest_files=["res://.godot/imported/chocolate.obj-cf30ebb4a57c00927eb778463bbf89cc.mesh", "res://.godot/imported/chocolate.obj-cf30ebb4a57c00927eb778463bbf89cc.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false
