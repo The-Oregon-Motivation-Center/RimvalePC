@@ -1850,51 +1850,69 @@ func _build_equipment(parent: VBoxContainer) -> void:
 	var armor: String = str(_e.get_equipped_armor(_handle))
 	var shield: String = str(_e.get_equipped_shield(_handle))
 	var light: String = str(_e.get_equipped_light_source(_handle))
+	var offhand: String = str(_e._chars.get(_handle, {}).get("offhand", "None"))
+	var tf_t_local: int = int(_e._chars.get(_handle, {}).get("feats", {}).get("Twin Fang", 0))
 
+	# 0=weapon, 1=armor, 2=shield, 3=light, 4=offhand — slot indices match
+	# unequip_item(). The off-hand slot is only shown when Twin Fang is
+	# unlocked; otherwise it has no meaning.
 	var slot_data = [
-		["⚔ Weapon", weapon, 0],
-		["🛡 Armor", armor, 1],
-		["🔰 Shield", shield, 2],
-		["🔥 Light", light, 3]
+		["⚔ Weapon", weapon, 0, "weapon"],
 	]
+	if tf_t_local >= 1:
+		slot_data.append(["⚔ Off-Hand", offhand, 4, ""])
+	slot_data.append_array([
+		["🛡 Armor", armor, 1, "armor"],
+		["🔰 Shield", shield, 2, "shield"],
+		["🔥 Light", light, 3, ""],
+	])
 	for sd in slot_data:
 		var slot_label: String = sd[0]
 		var item_name: String = sd[1]
 		var slot_idx: int = sd[2]
+		var dur_slot: String = sd[3]
 
 		var slot_card = ColorRect.new()
 		slot_card.color = Color(0.10, 0.14, 0.20, 1.0)
 		slot_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		slot_card.custom_minimum_size = Vector2(0, 64)
+		slot_card.custom_minimum_size = Vector2(0, 96)
 
 		var smgn = MarginContainer.new()
 		smgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		for s in ["left", "right", "top", "bottom"]:
-			smgn.add_theme_constant_override("margin_" + s, 8)
+			smgn.add_theme_constant_override("margin_" + s, 10)
 		slot_card.add_child(smgn)
 
 		var svbox = VBoxContainer.new()
-		svbox.add_theme_constant_override("separation", 3)
+		svbox.add_theme_constant_override("separation", 4)
 		smgn.add_child(svbox)
 
 		svbox.add_child(RimvaleUtils.label(slot_label, 11, RimvaleColors.TEXT_DIM))
-		var item_is_empty: bool = item_name.is_empty()
-		svbox.add_child(RimvaleUtils.label(
+		var item_is_empty: bool = item_name.is_empty() or item_name == "None"
+		var name_lbl_eq := RimvaleUtils.label(
 			item_name if not item_is_empty else "None",
-			12, RimvaleColors.TEXT_WHITE if not item_is_empty else RimvaleColors.TEXT_DIM))
+			12, RimvaleColors.TEXT_WHITE if not item_is_empty else RimvaleColors.TEXT_DIM)
+		name_lbl_eq.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		svbox.add_child(name_lbl_eq)
 
 		# Durability bar for weapon/armor/shield
-		if not item_is_empty and slot_idx <= 2:
-			var dur_slot: String = ["weapon", "armor", "shield"][slot_idx]
-			if _e._chars.has(_handle):
-				var _cc: Dictionary = _e._chars[_handle]
-				var dhp: int = _e._get_equip_hp(_cc, dur_slot)
-				var dmhp: int = _e._get_equip_max_hp(_cc, dur_slot)
-				if dmhp > 0:
-					var dur_col: Color = Color(0.3, 0.8, 0.3) if dhp > dmhp / 2 else (Color(0.9, 0.7, 0.2) if dhp > 0 else Color(0.9, 0.2, 0.2))
-					var dur_text: String = "%d/%d HP" % [maxi(0, dhp), dmhp]
-					if dhp <= 0: dur_text += " (BROKEN)"
-					svbox.add_child(RimvaleUtils.label(dur_text, 10, dur_col))
+		if not item_is_empty and dur_slot != "" and _e._chars.has(_handle):
+			var _cc: Dictionary = _e._chars[_handle]
+			var dhp: int = _e._get_equip_hp(_cc, dur_slot)
+			var dmhp: int = _e._get_equip_max_hp(_cc, dur_slot)
+			if dmhp > 0:
+				var dur_col: Color = (
+					Color(0.30, 0.80, 0.30) if dhp > dmhp / 2
+					else Color(0.90, 0.70, 0.20) if dhp > 0
+					else Color(0.90, 0.20, 0.20))
+				var dur_text: String = "%d/%d HP" % [maxi(0, dhp), dmhp]
+				if dhp <= 0: dur_text += " (BROKEN)"
+				svbox.add_child(RimvaleUtils.label(dur_text, 10, dur_col))
+
+		# Push the unequip button to the bottom of the card.
+		var slot_spacer := Control.new()
+		slot_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		svbox.add_child(slot_spacer)
 
 		if not item_is_empty:
 			var si_cap: int = slot_idx
@@ -2235,6 +2253,22 @@ func _build_inv_item_card(d: Dictionary, is_stash: bool) -> Control:
 		eq_btn.custom_minimum_size = Vector2(78, 0)
 		eq_btn.pressed.connect(func(): _e.equip_item(_handle, in_cap); _render_section())
 		action_row.add_child(eq_btn)
+		# Off-Hand button: only surfaces for weapon-type items when the
+		# wielder has Twin Fang T1+. Calls the dual-wield engine API.
+		if item_type == "Weapon" and _handle != -1:
+			var c_dict: Dictionary = _e._chars.get(_handle, {})
+			var tf_t: int = int(c_dict.get("feats", {}).get("Twin Fang", 0))
+			if tf_t >= 1:
+				var oh_btn := RimvaleUtils.button(
+					"Off-Hand", RimvaleColors.CYAN, 38, 12)
+				oh_btn.custom_minimum_size = Vector2(86, 0)
+				oh_btn.pressed.connect(func():
+					var err: String = _e.equip_offhand_weapon(_handle, in_cap)
+					if err != "":
+						_show_notice(err)
+					_render_section()
+				)
+				action_row.add_child(oh_btn)
 
 	# Magical → Attune / Unattune (Apex items get a tier picker)
 	if is_magical and attune_cost > 0:
@@ -2273,6 +2307,11 @@ func _build_inv_item_card(d: Dictionary, is_stash: bool) -> Control:
 	var action_spacer := Control.new()
 	action_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	action_row.add_child(action_spacer)
+
+	var transfer_btn := RimvaleUtils.button("→ Give", RimvaleColors.TEXT_GRAY, 38, 12)
+	transfer_btn.custom_minimum_size = Vector2(80, 0)
+	transfer_btn.pressed.connect(func(): _show_transfer_dialog(in_cap))
+	action_row.add_child(transfer_btn)
 
 	var stash_btn := RimvaleUtils.button("Stash", RimvaleColors.TEXT_GRAY, 38, 12)
 	stash_btn.custom_minimum_size = Vector2(74, 0)
@@ -2481,6 +2520,46 @@ func _build_collapsible(parent: VBoxContainer, title: String) -> VBoxContainer:
 
 
 ## Toast helper for the level-up screen.
+## Transfer dialog — pick another agent in the collection to receive the
+## item. Mirrors the same dialog in inventory.gd so the two screens have
+## the same feature set.
+func _show_transfer_dialog(item_name: String) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Transfer " + item_name
+	dialog.get_ok_button().text = "Cancel"
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+	vbox.add_child(RimvaleUtils.label(
+		"Select an agent to receive this item:",
+		13, RimvaleColors.TEXT_GRAY))
+
+	for h in GameState.collection:
+		if h == _handle:
+			continue
+		var target_name: String = str(_e.get_character_name(h))
+		var lin: String = str(_e.get_character_lineage_name(h))
+		var lv: int = _e.get_character_level(h)
+
+		var h_cap: int = h
+		var in_cap: String = item_name
+		var row_btn := RimvaleUtils.button(
+			"%s  (%s Lv %d)" % [target_name, lin, lv],
+			RimvaleColors.TEXT_WHITE, 44, 13)
+		row_btn.pressed.connect(func():
+			_e.remove_item_from_inventory(_handle, in_cap)
+			_e.add_item_to_inventory(h_cap, in_cap)
+			_render_section()
+			dialog.hide()
+			dialog.queue_free()
+		)
+		vbox.add_child(row_btn)
+
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2(340, 320))
+
 func _show_notice(message: String) -> void:
 	var toast := Label.new()
 	toast.text = message
