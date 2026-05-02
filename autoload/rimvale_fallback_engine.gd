@@ -8793,8 +8793,29 @@ func start_dungeon(player_handles, enemy_level: int,
 		_occupied_tiles[Vector2i(epos[0], epos[1])] = true
 		var cat: int = int(cr["category"])
 		var lv: int  = int(cr["level"])
-		var total_pts: int = _creature_stat_points(cat, lv)
-		var cr_stats: Array = _creature_distribute_stats(total_pts, cat)
+		# ── Archetype path (Standard Simulation only, humanoid enemies) ─────
+		# When the encounter category is Adversary (humanoid), pick a PHB
+		# archetype and use its stat/feat tables instead of the uniform
+		# creature distribution. This gives real level-scaling so a Lv 15
+		# enemy actually feels different from a Lv 3 one.
+		var arc_name: String = ""
+		var arc_stats: Array = []
+		var arc_feats: Dictionary = {}
+		var arc_skills: Dictionary = {}
+		var use_archetype: bool = (cat == 2 and _dungeon_type == 0
+			and Engine.has_singleton("EnemyArchetype"))
+		if use_archetype:
+			var EA = Engine.get_singleton("EnemyArchetype")
+			arc_name = EA.pick_random_archetype()
+			arc_stats = EA.stats_for(arc_name, lv)
+			arc_feats = EA.feats_for(arc_name, lv)
+			arc_skills = EA.skills_for(arc_name, lv)
+		var cr_stats: Array
+		if use_archetype and arc_stats.size() == 5:
+			cr_stats = arc_stats
+		else:
+			var total_pts: int = _creature_stat_points(cat, lv)
+			cr_stats = _creature_distribute_stats(total_pts, cat)
 		var cr_str: int = int(cr_stats[0])
 		var cr_spd: int = int(cr_stats[1])
 		var cr_vit: int = int(cr_stats[3])
@@ -8807,14 +8828,33 @@ func start_dungeon(player_handles, enemy_level: int,
 		var e_threshold: int = _creature_damage_threshold(cat, lv)
 		var e_abilities: Array = _creature_default_abilities(cat, lv, cr_stats)
 		var e_name: String = str(cr["name"])
-		if GMG_MONSTER_ABILITIES.has(e_name):
-			for ab in GMG_MONSTER_ABILITIES[e_name]:
+		# Tag archetype enemies with their archetype name so combat logs
+		# read "Fighter Brigand" rather than just "Brigand".
+		if use_archetype and arc_name != "":
+			e_name = "%s %s" % [arc_name, e_name]
+		if GMG_MONSTER_ABILITIES.has(str(cr["name"])):
+			for ab in GMG_MONSTER_ABILITIES[str(cr["name"])]:
 				e_abilities.append(ab)
 		var e_weapon: String = "Rusty Sword"
 		match cat:
 			0: e_weapon = CREATURE_WEAPONS_ANIMAL[randi() % CREATURE_WEAPONS_ANIMAL.size()]
 			1: e_weapon = CREATURE_WEAPONS_VILLAGER[randi() % CREATURE_WEAPONS_VILLAGER.size()]
 			_: e_weapon = CREATURE_WEAPONS_MONSTER[randi() % CREATURE_WEAPONS_MONSTER.size()]
+		# Archetypes pick weapons that fit their flavor.
+		if use_archetype:
+			match arc_name:
+				"Fighter":
+					var fpool: Array = ["Iron Sword", "Steel Greataxe", "Halberd", "Warhammer"]
+					e_weapon = str(fpool[randi() % fpool.size()])
+				"Mage":
+					var mpool: Array = ["Quarterstaff", "Wizard Wand", "Dagger"]
+					e_weapon = str(mpool[randi() % mpool.size()])
+				"Rogue":
+					var rpool: Array = ["Dagger", "Shortsword", "Crossbow"]
+					e_weapon = str(rpool[randi() % rpool.size()])
+				"Monk":
+					var kpool: Array = ["Quarterstaff", "Shortsword", "Sling"]
+					e_weapon = str(kpool[randi() % kpool.size()])
 		_dungeon_entities.append({
 			"id":           "enemy_%d" % i,
 			"name":         e_name,
@@ -8844,12 +8884,20 @@ func start_dungeon(player_handles, enemy_level: int,
 			"stats":         cr_stats,
 			"category":      cat,
 			"creature_level": lv,
+			"level":         lv,        # mirror for feat lookups
 			"immunities":    [],
 			"resistances":   [],
 			"legendary_uses": (cr_vit if cat >= 4 else 0),
 			"morale":        4,
 			"inventory":     _generate_creature_loot(lv),
 			"looted":        false,
+			# Archetype payload — empty {} for non-humanoid encounters,
+			# populated for the standard sim. Damage roll reads atk["feats"]
+			# directly so wiring this in lets enemies trigger Titanic
+			# Damage / Crimson Edge / Fury's Call etc. just like players.
+			"archetype":     arc_name,
+			"feats":         arc_feats,
+			"skills":        arc_skills,
 		})
 
 	# Initial fog reveal from player starting positions
@@ -9732,19 +9780,19 @@ func get_available_ability_actions(entity_id: String) -> Array:
 			if iwm_t >= 3: iwm_die = 10
 			elif iwm_t >= 2: iwm_die = 6
 			actions.append(_make_action(
-				iwm_label, "Ability", ACT_IMPROVISED, next_cost,
+				iwm_label, "Weapon", ACT_IMPROVISED, next_cost,
 				0, true, false, "", 0, 1, false, 1,
 				"Strike with an improvised weapon. (1d%d + STR/SPD; %d AP)" % [iwm_die, next_cost]))
 			# Throw object — at T3+ becomes an area explosion. Lower tiers
 			# fire as a single-target ranged improvised attack.
 			if iwm_t >= 3:
 				actions.append(_make_action(
-					"🪨 Throw Object (AoE)", "Ability", ACT_THROW_OBJECT, next_cost,
+					"🪨 Throw Object (AoE)", "Weapon", ACT_THROW_OBJECT, next_cost,
 					0, true, true, "", 3, 1, false, 2,
 					"Hurl an object — 10 ft radius, %dd6 + STR/SPD damage. Spend SP for +2d6 each. Once per encounter." % (2)))
 			else:
 				actions.append(_make_action(
-					"🪨 Throw Object", "Ability", ACT_THROW_OBJECT, next_cost,
+					"🪨 Throw Object", "Weapon", ACT_THROW_OBJECT, next_cost,
 					0, true, true, "", 0, 1, false, 2,
 					"Hurl an object at a target up to 30 ft away. (1d%d + STR/SPD; %d AP)" % [iwm_die, next_cost]))
 
@@ -9759,7 +9807,7 @@ func get_available_ability_actions(entity_id: String) -> Array:
 			# T2+: same cost as single. T4: heavy weapons no longer cost extra.
 			var dual_ap: int = next_cost + 1 if tf_t < 2 else next_cost
 			actions.append(_make_action(
-				"⚔⚔ Dual Strike", "Ability", ACT_DUAL_STRIKE, dual_ap,
+				"⚔⚔ Dual Strike", "Weapon", ACT_DUAL_STRIKE, dual_ap,
 				0, true, false, "", 0, 1, false, 1,
 				"Strike a target with both weapons. (%d AP)" % dual_ap))
 

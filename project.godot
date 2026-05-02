@@ -31,6 +31,7 @@ VehicleData="*res://autoload/vehicle_data.gd"
 RimvaleColors="*res://autoload/rimvale_colors.gd"
 RimvaleUtils="*res://autoload/rimvale_utils.gd"
 CharacterModelBuilder="*res://autoload/character_model_builder.gd"
+EnemyArchetype="*res://autoload/enemy_archetype.gd"
 DebugMonitor="*res://scenes/test/debug_monitor.gd"
 
 [display]
