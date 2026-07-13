@@ -44,6 +44,8 @@ var _available_skill_pts: int = 0
 var _feat_filter_tier: int = 0
 var _feat_filter_cats: Array = []
 var _feat_learned_only: bool = false
+var _feat_search: String = ""
+var _feat_search_gen: int = 0  # debounce generation counter for the search box
 
 # Inventory state (Equipment tab)
 var _inv_filter: String = "All"
@@ -306,6 +308,37 @@ func _build_stats(parent: VBoxContainer) -> void:
 	if _handle == -1:
 		parent.add_child(RimvaleUtils.label("No hero selected.", 14, RimvaleColors.TEXT_DIM))
 		return
+
+	# ── GMG Class selector (NPC builds, GMG pp.103-110) ──────────────────
+	# Assigning a class auto-spends available stat/skill/feat points toward
+	# that build's distribution — now and on every future level-up.
+	var cls_row = HBoxContainer.new()
+	cls_row.add_theme_constant_override("separation", 8)
+	parent.add_child(cls_row)
+	cls_row.add_child(RimvaleUtils.label("🎓 Class:", 14, RimvaleColors.ACCENT))
+	var cls_opt = OptionButton.new()
+	cls_opt.custom_minimum_size = Vector2(220, 34)
+	cls_opt.add_item("None (manual build)", 0)
+	var cls_names: Array = EnemyArchetype.class_names()
+	var current_cls: String = str(_e.get_npc_class(_handle))
+	for ci in range(cls_names.size()):
+		cls_opt.add_item(str(cls_names[ci]), ci + 1)
+		if str(cls_names[ci]) == current_cls:
+			cls_opt.selected = ci + 1
+	cls_opt.item_selected.connect(func(idx: int):
+		var pick: String = "" if idx == 0 else str(cls_names[idx - 1])
+		var err: String = _e.assign_npc_class(_handle, pick)
+		if err == "" and pick != "":
+			# Points were auto-spent — rebuild the whole page to reflect it.
+			_render_section()
+	)
+	cls_row.add_child(cls_opt)
+	var cls_hint = RimvaleUtils.label(
+		"auto-builds stats, skills & feats per the GMG on level-up", 10, RimvaleColors.TEXT_DIM)
+	cls_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cls_row.add_child(cls_hint)
+
+	parent.add_child(RimvaleUtils.spacer(4))
 
 	# Points badge + confirm holder
 	var hdr_row = HBoxContainer.new()
@@ -656,6 +689,27 @@ func _build_feats(parent: VBoxContainer) -> void:
 
 	parent.add_child(RimvaleUtils.separator())
 
+	# ── Search box: text filter across all feat trees ──
+	var search_box = LineEdit.new()
+	search_box.placeholder_text = "🔍 Search feats by name or effect…"
+	search_box.text = _feat_search
+	search_box.custom_minimum_size = Vector2(0, 34)
+	search_box.clear_button_enabled = true
+	search_box.text_changed.connect(func(new_text: String):
+		_feat_search = new_text
+		# Debounce: re-render only after typing pauses (generation counter)
+		_feat_search_gen += 1
+		var my_gen: int = _feat_search_gen
+		get_tree().create_timer(0.25).timeout.connect(func():
+			if my_gen == _feat_search_gen:
+				_render_section()
+		)
+	)
+	parent.add_child(search_box)
+	if _feat_search != "":
+		search_box.grab_focus()
+		search_box.caret_column = _feat_search.length()
+
 	# All feat categories for filter info
 	var all_cats_raw = _e.get_all_feat_categories()
 	var all_cats: Array = []
@@ -726,6 +780,14 @@ func _build_feats(parent: VBoxContainer) -> void:
 			# Category filter
 			if not _feat_filter_cats.is_empty():
 				if category not in _feat_filter_cats:
+					continue
+
+			# Search filter: match feat name, tree name, or effect text
+			if _feat_search.strip_edges() != "":
+				var q: String = _feat_search.strip_edges().to_lower()
+				if q not in feat_name.to_lower() \
+						and q not in description.to_lower() \
+						and q not in tree_name.to_lower():
 					continue
 
 			var current_tier: int = _e.get_character_feat_tier(_handle, feat_name)
@@ -856,14 +918,44 @@ const DOMAIN_EFFECTS: Array = [
 ]
 const CONDITIONS_BENEFICIAL: PackedStringArray = [
 	"Calm", "Dodging", "Flying", "Hidden", "Invisible",
-	"Invulnerable", "Resistance", "Shielded", "Silent", "Stoneskin"
+	"Invulnerable", "Resistant", "Shielded", "Silent"
 ]
 const CONDITIONS_HARMFUL: PackedStringArray = [
 	"Bleed", "Blinded", "Charm", "Confused", "Dazed", "Deafened",
-	"Depleted", "Diseased", "Enraged", "Exhausted", "Fear", "Fever",
-	"Incapacitated", "Paralyzed", "Petrified", "Poisoned", "Prone",
+	"Depleted", "Enraged", "Exhausted", "Fear", "Fever",
+	"Grappled", "Incapacitated", "Paralyzed", "Petrified", "Poisoned", "Prone",
 	"Restrained", "Slowed", "Squeeze", "Stunned", "Unconscious", "Vulnerable"
 ]
+# PHB bless/curse tables: per-condition SP cost (replaces the old flat
+# 3-per-harmful / minus-2-per-beneficial formula, which let players buy
+# Invulnerable for less than the price of Slowed).
+const CONDITION_SP_COST: Dictionary = {
+	# Beneficial (bless table)
+	"Calm": 2, "Dodging": 1, "Flying": 3, "Hidden": 2, "Invisible": 3,
+	"Invulnerable": 10, "Resistant": 5, "Shielded": 2, "Silent": 3,
+	# Harmful (curse table)
+	"Bleed": 2, "Blinded": 2, "Charm": 2, "Confused": 2, "Dazed": 2,
+	"Deafened": 2, "Depleted": 5, "Enraged": 1, "Exhausted": 2, "Fear": 2,
+	"Fever": 4, "Grappled": 2, "Incapacitated": 7, "Paralyzed": 6,
+	"Petrified": 8, "Poisoned": 3, "Prone": 2, "Restrained": 4,
+	"Slowed": 1, "Squeeze": 10, "Stunned": 3, "Unconscious": 10, "Vulnerable": 10,
+}
+# Display name → engine condition string. The engine stores conditions as
+# lowercase words that differ from the UI labels (Fear → "frightened");
+# without this mapping every custom spell's conditions were silently inert.
+const COND_TO_ENGINE: Dictionary = {
+	"Calm": "calm", "Dodging": "dodging", "Flying": "flying", "Hidden": "hidden",
+	"Invisible": "invisible", "Invulnerable": "invulnerable",
+	"Resistant": "resistant", "Shielded": "shielded", "Silent": "silent",
+	"Bleed": "bleeding", "Blinded": "blinded", "Charm": "charmed",
+	"Confused": "confused", "Dazed": "dazed", "Deafened": "deafened",
+	"Depleted": "depleted", "Enraged": "enraged", "Exhausted": "exhausted",
+	"Fear": "frightened", "Fever": "fever", "Grappled": "grappled",
+	"Incapacitated": "incapacitated", "Paralyzed": "paralyzed",
+	"Petrified": "petrified", "Poisoned": "poisoned", "Prone": "prone",
+	"Restrained": "restrained", "Slowed": "slowed", "Squeeze": "squeezed",
+	"Stunned": "stunned", "Unconscious": "unconscious", "Vulnerable": "vulnerable",
+}
 const DAMAGE_TYPES: PackedStringArray = [
 	"Bludgeoning", "Piercing", "Slashing", "Force", "Fire", "Cold",
 	"Lightning", "Acid", "Poison", "Psychic", "Radiant", "Necrotic", "Thunder"
@@ -889,8 +981,7 @@ const DIE_SIDES_MOD: PackedInt32Array  = [0, 1, 2, 3, 4]   # extra SP cost per d
 
 func _calc_spell_cost(effect_base_sp: int, duration_idx: int, range_idx: int,
 		targets: int, area_idx: int, die_count: int, die_idx: int,
-		is_saving_throw: bool, harmful_cond_count: int,
-		beneficial_cond_count: int) -> int:
+		is_saving_throw: bool, cond_cost: int) -> int:
 	var type_cost: int   = 1 if is_saving_throw else 0
 	var sides_mod: int   = DIE_SIDES_MOD[die_idx] if die_idx < DIE_SIDES_MOD.size() else 0
 	var dice_cost: int   = die_count * (1 + sides_mod)
@@ -904,7 +995,6 @@ func _calc_spell_cost(effect_base_sp: int, duration_idx: int, range_idx: int,
 		# targets=2 → 2, 3 → 2+4=6, 4 → 2+4+8=14, 5 → 2+4+8+16=30, 6 → 62…
 		for i in range(targets - 1):
 			target_cost += int(pow(2.0, float(i + 1)))
-	var cond_cost: int   = (harmful_cond_count * 3) - (beneficial_cond_count * 2)
 	var area_mult: int   = AREA_MULT[area_idx] if area_idx < AREA_MULT.size() else 1
 	var base_sum: int    = type_cost + base_with_dur + range_cost + target_cost + cond_cost
 	var total: int       = base_sum * area_mult
@@ -920,15 +1010,16 @@ func _sb_effect_base_sp() -> int:
 		return int(effects[_sb_effect_idx][1])
 	return 1
 
+## Sum of PHB per-condition SP costs for the currently-selected conditions.
+func _sb_cond_sp_cost() -> int:
+	var total: int = 0
+	for cname in _sb_conditions:
+		total += int(CONDITION_SP_COST.get(cname, 2))
+	return total
+
 func _sb_update_preview() -> void:
 	if not is_instance_valid(_sb_preview_lbl):
 		return
-	var harmful: int     = 0
-	var beneficial: int  = 0
-	for cname in _sb_conditions:
-		if cname in CONDITIONS_HARMFUL: harmful += 1
-		else: beneficial += 1
-
 	# Individual cost components for breakdown
 	var effect_base: int = _sb_effect_base_sp()
 	var sides_mod: int   = DIE_SIDES_MOD[_sb_die_idx] if _sb_die_idx < DIE_SIDES_MOD.size() else 0
@@ -939,13 +1030,13 @@ func _sb_update_preview() -> void:
 	if _sb_targets > 1:
 		for i in range(_sb_targets - 1):
 			target_cost += int(pow(2.0, float(i + 1)))
-	var cond_cost: int   = (harmful * 3) - (beneficial * 2)
+	var cond_cost: int   = _sb_cond_sp_cost()
 	var type_cost: int   = 1 if _sb_is_saving_throw else 0
 
 	var cost = _calc_spell_cost(
 		effect_base, _sb_duration_idx, _sb_range_idx,
 		_sb_targets, _sb_area_idx, _sb_die_count, _sb_die_idx,
-		_sb_is_saving_throw, harmful, beneficial
+		_sb_is_saving_throw, cond_cost
 	)
 	_sb_preview_lbl.text = "Total SP Cost: %d" % cost
 
@@ -1675,23 +1766,33 @@ func _build_spell_builder_inline(parent: VBoxContainer) -> void:
 		if sname.is_empty():
 			OS.alert("Please enter a spell name.", "Spell Builder")
 			return
-
-		var harmful: int    = 0
-		var beneficial: int = 0
-		for cname in _sb_conditions:
-			if cname in CONDITIONS_HARMFUL: harmful += 1
-			else: beneficial += 1
+		# Reject duplicates of existing spells (case-insensitive)
+		for existing in _e.get_all_spells():
+			if str(existing).to_lower() == sname.to_lower():
+				OS.alert("A spell named \"%s\" already exists." % sname, "Spell Builder")
+				return
+		# Require at least one actual effect
+		if _sb_die_count <= 0 and _sb_conditions.is_empty() and not _sb_is_teleport and not _sb_is_healing:
+			OS.alert("This spell has no effect — add damage dice, healing, a condition, or teleport.", "Spell Builder")
+			return
 
 		var final_cost: int = _calc_spell_cost(
 			_sb_effect_base_sp(), _sb_duration_idx, _sb_range_idx,
 			_sb_targets, _sb_area_idx, _sb_die_count, _sb_die_idx,
-			_sb_is_saving_throw, harmful, beneficial
+			_sb_is_saving_throw, _sb_cond_sp_cost()
 		)
+		if final_cost <= 0:
+			final_cost = 1
 
 		var die_sides: int   = [4, 6, 8, 10, 12][_sb_die_idx]
 		var dur_rounds: int  = DURATION_ROUNDS[_sb_duration_idx]
 		var eng_dmg_type: int = DAMAGE_TYPE_ENG[_sb_damage_type] if _sb_damage_type < DAMAGE_TYPE_ENG.size() else 3
-		var cond_csv: String  = ",".join(_sb_conditions)
+		# Translate display names to engine condition strings — the engine only
+		# understands its own lowercase vocabulary ("Fear" → "frightened").
+		var eng_conds: Array = []
+		for cname in _sb_conditions:
+			eng_conds.append(str(COND_TO_ENGINE.get(cname, str(cname).to_lower())))
+		var cond_csv: String  = ",".join(eng_conds)
 
 		# Register spell in DB and teach only this hero
 		var teach_handle: int = _handle if (also_learn and _handle != -1) else -2
@@ -2493,142 +2594,4 @@ func _build_lineage(parent: VBoxContainer) -> void:
 
 
 ## Collapsible wrapper. Adds a header-button to `parent` that toggles a
-## body VBoxContainer's visibility. Returns the body so callers can fill
-## it. Default state: collapsed (body hidden, header shows ▶).
-func _build_collapsible(parent: VBoxContainer, title: String) -> VBoxContainer:
-	var wrapper := VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 4)
-	parent.add_child(wrapper)
-
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 6)
-	body.visible = false
-
-	var header := Button.new()
-	header.text = "▶  " + title
-	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	header.add_theme_font_size_override("font_size", 13)
-	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var captured_title: String = title
-	header.pressed.connect(func():
-		body.visible = not body.visible
-		header.text = ("▼  " if body.visible else "▶  ") + captured_title
-	)
-	wrapper.add_child(header)
-	wrapper.add_child(body)
-	return body
-
-
-## Toast helper for the level-up screen.
-## Transfer dialog — pick another agent in the collection to receive the
-## item. Mirrors the same dialog in inventory.gd so the two screens have
-## the same feature set.
-func _show_transfer_dialog(item_name: String) -> void:
-	var dialog := AcceptDialog.new()
-	dialog.title = "Transfer " + item_name
-	dialog.get_ok_button().text = "Cancel"
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	dialog.add_child(vbox)
-	vbox.add_child(RimvaleUtils.label(
-		"Select an agent to receive this item:",
-		13, RimvaleColors.TEXT_GRAY))
-
-	for h in GameState.collection:
-		if h == _handle:
-			continue
-		var target_name: String = str(_e.get_character_name(h))
-		var lin: String = str(_e.get_character_lineage_name(h))
-		var lv: int = _e.get_character_level(h)
-
-		var h_cap: int = h
-		var in_cap: String = item_name
-		var row_btn := RimvaleUtils.button(
-			"%s  (%s Lv %d)" % [target_name, lin, lv],
-			RimvaleColors.TEXT_WHITE, 44, 13)
-		row_btn.pressed.connect(func():
-			_e.remove_item_from_inventory(_handle, in_cap)
-			_e.add_item_to_inventory(h_cap, in_cap)
-			_render_section()
-			dialog.hide()
-			dialog.queue_free()
-		)
-		vbox.add_child(row_btn)
-
-	dialog.canceled.connect(func(): dialog.queue_free())
-	add_child(dialog)
-	dialog.popup_centered(Vector2(340, 320))
-
-func _show_notice(message: String) -> void:
-	var toast := Label.new()
-	toast.text = message
-	toast.add_theme_color_override("font_color", RimvaleColors.GOLD)
-	toast.add_theme_font_size_override("font_size", 13)
-	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	toast.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	toast.offset_top = 60
-	toast.offset_bottom = 90
-	toast.z_index = 100
-	add_child(toast)
-	var tween := create_tween()
-	tween.tween_interval(2.0)
-	tween.tween_property(toast, "modulate:a", 0.0, 0.5)
-	tween.tween_callback(func():
-		if is_instance_valid(toast):
-			toast.queue_free()
-	)
-
-## Apex tier picker — shows a dialog letting the player choose tiers 1-5
-## for the apex item. Falls back to a +1 tier bump if the engine has the
-## minimal apex_set_tier API available.
-func _show_apex_tier_picker(item_name: String) -> void:
-	if _e == null or not _e.has_method("apex_set_tier"):
-		_show_notice("Apex attunement requires engine support.")
-		return
-	var overlay := Control.new()
-	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	overlay.z_index = 90
-	add_child(overlay)
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.78)
-	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	overlay.add_child(dim)
-	var panel := PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	panel.offset_left = -200; panel.offset_right = 200
-	panel.offset_top = -160; panel.offset_bottom = 160
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.10, 0.08, 0.16, 1.0)
-	bg.border_color = RimvaleColors.SP_PURPLE
-	bg.set_border_width_all(2); bg.set_corner_radius_all(8)
-	bg.set_content_margin_all(20)
-	panel.add_theme_stylebox_override("panel", bg)
-	overlay.add_child(panel)
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 10)
-	panel.add_child(vbox)
-	vbox.add_child(RimvaleUtils.label(
-		"Attune Tier — %s" % item_name, 14, RimvaleColors.SP_PURPLE))
-	var cur_tier: int = int(_e.apex_get_tier(_handle, item_name))
-	vbox.add_child(RimvaleUtils.label(
-		"Current: Tier %d/5" % cur_tier, 11, RimvaleColors.TEXT_GRAY))
-	for t in range(0, 6):
-		var tn: int = t
-		var btn := RimvaleUtils.button(
-			"Tier %d" % tn,
-			RimvaleColors.SP_PURPLE if tn != cur_tier else RimvaleColors.GOLD,
-			36, 12)
-		btn.pressed.connect(func():
-			var err: String = _e.apex_set_tier(_handle, item_name, tn)
-			if err != "":
-				_show_notice(err)
-			else:
-				_show_notice("Set %s to Tier %d." % [item_name, tn])
-			overlay.queue_free()
-			_render_section()
-		)
-		vbox.add_child(btn)
-	var cancel := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 32, 11)
-	cancel.pressed.connect(func(): overlay.queue_free())
-	vbox.add_child(cancel)
+## body VBoxCont

@@ -13,6 +13,9 @@ var _fog: PackedByteArray          # 625 bytes: 0=unseen, 1=remembered, 2=visibl
 var _elevation: PackedInt32Array   # 625 ints: 0=pit, 1=normal, 2=platform
 var _entities: Array = []
 var _selected_id: String = ""
+# Battle Mode ad-hoc multi-selection: Shift+click adds/removes your units;
+# one order commands the whole group (like drag-select groups in an RTS).
+var _battle_selection: Array = []
 var _valid_moves: Array = []
 var _log_lines: Array = []
 
@@ -409,6 +412,11 @@ func _ready() -> void:
 	_render_style = str(GameState.get("dungeon_render_style"))
 	if _render_style != "region":
 		_render_style = "classic"
+	# Battle Mode ALWAYS uses the region-map look: outdoor daylight, sky,
+	# grass and props — battles are fought on open region terrain, not in
+	# dungeon caves.
+	if BattleSystem.active:
+		_render_style = "region"
 	# Render-quality preference (low / medium / high).
 	_quality = str(GameState.get("dungeon_quality"))
 	if not (_quality == "low" or _quality == "medium" or _quality == "high"):
@@ -444,9 +452,16 @@ func _ready() -> void:
 
 	# Auto-apply a random terrain so the dungeon renders immediately without
 	# the player having to manually open the terrain dialog first.
-	_on_terrain_random()
-	if not _terrain_sel_name.is_empty():
-		_on_terrain_confirm()
+	# SKIPPED in Battle Mode: start_battle already generated the arena, and
+	# restart_with_terrain would regenerate the dungeon — erasing every team
+	# (battle units have no character handles to respawn from).
+	if BattleSystem.active:
+		_update_biome_environment()
+		_spawn_biome_particles()
+	else:
+		_on_terrain_random()
+		if not _terrain_sel_name.is_empty():
+			_on_terrain_confirm()
 
 	_refresh()
 	_update_banner()
@@ -455,6 +470,23 @@ func _ready() -> void:
 	# Defer an additional build so the camera is definitely current
 	_map_dirty = true
 	call_deferred("_first_3d_build")
+
+	# Combat music + entry SFX
+	if typeof(AudioManager) != TYPE_NIL:
+		# Boss dungeons get a heavier track if we can identify one
+		var boss := false
+		if _e != null and _e.has_method("get_dungeon_type"):
+			boss = int(_e.call("get_dungeon_type")) >= 2
+		var track := "music_combat_boss" if boss else "music_dungeon"
+		AudioManager.play_music(track, 1.5)
+		AudioManager.play_sfx("door_open", 0.05, -3.0)
+
+	# First-time tutorial: explain combat basics.
+	RimvaleUtils.show_hint(self, "dungeon_basics",
+		"You're in a turn-based dungeon. Select one of your units, then choose an action " +
+		"(Move, Attack, Ability, or Spell). Each unit has Action Points — when they run out, " +
+		"press End Phase to let the enemy take their turn.",
+		"Tactical Combat")
 
 # ── First 3D build (deferred one frame after _ready) ─────────────────────────
 func _first_3d_build() -> void:
@@ -465,6 +497,23 @@ func _first_3d_build() -> void:
 		_update_camera_pos()
 	_map_dirty = true
 	_update_3d_view()
+	# Battle Mode diagnostic census — surfaces spawn problems in the battle
+	# log itself (no editor console needed).
+	if BattleSystem.active:
+		var bt_total: int = 0
+		var bt_mine: int = 0
+		var bt_bases: int = 0
+		var bt_nodes: int = 0
+		for ent in _e.get_dungeon_entities():
+			bt_total += 1
+			if bool(ent.get("is_player", false)): bt_mine += 1
+			if bool(ent.get("is_battle_base", false)): bt_bases += 1
+			if bool(ent.get("is_resource_node", false)): bt_nodes += 1
+		_add_log("[color=#88ccff][Battle] Entities: %d total · %d yours · %d bases · %d nodes · map %d×%d[/color]" % [
+			bt_total, bt_mine, bt_bases, bt_nodes, MAP_SIZE, MAP_SIZE])
+		for extra in BattleSystem.battle_log_extra:
+			_add_log(str(extra))
+		BattleSystem.battle_log_extra.clear()
 
 
 ## Set _cam_target_offset so the camera looks at the party's average tile
@@ -503,6 +552,8 @@ func _update_camera_pos() -> void:
 	var half: float    = MAP_SIZE * 0.5
 	var target: Vector3 = Vector3(half, 0.0, half) + _cam_target_offset
 	var yaw_r:   float = deg_to_rad(_cam_yaw)
+	# (2.5D mode only changes the STARTING pitch — the player can always
+	# tilt up/down with right-drag to see over walls.)
 	var pitch_r: float = deg_to_rad(_cam_pitch)
 	var horiz: float   = _cam_dist * cos(pitch_r)
 	var vert:  float   = _cam_dist * sin(pitch_r)
@@ -576,6 +627,9 @@ func _apply_region_style_overrides() -> void:
 	# steeper pitch. Pulling in closer + lowering the pitch matches explore.
 	_cam_dist  = 10.0   # was 24.0
 	_cam_pitch = 40.0   # was 55.0
+	# 2.5D mode: start at a low side-on angle (player can tilt freely after)
+	if Settings.render_2d():
+		_cam_pitch = 16.0
 
 ## Rebuild the Region-Style prop overlay. Runs after the classic tile/wall
 ## rebuild when _render_style == "region". Adds outdoor visuals on top of
@@ -1336,8 +1390,14 @@ func _add_ambient_particles(pos: Vector3, color: Color, size: float,
 func _build_banner() -> void:
 	_banner_bar = ColorRect.new()
 	_banner_bar.color = Color(0.30, 0.20, 0.05)
-	_banner_bar.custom_minimum_size = Vector2(0, 30)
-	_banner_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# A thin strip below the header — NOT full-rect. (It was PRESET_FULL_RECT,
+	# which made the banner an invisible-until-typed fullscreen sheet that
+	# swallowed every mouse click. The auto-terrain restart used to reset
+	# dungeon type to 0 and hide it, masking the bug until Battle Mode.)
+	_banner_bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_banner_bar.offset_top = 56
+	_banner_bar.offset_bottom = 86
+	_banner_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_banner_bar.visible = false
 
 	var margin := MarginContainer.new()
@@ -1360,6 +1420,14 @@ func _update_banner() -> void:
 	var dname: String = _e.get_dungeon_encounter_name()
 	var tname: String = _e.get_dungeon_terrain_name()
 	var terrain_suffix: String = (" — %s" % tname) if tname != "" and tname != "Cave" else ""
+
+	# Battle Mode gets its own banner instead of the crawl/militia one.
+	if BattleSystem.active:
+		_banner_bar.color = Color(0.35, 0.22, 0.02)
+		_banner_label.text = "⚔  BATTLE MODE — %s — %d teams" % [dname, BattleSystem.num_teams]
+		_banner_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.30))
+		_banner_bar.visible = true
+		return
 
 	match dtype:
 		0:  # Standard — hide banner (terrain shown in header title only)
@@ -1888,7 +1956,12 @@ func _build_victory_modal() -> void:
 ## Call after every action to check whether the combat has ended.
 func _check_outcome() -> void:
 	if _outcome != "ongoing": return
-	var result: String = _e.check_dungeon_outcome()
+	# Battle Mode: outcome = last team standing (team-aware), not player-vs-enemy.
+	var result: String
+	if BattleSystem.active:
+		result = BattleSystem.check_battle_outcome()
+	else:
+		result = _e.check_dungeon_outcome()
 	if result == "ongoing": return
 	_outcome = result
 	# Disable action buttons
@@ -1918,6 +1991,34 @@ func _on_end_dungeon_pressed() -> void:
 	_show_outcome_modal("victory")
 
 func _show_outcome_modal(result: String) -> void:
+	# Outcome jingle (victory/defeat) — stop combat music first so the jingle
+	# isn't drowned out, then play the sting.
+	if typeof(AudioManager) != TYPE_NIL:
+		if result == "victory":
+			AudioManager.stop_music(0.6)
+			AudioManager.play_sfx("jingle_victory")
+		else:
+			AudioManager.stop_music(1.0)
+			AudioManager.play_sfx("jingle_defeat")
+	# ── Battle Mode: pure skirmish outcome — no story rewards, no quest
+	# completion, nothing written to GameState (a battle can run without any
+	# story save loaded).
+	if BattleSystem.active:
+		if result == "victory":
+			_modal_title.text = "✦ REGION CONQUERED ✦"
+			_modal_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.20))
+			_modal_body.text = "Your team is the last one standing!\n\n%s is yours.\nRounds fought: %d" % [
+				BattleSystem.get_region_display(BattleSystem.region_id),
+				BattleSystem.round_num]
+		else:
+			_modal_title.text = "✗  ELIMINATED"
+			_modal_title.add_theme_color_override("font_color", Color(0.85, 0.20, 0.15))
+			_modal_body.text = "Your forces have been wiped out.\n%d team(s) remain on the field." % \
+				BattleSystem.teams_alive_count()
+		_modal_btn.text = "Back to Battle Setup"
+		_modal.visible = true
+		return
+
 	if result == "victory":
 		_modal_title.text = "✦ VICTORY ✦"
 		_modal_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.20))
@@ -2666,6 +2767,11 @@ func _on_terrain_random() -> void:
 	_on_terrain_subregion_selected(str(rand_sub[0]), int(rand_sub[1]))
 
 func _on_terrain_confirm() -> void:
+	# Terrain regeneration would wipe all battle teams — refuse during battles.
+	if BattleSystem.active:
+		_add_log("[color=red]Terrain is fixed during battles.[/color]")
+		_terrain_overlay.visible = false
+		return
 	if _terrain_sel_name.is_empty():
 		_add_log("[color=red]Select a terrain first.[/color]")
 		return
@@ -2779,6 +2885,8 @@ func _build_header() -> Control:
 	_btn_stash.text = "🎒 Stash"
 	_btn_stash.add_theme_font_size_override("font_size", 14)
 	_btn_stash.pressed.connect(_on_open_stash)
+	# Story-only features hide in Battle Mode (no party, no stash, fixed map)
+	_btn_stash.visible = not BattleSystem.active
 	hbox.add_child(_btn_stash)
 
 	hbox.add_child(_spacer_h(8))
@@ -2787,6 +2895,7 @@ func _build_header() -> Control:
 	btn_spell.text = "✨ Learn Spell"
 	btn_spell.add_theme_font_size_override("font_size", 14)
 	btn_spell.pressed.connect(_on_open_custom_spell)
+	btn_spell.visible = not BattleSystem.active
 	hbox.add_child(btn_spell)
 
 	hbox.add_child(_spacer_h(8))
@@ -2795,6 +2904,7 @@ func _build_header() -> Control:
 	btn_terrain.text = "⛰ Terrain"
 	btn_terrain.add_theme_font_size_override("font_size", 14)
 	btn_terrain.pressed.connect(_on_open_terrain_selector)
+	btn_terrain.visible = not BattleSystem.active
 	hbox.add_child(btn_terrain)
 
 	hbox.add_child(_spacer_h(8))
@@ -3734,6 +3844,21 @@ func _rebuild_3d_tiles() -> void:
 		return
 
 	var have_elev: bool = _elevation.size() == MAP_SIZE * MAP_SIZE
+
+	# ── Unexplored shroud ────────────────────────────────────────────────────
+	# One dark slab under the whole map footprint. With render-distance
+	# culling on (50×50 crawls), undrawn tiles previously exposed the bright
+	# tabletop beneath the map — which read as walkable open ground and made
+	# walkable-vs-void impossible to parse. Now: dark = unexplored/void,
+	# lit tiles = the actual dungeon. Drawn tiles sit on top and cover it.
+	var shroud_mesh := BoxMesh.new()
+	shroud_mesh.size = Vector3(float(MAP_SIZE) + 0.4, 0.05, float(MAP_SIZE) + 0.4)
+	var shroud_mat := StandardMaterial3D.new()
+	shroud_mat.albedo_color = _biome_fog_color.darkened(0.8)
+	shroud_mat.roughness = 1.0
+	shroud_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_make_mesh_inst(shroud_mesh, shroud_mat,
+		float(MAP_SIZE) * 0.5, -0.08, float(MAP_SIZE) * 0.5, _tile_root)
 
 	# Deterministic RNG for decoration placement so rebuilds look stable
 	var drng := RandomNumberGenerator.new()
@@ -4924,6 +5049,13 @@ func _update_3d_entities() -> void:
 			emit_col = Color(1.0, 0.30, 0.20)
 			emit_str = 0.3
 
+		# Battle Mode: each of the up-to-10 teams gets its own faction color
+		# so rival armies are distinguishable at a glance (C&C style).
+		if BattleSystem.active and not is_dead and ent.has("battle_team"):
+			body_col = BattleSystem.get_team_color(int(ent.get("battle_team", 0)))
+			emit_col = body_col.lightened(0.25)
+			emit_str = 0.45
+
 		# Region Map Style: soften the harsh primary tints so tokens blend
 		# with the bright daylight palette instead of clashing with grass +
 		# stone. Keeps the team-color contrast (player blue / ally green /
@@ -4985,6 +5117,40 @@ func _update_3d_entities() -> void:
 			# Dead units: flat slab token (no model)
 			_make_mesh_inst(cyl_dead, _make_mat(body_col, 0.35, 0.55, emit_col, emit_str),
 					cx, base_y + 0.11, cz, _entity_root)
+		elif bool(ent.get("is_battle_base", false)) or bool(ent.get("is_battle_structure", false)):
+			# ── Battle structures render as region-map BUILDINGS ──────────
+			# Command Posts / Barracks / War Factories use the explore-city
+			# visual language: walled body, roof, door, lit windows, and a
+			# floating name sign — team-tinted.
+			var b_wall: Color = body_col.lerp(Color(0.72, 0.68, 0.62), 0.55)
+			var b_body := BoxMesh.new()
+			b_body.size = Vector3(0.92, 0.95, 0.92)
+			_make_mesh_inst(b_body, _make_mat(b_wall, 0.0, 0.85),
+				cx, base_y + 0.475, cz, _entity_root)
+			var b_roof := PrismMesh.new()
+			b_roof.size = Vector3(1.08, 0.42, 1.08)
+			_make_mesh_inst(b_roof, _make_mat(body_col.darkened(0.25), 0.0, 0.8),
+				cx, base_y + 1.16, cz, _entity_root)
+			var b_door := BoxMesh.new()
+			b_door.size = Vector3(0.22, 0.38, 0.05)
+			_make_mesh_inst(b_door, _make_mat(b_wall.darkened(0.5), 0.0, 0.9),
+				cx, base_y + 0.19, cz + 0.45, _entity_root)
+			var b_win := BoxMesh.new()
+			b_win.size = Vector3(0.16, 0.16, 0.04)
+			var win_mat: StandardMaterial3D = _make_mat(
+				Color(1.0, 0.9, 0.6), 0.0, 0.4, Color(1.0, 0.85, 0.45), 1.2)
+			_make_mesh_inst(b_win, win_mat, cx - 0.25, base_y + 0.62, cz + 0.45, _entity_root)
+			_make_mesh_inst(b_win, win_mat, cx + 0.25, base_y + 0.62, cz + 0.45, _entity_root)
+			# Floating name sign (matches region-map building tags)
+			var b_tag := Label3D.new()
+			b_tag.text = str(ent.get("name", "Structure"))
+			b_tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			b_tag.font_size = 16
+			b_tag.outline_size = 5
+			b_tag.modulate = body_col.lightened(0.45)
+			b_tag.outline_modulate = Color(0.05, 0.04, 0.03, 0.95)
+			b_tag.position = Vector3(cx, base_y + 1.75, cz)
+			_entity_root.add_child(b_tag)
 		else:
 			# Build 3D model: prefer Sprite3D lineage portraits, fall back to procedural.
 			# Shapeshifters: when `shapeshifted == true`, render the active animal
@@ -5006,8 +5172,16 @@ func _update_3d_entities() -> void:
 			# same visual height as the fallback. unit_scale (1.0 classic /
 			# 1.55 region) still applies on top.
 			var sprite_scale: float = 0.85 * unit_scale
-			# Try Sprite3D billboard model first (unique lineage art)
-			var model: Node3D = CharacterModelBuilder.build_sprite_model(
+			# Battle vehicles render with the vehicle sprite builder (its
+			# orange-box fallback beats the humanoid mis-render that
+			# build_sprite_model would produce for a vehicle name).
+			var model: Node3D
+			if bool(ent.get("is_vehicle", false)):
+				model = CharacterModelBuilder.build_vehicle_sprite_model(
+					lineage_name, sprite_scale + 0.4)
+			else:
+				# Try Sprite3D billboard model first (unique lineage art)
+				model = CharacterModelBuilder.build_sprite_model(
 					lineage_name, weapon_name, armor_name, shield_name, sprite_scale, body_col)
 			if model != null:
 				model.position = Vector3(cx, base_y + 0.12, cz)
@@ -5017,8 +5191,10 @@ func _update_3d_entities() -> void:
 				var mat := _make_mat(body_col, 0.35, 0.55, emit_col, emit_str)
 				_make_mesh_inst(cyl_mesh, mat, cx, base_y + 0.425 * unit_scale, cz, _entity_root)
 
-		# Selected glow ring
-		if str(ent["id"]) == _selected_id:
+		# Selected glow ring (primary = gold; battle multi-select group = cyan)
+		var in_group: bool = BattleSystem.active and _battle_selection.size() > 1 \
+			and str(ent["id"]) in _battle_selection
+		if str(ent["id"]) == _selected_id or in_group:
 			var ring_mesh := TorusMesh.new()
 			ring_mesh.inner_radius = 0.33
 			ring_mesh.outer_radius = 0.46
@@ -5027,6 +5203,9 @@ func _update_3d_entities() -> void:
 			var ring_mat := _make_mat(
 				Color(1.0, 0.90, 0.10, 0.9), 0.8, 0.2,
 				Color(1.0, 0.95, 0.20), 1.8
+			) if str(ent["id"]) == _selected_id else _make_mat(
+				Color(0.25, 0.85, 1.0, 0.9), 0.8, 0.2,
+				Color(0.35, 0.90, 1.0), 1.6
 			)
 			var ring := MeshInstance3D.new()
 			ring.mesh = ring_mesh
@@ -5384,6 +5563,86 @@ func _on_grid_input(event: InputEvent) -> void:
 			_cancel_pending_action()
 		return
 
+	# ── Battle Mode multi-select (Shift+click your units) ──────────────────
+	if BattleSystem.active and Input.is_key_pressed(KEY_SHIFT) \
+			and not clicked_ent.is_empty() and not bool(clicked_ent.get("is_dead", false)) \
+			and int(clicked_ent.get("battle_team", -1)) == BattleSystem.player_team \
+			and int(clicked_ent.get("speed", 0)) > 0:
+		var add_id: String = str(clicked_ent["id"])
+		# Seed the group with the currently selected unit
+		if _selected_id != "" and _selected_id not in _battle_selection:
+			_battle_selection.append(_selected_id)
+		if add_id in _battle_selection:
+			_battle_selection.erase(add_id)
+		else:
+			_battle_selection.append(add_id)
+		_selected_id = add_id
+		_add_log("[color=#88ddff]Group: %d unit%s selected[/color]" % [
+			_battle_selection.size(), "s" if _battle_selection.size() != 1 else ""])
+		_update_3d_view()
+		_update_roster()
+		return
+
+	# ── Battle Mode RTS orders ─────────────────────────────────────────────
+	# Fire-and-forget C&C grammar: with one of your units selected, click an
+	# enemy to engage it, click open ground to move there. No confirm popups;
+	# orders persist across turns (BattleSystem executes them each round).
+	if BattleSystem.active and _selected_id != "" and _pending_action.is_empty():
+		var rts_sel: Dictionary = _get_entity(_selected_id)
+		var rts_mine: bool = not rts_sel.is_empty() \
+			and int(rts_sel.get("battle_team", -1)) == BattleSystem.player_team \
+			and not bool(rts_sel.get("is_dead", false)) \
+			and int(rts_sel.get("speed", 0)) > 0
+		if rts_mine:
+			# Prune dead/stale ids from the multi-selection
+			var pruned: Array = []
+			for gid in _battle_selection:
+				var ge: Dictionary = _get_entity(str(gid))
+				if not ge.is_empty() and not bool(ge.get("is_dead", false)):
+					pruned.append(str(gid))
+			_battle_selection = pruned
+			var rts_group: bool = _battle_selection.size() > 1
+			var rts_squad: int = BattleSystem.squad_of(_selected_id)
+			# Enemy clicked → engage order (group > squad > single)
+			if not clicked_ent.is_empty() and not bool(clicked_ent.get("is_dead", false)) \
+					and clicked_ent.has("battle_team") \
+					and int(clicked_ent.get("battle_team", -1)) != BattleSystem.player_team \
+					and not bool(clicked_ent.get("is_chest", false)):
+				var rts_tid: String = str(clicked_ent["id"])
+				if rts_group:
+					var ng: int = BattleSystem.order_group_attack(_battle_selection, rts_tid)
+					_add_log("[color=#ffcc66]⚔ Group engages %s (%d units)[/color]" % [
+						str(clicked_ent.get("name", "?")), ng])
+				elif rts_squad > 0:
+					var na: int = BattleSystem.squad_attack(rts_squad, rts_tid)
+					_add_log("[color=#ffcc66]⚔ Squad %d engages %s (%d units)[/color]" % [
+						rts_squad, str(clicked_ent.get("name", "?")), na])
+				else:
+					BattleSystem.issue_attack_order(_selected_id, rts_tid)
+					_add_log("[color=#ffcc66]⚔ %s engages %s[/color]" % [
+						str(rts_sel.get("name", "?")), str(clicked_ent.get("name", "?"))])
+				_refresh()
+				_check_victory_defeat()
+				return
+			# Open ground clicked → move order (group > squad > single)
+			if clicked_ent.is_empty() and _e._dung_tile(tx, ty) == 1:
+				if rts_group:
+					var ngm: int = BattleSystem.order_group_move(_battle_selection, tx, ty)
+					_add_log("[color=#88ddff]➡ Group moving out (%d units)[/color]" % ngm)
+				elif rts_squad > 0:
+					var nm: int = BattleSystem.squad_move(rts_squad, tx, ty)
+					_add_log("[color=#88ddff]➡ Squad %d moving out (%d units)[/color]" % [rts_squad, nm])
+				else:
+					BattleSystem.issue_move_order(_selected_id, tx, ty)
+				_refresh()
+				return
+
+	# Plain click on one of your battle units (no shift) → drop the group
+	if BattleSystem.active and not Input.is_key_pressed(KEY_SHIFT) \
+			and not clicked_ent.is_empty() and not bool(clicked_ent.get("is_dead", false)) \
+			and int(clicked_ent.get("battle_team", -1)) == BattleSystem.player_team:
+		_battle_selection.clear()
+
 	# Normal click: select entity or move
 	if not clicked_ent.is_empty() and bool(clicked_ent["is_dead"]) \
 			and not bool(clicked_ent.get("is_player", false)):
@@ -5589,17 +5848,32 @@ func _show_battle_banner(text: String, color: Color) -> void:
 	if _battle_banner_tween != null and _battle_banner_tween.is_valid():
 		_battle_banner_tween.kill()
 	_battle_banner.modulate = Color(1, 1, 1, 0)
-	_battle_banner_tween = create_tween()
-	# Fade in fast, hold, then fade out.
-	_battle_banner_tween.tween_property(_battle_banner, "modulate:a", 1.0, 0.18)
-	_battle_banner_tween.tween_interval(1.4)
-	_battle_banner_tween.tween_property(_battle_banner, "modulate:a", 0.0, 0.45)
+	# Reduce-motion honors the user's preference by snapping the banner
+	# directly to full opacity instead of fading. Combat-speed tightens the
+	# remaining animation.
+	if RimvaleUtils.reduce_motion():
+		_battle_banner.modulate = Color(1, 1, 1, 1)
+		_battle_banner_tween = create_tween()
+		_battle_banner_tween.tween_interval(RimvaleUtils.combat_dur(1.0))
+		_battle_banner_tween.tween_property(
+			_battle_banner, "modulate:a", 0.0, RimvaleUtils.combat_dur(0.25))
+	else:
+		_battle_banner_tween = create_tween()
+		_battle_banner_tween.tween_property(
+			_battle_banner, "modulate:a", 1.0, RimvaleUtils.combat_dur(0.18))
+		_battle_banner_tween.tween_interval(RimvaleUtils.combat_dur(1.4))
+		_battle_banner_tween.tween_property(
+			_battle_banner, "modulate:a", 0.0, RimvaleUtils.combat_dur(0.45))
 
 
 ## Detect explore↔combat transitions and pop the appropriate banner. Called
 ## from _refresh() so any state change picks it up — combat starting from a
 ## perception alert OR ending because the last enemy just died.
 func _check_combat_mode_transition() -> void:
+	# Battle Mode is always "in combat" — the crawl explore/combat banner
+	# logic misfires there ("Battle over!" spam) and must not run.
+	if BattleSystem.active:
+		return
 	if _e == null or not _e.has_method("crawl_in_explore_mode"):
 		return
 	var explore_now: bool = _e.crawl_in_explore_mode()
@@ -5634,6 +5908,80 @@ func _check_combat_mode_transition() -> void:
 		_show_battle_banner("Battle over!", Color(0.55, 0.95, 0.55))
 
 func _unhandled_input(event: InputEvent) -> void:
+	# ── Battle Mode squad hotkeys ─────────────────────────────────────────
+	# Ctrl+1..4 assigns the selected unit('s squad slot); 1..4 recalls the
+	# squad (selects its first living member — orders then command everyone).
+	# U opens the Armory for the selected unit.
+	if BattleSystem.active and event is InputEventKey and event.pressed and not event.echo:
+		var kc: int = event.keycode
+		if kc >= KEY_1 and kc <= KEY_4:
+			var sid: int = kc - KEY_1 + 1
+			if event.ctrl_pressed:
+				if _selected_id != "":
+					var members: Array = BattleSystem.squad_members(sid)
+					if event.shift_pressed:
+						if _selected_id not in members:
+							members.append(_selected_id)
+					else:
+						members = [_selected_id]
+					BattleSystem.assign_squad(sid, members)
+					_add_log("[color=#88ddff]Squad %d set (%d unit%s)[/color]" % [
+						sid, members.size(), "s" if members.size() != 1 else ""])
+			else:
+				var recall: Array = BattleSystem.squad_members(sid)
+				if not recall.is_empty():
+					_select_entity(str(recall[0]))
+					_add_log("[color=#88ddff]Squad %d selected (%d units)[/color]" % [sid, recall.size()])
+			get_viewport().set_input_as_handled()
+			return
+		if kc == KEY_U and _selected_id != "":
+			var arm_ent: Dictionary = _get_entity(_selected_id)
+			if not arm_ent.is_empty() \
+					and int(arm_ent.get("battle_team", -1)) == BattleSystem.player_team \
+					and not bool(arm_ent.get("is_battle_base", false)):
+				_show_battle_armory(_selected_id)
+				get_viewport().set_input_as_handled()
+				return
+
+	# Gamepad shortcuts — pop the dialogs the same buttons do via keyboard.
+	if event is InputEventJoypadButton and event.pressed:
+		var jb := (event as InputEventJoypadButton).button_index
+		# A button confirms popups
+		if jb == JOY_BUTTON_A:
+			if _loot_popup != null and _loot_popup.visible:
+				_loot_popup.visible = false
+				get_viewport().set_input_as_handled()
+				return
+			if _move_popup != null and _move_popup.visible and not _pending_move.is_empty():
+				_on_move_confirm()
+				get_viewport().set_input_as_handled()
+				return
+		# B button cancels pending action / move
+		if jb == JOY_BUTTON_B:
+			if not _pending_action.is_empty():
+				_cancel_pending_action()
+				get_viewport().set_input_as_handled()
+				return
+			elif not _pending_move.is_empty():
+				_on_move_cancel()
+				get_viewport().set_input_as_handled()
+				return
+		# LB / RB rotate camera
+		if jb == JOY_BUTTON_LEFT_SHOULDER:
+			_cam_yaw -= 15.0
+			_update_camera_pos()
+			get_viewport().set_input_as_handled()
+			return
+		if jb == JOY_BUTTON_RIGHT_SHOULDER:
+			_cam_yaw += 15.0
+			_update_camera_pos()
+			get_viewport().set_input_as_handled()
+			return
+	# Global settings shortcut works on any screen.
+	if event.is_action_pressed("rimvale_settings"):
+		RimvaleUtils.open_settings_dialog(self)
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed:
 		# Enter / Space confirms the move popup when it's visible
 		if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER or event.keycode == KEY_SPACE:
@@ -5690,8 +6038,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 				return
 			KEY_HOME:
-				# Reset camera to map centre
-				_cam_target_offset = Vector3.ZERO
+				# Reset camera to the party (map centre is empty void on crawls)
+				_center_camera_on_party()
 				panned = true
 		if panned:
 			# Clamp pan so it stays roughly within the map bounds
@@ -5795,15 +6143,18 @@ func _populate_action_columns() -> void:
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_col_magic_vbox.add_child(lbl)
 
-	# Craft Spell button — always available (matches mobile parity)
-	var craft_btn := Button.new()
-	craft_btn.text = "✦ Craft Spell"
-	craft_btn.flat = true
-	craft_btn.add_theme_font_size_override("font_size", 11)
-	craft_btn.add_theme_color_override("font_color", Color(0.74, 0.40, 1.0))
-	craft_btn.add_theme_color_override("font_hover_color", Color(0.85, 0.55, 1.0))
-	craft_btn.pressed.connect(_open_spell_crafter)
-	_col_magic_vbox.add_child(craft_btn)
+	# Craft Spell button — story mode only. Battle units are engine-side
+	# entities without character handles, so the crafter can't target them;
+	# hiding the button beats a dead-end screen.
+	if not BattleSystem.active:
+		var craft_btn := Button.new()
+		craft_btn.text = "✦ Craft Spell"
+		craft_btn.flat = true
+		craft_btn.add_theme_font_size_override("font_size", 11)
+		craft_btn.add_theme_color_override("font_color", Color(0.74, 0.40, 1.0))
+		craft_btn.add_theme_color_override("font_hover_color", Color(0.85, 0.55, 1.0))
+		craft_btn.pressed.connect(_open_spell_crafter)
+		_col_magic_vbox.add_child(craft_btn)
 
 	# Ability column: lineage traits first, then standard abilities
 	var trait_actions: Array = _e.get_available_lineage_trait_actions(_selected_id)
@@ -6409,6 +6760,10 @@ func _handle_action_result(result: Dictionary) -> void:
 	var log_msg: String = str(result.get("log", ""))
 	if log_msg != "":
 		_add_log(log_msg)
+	# Achievement: first enemy defeated (unlock() self-guards against repeats).
+	# Skipped in Battle Mode — achievements + their save_game belong to story.
+	if bool(result.get("target_dead", false)) and not BattleSystem.active:
+		SteamIntegration.on_enemy_killed()
 	_refresh()
 	_select_entity(_selected_id)
 	_check_victory_defeat()
@@ -6447,7 +6802,12 @@ func _on_end_phase() -> void:
 	_btn_next_unit.disabled = true
 	_btn_end_phase.disabled = true
 
-	var logs: Array = _e.dungeon_advance_enemy_phase()
+	# Battle Mode runs its own team-aware AI + economy phase.
+	var logs: Array
+	if BattleSystem.active:
+		logs = BattleSystem.advance_battle_phase()
+	else:
+		logs = _e.dungeon_advance_enemy_phase()
 	for l in logs:
 		_add_log(l)
 
@@ -6459,6 +6819,31 @@ func _on_end_phase() -> void:
 	_btn_end_phase.disabled = false
 	_auto_select_first()
 	_add_log("[color=#aaffaa]— Your Turn (Round %d) —[/color]" % _e.get_dungeon_round())
+	if BattleSystem.active:
+		_add_log("[color=#ffd27f]⛃ Supply: %d (+%d/rd · %d mining)   ·   Teams alive: %d/%d[/color]" % [
+			BattleSystem.get_supply(0), BattleSystem.get_last_income(0),
+			BattleSystem.get_miner_count(0),
+			BattleSystem.teams_alive_count(), BattleSystem.num_teams])
+		# Per-team strength chips, colored by faction
+		var team_units: Dictionary = {}
+		var team_bases: Dictionary = {}
+		for tse in _entities:
+			if bool(tse.get("is_dead", false)) or bool(tse.get("is_chest", false)): continue
+			if not tse.has("battle_team"): continue
+			var tt: int = int(tse["battle_team"])
+			if bool(tse.get("is_battle_base", false)) or bool(tse.get("is_battle_structure", false)):
+				team_bases[tt] = int(team_bases.get(tt, 0)) + 1
+			else:
+				team_units[tt] = int(team_units.get(tt, 0)) + 1
+		var team_bits: Array = []
+		for t in range(BattleSystem.num_teams):
+			if t < BattleSystem.team_alive.size() and not bool(BattleSystem.team_alive[t]):
+				continue
+			team_bits.append("[color=#%s]■T%d %du %d⌂[/color]" % [
+				BattleSystem.get_team_color(t).to_html(false), t,
+				int(team_units.get(t, 0)), int(team_bases.get(t, 0))])
+		if not team_bits.is_empty():
+			_add_log("   " + "   ".join(team_bits))
 
 ## Copy any injuries acquired during combat back to the character's persistent dict.
 func _sync_dungeon_injuries() -> void:
@@ -6482,6 +6867,16 @@ func _sync_dungeon_injuries() -> void:
 		cd["injuries"] = existing
 
 func _on_back() -> void:
+	# Battle Mode exits back to the battle setup screen and must NEVER touch
+	# story state: no injury sync, no save_game (a battle can be launched from
+	# the title with no story save loaded — saving would clobber a slot).
+	if BattleSystem.active:
+		# end_battle() handles ALL engine cleanup (entities, crawl flag,
+		# MAP_SIZE). Skipping _e.end_dungeon() keeps the story-side
+		# encounters_survived counter untouched.
+		BattleSystem.end_battle()
+		get_tree().change_scene_to_file("res://scenes/battle/battle_setup.tscn")
+		return
 	# ── Persist injuries from dungeon entities back to character dicts ─────────
 	_sync_dungeon_injuries()
 	var was_story_combat: bool = GameState.quest_state.get("story_combat_active", false)
@@ -6506,11 +6901,11 @@ func _on_back() -> void:
 			GameState.current_tab = 1  # World tab in main shell
 		main.pop_screen()
 	else:
-		# Fallback: direct scene change (no main shell)
+		# Fallback: no main shell found. Never load world/explore standalone —
+		# that strands the player with no nav bar. Rebuild the shell instead.
 		if GameState.dungeon_source == "tab":
-			get_tree().change_scene_to_file("res://scenes/world/world.tscn")
-		else:
-			get_tree().change_scene_to_file("res://scenes/explore/explore.tscn")
+			GameState.current_tab = 1  # World tab
+		get_tree().change_scene_to_file("res://scenes/main/main.tscn")
 
 func _notify_story_combat_result(main_node: Node, victory: bool) -> void:
 	# The world scene is now the active child of main's content area.
@@ -6541,6 +6936,359 @@ func _select_entity(id: String) -> void:
 	_populate_action_columns()
 	_update_3d_view()
 
+	# ── Battle Mode: clicking your own Command Post opens production ─────
+	if BattleSystem.active and not ent.is_empty() \
+			and bool(ent.get("is_battle_base", false)) \
+			and int(ent.get("battle_team", -1)) == BattleSystem.player_team \
+			and not bool(ent.get("is_dead", false)):
+		_show_battle_production(ent)
+
+	# ── Debug-only enemy stat readout ────────────────────────────────────
+	# When debug mode is on and the player clicked an enemy (not a friendly
+	# unit), pop a panel listing the enemy's archetype, raw stats, derived
+	# stats, weapon, and feat list with tiers.
+	if not ent.is_empty() and bool(GameState.debug_mode):
+		var is_friendly: bool = (bool(ent.get("is_player", false))
+			or bool(ent.get("is_friendly", false)))
+		if not is_friendly and not bool(ent.get("is_dead", false)):
+			_show_enemy_debug_panel(ent)
+
+# ── Battle Mode production panel ─────────────────────────────────────────────
+## Overlay listing this battle's unit catalog with costs. Buying a unit calls
+## BattleSystem.produce_unit and spawns it adjacent to the Command Post.
+func _show_battle_production(_base_ent: Dictionary) -> void:
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(dim)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.custom_minimum_size = Vector2(520, 0)
+	panel.position = Vector2(-260, -300)
+	dim.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+
+	var title := Label.new()
+	title.text = "🏭 Command Post — Produce Units"
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	vb.add_child(title)
+
+	var supply_lbl := Label.new()
+	supply_lbl.add_theme_font_size_override("font_size", 14)
+	supply_lbl.add_theme_color_override("font_color", Color(0.95, 0.85, 0.55))
+	supply_lbl.text = "⛃ Supply: %d" % BattleSystem.get_supply(BattleSystem.player_team)
+	vb.add_child(supply_lbl)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(500, 420)
+	vb.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 4)
+	scroll.add_child(list)
+
+	var catalog: Array = BattleSystem.get_unit_catalog(BattleSystem.player_team)
+	for entry_v in catalog:
+		var entry: Dictionary = entry_v
+		var key: String = str(entry.get("key", ""))
+		var cost: int = int(entry.get("cost", 0))
+		var row := Button.new()
+		row.text = "%s   —   %d ⛃   [%s]" % [
+			str(entry.get("label", key)), cost, str(entry.get("tier", ""))]
+		row.custom_minimum_size = Vector2(0, 38)
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.pressed.connect(func():
+			var err: String = BattleSystem.produce_unit(BattleSystem.player_team, key)
+			if err != "":
+				supply_lbl.text = "⛔ %s" % err
+			else:
+				supply_lbl.text = "⛃ Supply: %d   ·   %s deployed!" % [
+					BattleSystem.get_supply(BattleSystem.player_team),
+					str(entry.get("label", key))]
+				_refresh()
+		)
+		list.add_child(row)
+
+	# ── Structures section (Barracks / War Factory / rebuild Command Post) ──
+	var s_hdr := Label.new()
+	s_hdr.text = "🏗 Structures"
+	s_hdr.add_theme_font_size_override("font_size", 16)
+	s_hdr.add_theme_color_override("font_color", Color(0.8, 0.9, 1.0))
+	vb.add_child(s_hdr)
+	for kind_v in ["barracks", "war_factory", "command_post"]:
+		var kind: String = kind_v
+		var sk: Dictionary = BattleSystem.STRUCTURE_KINDS.get(kind, {})
+		var s_row := Button.new()
+		var s_label: String = str(sk.get("label", kind))
+		var s_desc: String = ""
+		match kind:
+			"barracks":     s_desc = "infantry -20%"
+			"war_factory":  s_desc = "unlocks vehicles"
+			"command_post": s_desc = "rebuild production"
+		s_row.text = "%s   —   %d ⛃   (%s)" % [s_label, int(sk.get("cost", 0)), s_desc]
+		s_row.custom_minimum_size = Vector2(0, 34)
+		s_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		s_row.pressed.connect(func():
+			var s_err: String = BattleSystem.build_structure(BattleSystem.player_team, kind)
+			if s_err != "":
+				supply_lbl.text = "⛔ %s" % s_err
+			else:
+				supply_lbl.text = "⛃ Supply: %d   ·   %s constructed!" % [
+					BattleSystem.get_supply(BattleSystem.player_team), s_label]
+				_refresh()
+		)
+		vb.add_child(s_row)
+
+	var close := Button.new()
+	close.text = "Close"
+	close.custom_minimum_size = Vector2(140, 38)
+	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	close.pressed.connect(func(): dim.queue_free())
+	vb.add_child(close)
+	close.grab_focus()
+
+## Battle Armory — per-unit upgrades with immediate in-game effect (weapon
+## swaps apply on the next attack, armor on the next hit taken, HP instantly).
+func _show_battle_armory(unit_id: String) -> void:
+	var ent: Dictionary = _get_entity(unit_id)
+	if ent.is_empty():
+		return
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(dim)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.custom_minimum_size = Vector2(460, 0)
+	panel.position = Vector2(-230, -170)
+	dim.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+
+	var title := Label.new()
+	title.text = "⚒ Armory — %s" % str(ent.get("name", "Unit"))
+	title.add_theme_font_size_override("font_size", 19)
+	title.add_theme_color_override("font_color", Color(0.85, 0.95, 1.0))
+	vb.add_child(title)
+
+	var info := Label.new()
+	info.add_theme_font_size_override("font_size", 13)
+	info.add_theme_color_override("font_color", Color(0.75, 0.75, 0.8))
+	var refresh_info := func():
+		var e2: Dictionary = _get_entity(unit_id)
+		info.text = "Weapon: %s   ·   AC: %d   ·   HP: %d/%d   ·   ⛃ %d" % [
+			str(e2.get("equipped_weapon", "?")), int(e2.get("ac", 0)),
+			int(e2.get("hp", 0)), int(e2.get("max_hp", 0)),
+			BattleSystem.get_supply(BattleSystem.player_team)]
+	refresh_info.call()
+	vb.add_child(info)
+
+	for kind_v in [["weapon", "🗡 Upgrade Weapon (20/40 ⛃)"],
+			["armor", "🛡 Upgrade Armor (20/40 ⛃)"],
+			["veteran", "★ Veteran Training (+25 HP, 40 ⛃)"]]:
+		var kind: String = str(kind_v[0])
+		var btn := Button.new()
+		btn.text = str(kind_v[1])
+		btn.custom_minimum_size = Vector2(0, 38)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.pressed.connect(func():
+			var err: String = BattleSystem.upgrade_unit(unit_id, kind)
+			if err != "":
+				info.text = "⛔ %s" % err
+			else:
+				refresh_info.call()
+				_refresh()
+		)
+		vb.add_child(btn)
+
+	# ── GMG class assignment (infantry only, takes effect immediately) ──
+	var cls_row := HBoxContainer.new()
+	cls_row.add_theme_constant_override("separation", 8)
+	vb.add_child(cls_row)
+	var cls_lbl := Label.new()
+	cls_lbl.text = "🎓 Class: %s" % str(ent.get("npc_class", "—"))
+	cls_lbl.add_theme_font_size_override("font_size", 14)
+	cls_row.add_child(cls_lbl)
+	var cls_opt := OptionButton.new()
+	cls_opt.custom_minimum_size = Vector2(200, 34)
+	var arm_cls_names: Array = EnemyArchetype.class_names()
+	for cn in arm_cls_names:
+		cls_opt.add_item(str(cn))
+	cls_row.add_child(cls_opt)
+	var cls_btn := Button.new()
+	cls_btn.text = "Assign"
+	cls_btn.custom_minimum_size = Vector2(90, 34)
+	cls_btn.pressed.connect(func():
+		var pick: String = str(arm_cls_names[cls_opt.selected])
+		var err: String = BattleSystem.set_unit_class(unit_id, pick)
+		if err != "":
+			info.text = "⛔ %s" % err
+		else:
+			cls_lbl.text = "🎓 Class: %s" % pick
+			refresh_info.call()
+			_refresh()
+	)
+	cls_row.add_child(cls_btn)
+
+	var close2 := Button.new()
+	close2.text = "Close"
+	close2.custom_minimum_size = Vector2(140, 36)
+	close2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	close2.pressed.connect(func(): dim.queue_free())
+	vb.add_child(close2)
+	close2.grab_focus()
+
+## Pops a modal dialog showing all the internal stats of `ent`. Only
+## reachable when GameState.debug_mode is true (gated by caller).
+func _show_enemy_debug_panel(ent: Dictionary) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Debug — " + str(ent.get("name", "Enemy"))
+	dialog.get_ok_button().text = "Close"
+	dialog.min_size = Vector2i(420, 540)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+
+	var arch: String = str(ent.get("archetype", ""))
+	var lv: int = int(ent.get("creature_level", ent.get("level", 1)))
+	var hdr: String = "%s · Level %d" % [
+		(arch if arch != "" else "Creature"), lv]
+	vbox.add_child(RimvaleUtils.label(hdr, 16, RimvaleColors.ACCENT))
+	vbox.add_child(RimvaleUtils.separator())
+
+	# ── Core resources ──
+	var hp: int = int(ent.get("hp", 0))
+	var max_hp: int = int(ent.get("max_hp", 0))
+	var ap: int = int(ent.get("ap", 0))
+	var max_ap: int = int(ent.get("max_ap", 0))
+	var sp: int = int(ent.get("sp", 0))
+	var max_sp: int = int(ent.get("max_sp", 0))
+	var ac: int = int(ent.get("ac", 0))
+	var spd_t: int = int(ent.get("speed", 0))
+	var thr: int = int(ent.get("threshold", 0))
+
+	vbox.add_child(RimvaleUtils.label("RESOURCES", 12, RimvaleColors.TEXT_DIM))
+	var rgrid := GridContainer.new()
+	rgrid.columns = 2
+	rgrid.add_theme_constant_override("h_separation", 16)
+	rgrid.add_theme_constant_override("v_separation", 2)
+	vbox.add_child(rgrid)
+	for pair in [
+		["HP", "%d / %d" % [hp, max_hp]],
+		["AC", "%d" % ac],
+		["AP", "%d / %d" % [ap, max_ap]],
+		["SP", "%d / %d" % [sp, max_sp]],
+		["Speed (tiles)", "%d" % spd_t],
+		["Damage Threshold", "%d" % thr],
+	]:
+		rgrid.add_child(RimvaleUtils.label(str(pair[0]) + ":",
+			11, RimvaleColors.TEXT_GRAY))
+		rgrid.add_child(RimvaleUtils.label(str(pair[1]),
+			11, RimvaleColors.TEXT_WHITE))
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# ── Stats array [STR, SPD, INT, VIT, DIV] ──
+	vbox.add_child(RimvaleUtils.label("STATS", 12, RimvaleColors.TEXT_DIM))
+	var stats: Array = ent.get("stats", [0, 0, 0, 0, 0])
+	if stats.size() >= 5:
+		var stat_names: Array = ["STR", "SPD", "INT", "VIT", "DIV"]
+		var sgrid := GridContainer.new()
+		sgrid.columns = 5
+		sgrid.add_theme_constant_override("h_separation", 16)
+		vbox.add_child(sgrid)
+		for i in range(5):
+			sgrid.add_child(RimvaleUtils.label(str(stat_names[i]),
+				11, RimvaleColors.TEXT_GRAY))
+		for i in range(5):
+			sgrid.add_child(RimvaleUtils.label(
+				"%d" % int(stats[i]), 13, RimvaleColors.TEXT_WHITE))
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# ── Equipment ──
+	vbox.add_child(RimvaleUtils.label("EQUIPMENT", 12, RimvaleColors.TEXT_DIM))
+	for line in [
+		"Weapon: " + str(ent.get("equipped_weapon", "—")),
+		"Armor: "  + str(ent.get("equipped_armor",  "None")),
+		"Shield: " + str(ent.get("equipped_shield", "None")),
+	]:
+		vbox.add_child(RimvaleUtils.label(line, 11, RimvaleColors.TEXT_WHITE))
+
+	vbox.add_child(RimvaleUtils.separator())
+
+	# ── Feats ──
+	var feats: Dictionary = ent.get("feats", {})
+	vbox.add_child(RimvaleUtils.label("FEATS (%d)" % feats.size(),
+		12, RimvaleColors.TEXT_DIM))
+	if feats.is_empty():
+		vbox.add_child(RimvaleUtils.label("— none —",
+			11, RimvaleColors.TEXT_DIM))
+	else:
+		# Sort alphabetically for readability.
+		var feat_names: Array = feats.keys()
+		feat_names.sort()
+		for fn in feat_names:
+			var tier: int = int(feats[fn])
+			vbox.add_child(RimvaleUtils.label(
+				"  • %s — T%d" % [str(fn), tier],
+				11, RimvaleColors.GOLD))
+
+	# ── Skills (if attached) ──
+	var skills: Dictionary = ent.get("skills", {})
+	if not skills.is_empty():
+		vbox.add_child(RimvaleUtils.separator())
+		vbox.add_child(RimvaleUtils.label("SKILLS",
+			12, RimvaleColors.TEXT_DIM))
+		var skill_names: Array = skills.keys()
+		skill_names.sort()
+		var skg := GridContainer.new()
+		skg.columns = 2
+		skg.add_theme_constant_override("h_separation", 16)
+		vbox.add_child(skg)
+		for sn in skill_names:
+			var rk: int = int(skills[sn])
+			if rk <= 0:
+				continue
+			skg.add_child(RimvaleUtils.label(str(sn),
+				11, RimvaleColors.TEXT_GRAY))
+			skg.add_child(RimvaleUtils.label("%d" % rk,
+				11, RimvaleColors.TEXT_WHITE))
+
+	# ── Conditions / abilities count ──
+	var conds: Array = ent.get("conditions", [])
+	var abilities: Array = ent.get("abilities", [])
+	if not conds.is_empty() or not abilities.is_empty():
+		vbox.add_child(RimvaleUtils.separator())
+		if not conds.is_empty():
+			vbox.add_child(RimvaleUtils.label("Conditions:", 11, Color(0.95, 0.6, 0.4)))
+			for cond_name in conds:
+				var cond_tip: String = str(COND_TOOLTIPS.get(str(cond_name).to_lower(), ""))
+				var cond_line: String = "  • %s" % str(cond_name)
+				if cond_tip != "":
+					cond_line += " — %s" % cond_tip
+				var cond_lbl = RimvaleUtils.label(cond_line, 10, Color(0.90, 0.65, 0.45))
+				cond_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				vbox.add_child(cond_lbl)
+		if not abilities.is_empty():
+			vbox.add_child(RimvaleUtils.label(
+				"Abilities: %d on this creature" % abilities.size(),
+				11, RimvaleColors.TEXT_GRAY))
+
+	dialog.confirmed.connect(func(): dialog.queue_free())
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(420, 600))
+
 func _auto_select_first() -> void:
 	for ent in _entities:
 		if bool(ent["is_player"]) and not bool(ent["is_dead"]):
@@ -6560,7 +7308,11 @@ func _refresh() -> void:
 		_map_dirty = true
 	_elevation = new_elev
 	_map       = new_map
-	_round_label.text = "Round %d" % _e.get_dungeon_round()
+	if BattleSystem.active:
+		_round_label.text = "Round %d   ⛃ %d" % [
+			_e.get_dungeon_round(), BattleSystem.get_supply(BattleSystem.player_team)]
+	else:
+		_round_label.text = "Round %d" % _e.get_dungeon_round()
 	_check_combat_mode_transition()
 	_update_3d_view()
 	_update_entity_card()
@@ -6660,10 +7412,17 @@ func _update_entity_card() -> void:
 	for old_chip in _badge_conditions.get_children():
 		old_chip.queue_free()
 	var conds: Array = ent.get("conditions", [])
-	const COND_BENEFICIAL: Array = ["dodging", "hidden", "flying", "hasted", "inspired", "shielded"]
+	const COND_BENEFICIAL: Array = ["dodging", "hidden", "flying", "hasted", "inspired",
+									"shielded", "calm", "invisible", "invulnerable",
+									"resistant", "silent", "safeguard_inspire"]
 	const COND_HARMFUL: Array    = ["bleeding", "stunned", "slowed", "restrained", "blinded",
 									"prone", "paralyzed", "poisoned", "grappled", "burning",
-									"frozen", "silenced", "cursed", "weakened", "frightened"]
+									"frozen", "silenced", "cursed", "weakened", "frightened",
+									"charmed", "vulnerable", "deafened", "glowing", "exhausted",
+									"dazed", "confused", "incapacitated", "petrified",
+									"unconscious", "squeezed", "depleted", "enraged", "fever",
+									"necrotic_taint", "acid_corroded", "no_reactions",
+									"radiant_dazzle", "frozen_time"]
 
 	# Add DYING/DEAD chips if applicable
 	if bool(ent.get("is_dead", false)):
@@ -6695,11 +7454,60 @@ func _update_entity_card() -> void:
 			mat_parts.append("%s%s(%dr)" % ["⏸ " if sup else "✨ ", short_name, m_rnd])
 		_badge_matrices.text = "  ".join(mat_parts)
 
+# One-line effect summaries (PHB bless/curse tables) shown as chip tooltips.
+const COND_TOOLTIPS: Dictionary = {
+	"bleeding": "1d4 damage per stack at the start of each turn.",
+	"burning": "1d6 fire damage at start of turn; 50% chance to go out each turn.",
+	"poisoned": "1d4 poison damage per turn; disadvantage on attacks.",
+	"stunned": "Loses their entire next turn.",
+	"dazed": "Loses 2 AP at the start of their turn.",
+	"slowed": "Moves at half speed; -2 AC.",
+	"restrained": "Cannot move; attacks against them have advantage.",
+	"paralyzed": "Cannot move or act; attacks against them have advantage.",
+	"petrified": "Turned to stone — cannot act.",
+	"incapacitated": "Unable to attack or defend.",
+	"unconscious": "Cannot act; attacks against them have advantage.",
+	"prone": "Melee attackers have advantage; ranged have disadvantage. 1 move action to stand.",
+	"blinded": "Cannot see — attacks with disadvantage.",
+	"deafened": "Cannot hear.",
+	"frightened": "Disadvantage on attacks; cannot approach the source of fear.",
+	"charmed": "Cannot harm the charmer.",
+	"vulnerable": "Takes DOUBLE damage.",
+	"cursed": "-2 to attack rolls and saving throws.",
+	"exhausted": "Penalty to all rolls per exhaustion level; reduced speed.",
+	"grappled": "Held by a creature — attacks with disadvantage.",
+	"squeezed": "1d4 bludgeoning damage at start of each turn.",
+	"confused": "Actions cost double AP.",
+	"depleted": "Does not regain AP at the start of their turn.",
+	"enraged": "Must attack the source of rage or pay double AP.",
+	"fever": "Disadvantage on attack rolls.",
+	"glowing": "Outlined in light — attacks against them have advantage; cannot hide.",
+	"necrotic_taint": "Healing damages them instead.",
+	"acid_corroded": "-2 AC from corroded armor.",
+	"no_reactions": "Cannot take reactions.",
+	"frozen_time": "Frozen in time — cannot act, but immune to damage.",
+	"dodging": "Attacks against them have disadvantage; +3 AC.",
+	"hidden": "Unseen — next attack has advantage.",
+	"invisible": "Cannot be seen — attackers have disadvantage; their next attack has advantage.",
+	"invulnerable": "Immune to all damage.",
+	"resistant": "Takes half damage.",
+	"shielded": "+2 AC.",
+	"calm": "Cannot take hostile actions.",
+	"silent": "Makes no sound.",
+	"flying": "Airborne — can cross obstacles.",
+	"hasted": "Action costs reduced by 1 AP.",
+	"safeguard_inspire": "+1d4 to their next action.",
+}
+
 func _add_condition_chip(text: String, color: Color) -> void:
 	var chip_lbl := Label.new()
 	chip_lbl.text = text
 	chip_lbl.add_theme_font_size_override("font_size", 10)
 	chip_lbl.add_theme_color_override("font_color", color)
+	var tip: String = str(COND_TOOLTIPS.get(text.to_lower(), ""))
+	if tip != "":
+		chip_lbl.tooltip_text = tip
+		chip_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
 	var chip_bg := StyleBoxFlat.new()
 	chip_bg.bg_color    = Color(color, 0.18)
 	chip_bg.border_color = Color(color, 0.55)
@@ -6731,9 +7539,17 @@ func _update_roster() -> void:
 		var is_selected: bool   = (captured_id == _selected_id)
 
 		var chip := Button.new()
-		chip.text = str(ent["name"]).left(8)
+		if BattleSystem.active:
+			# RTS roster: show HP at a glance, wider chip, squad tag if any
+			var sq: int = BattleSystem.squad_of(captured_id)
+			var sq_tag: String = ("·%d" % sq) if sq > 0 else ""
+			chip.text = "%s%s\n%d/%d" % [str(ent["name"]).left(10), sq_tag,
+				int(ent["hp"]), int(ent["max_hp"])]
+			chip.custom_minimum_size = Vector2(86, 34)
+		else:
+			chip.text = str(ent["name"]).left(8)
+			chip.custom_minimum_size = Vector2(68, 28)
 		chip.add_theme_font_size_override("font_size", 11)
-		chip.custom_minimum_size = Vector2(68, 28)
 		chip.pressed.connect(func(): _select_entity(captured_id))
 
 		var style := StyleBoxFlat.new()
@@ -6887,6 +7703,56 @@ func _add_log(text: String) -> void:
 	_log_text.clear()
 	for line in _log_lines:
 		_log_text.append_text(line + "\n")
+	# Audio SFX driven from log events. Strip BBCode for clean substring match.
+	_play_log_sfx(text)
+
+
+# Match patterns in the battle log to fire appropriate SFX. Cheap pattern-
+# match keeps audio coupled to the engine without us reaching into 100s of
+# call sites in rimvale_fallback_engine.gd.
+func _play_log_sfx(text: String) -> void:
+	if typeof(AudioManager) == TYPE_NIL:
+		return
+	# Strip BBCode tags
+	var s := text
+	var rx := RegEx.new()
+	rx.compile("\\[/?[a-zA-Z][^\\]]*\\]")
+	s = rx.sub(s, "", true)
+	var lower := s.to_lower()
+	# Order matters — most specific first.
+	if "critical hit" in lower or "crit!" in lower or "critical!" in lower:
+		AudioManager.play_sfx("attack_crit", 0.05)
+		return
+	if "missed" in lower or " misses " in lower or "miss!" in lower:
+		AudioManager.play_sfx("attack_miss", 0.1, -3.0)
+		return
+	if " casts " in lower or "channels " in lower or "incants " in lower:
+		AudioManager.play_sfx("spell_cast", 0.05)
+		return
+	if " heals " in lower or " healed " in lower or "restores " in lower:
+		AudioManager.play_sfx("spell_heal")
+		return
+	if " falls " in lower or " is slain" in lower or " dies" in lower or "defeated" in lower:
+		AudioManager.play_sfx("death", 0.05)
+		return
+	if " hits " in lower or " strikes " in lower or " slashes " in lower or " stabs " in lower:
+		# Pick by attack verb when we can; otherwise generic.
+		var id := "attack"
+		if "slashes" in lower: id = "attack_slash"
+		elif "stabs" in lower or "pierces" in lower: id = "attack_pierce"
+		elif "smashes" in lower or "bashes" in lower or "crushes" in lower: id = "attack_bludgeon"
+		elif "punches" in lower or "kicks" in lower: id = "attack_punch"
+		AudioManager.play_sfx(id, 0.08)
+		return
+	if " takes " in lower and " damage" in lower:
+		AudioManager.play_sfx("hit_light", 0.1, -3.0)
+		return
+	if "level up" in lower or "leveled up" in lower:
+		AudioManager.play_sfx("jingle_levelup")
+		return
+	if "found " in lower and "gold" in lower:
+		AudioManager.play_sfx("coin")
+		return
 
 func _section_label(txt: String) -> Label:
 	var lbl := Label.new()
@@ -7313,652 +8179,4 @@ func _open_spell_crafter() -> void:
 	_sc_cost_lbl = RimvaleUtils.label("Total SP Cost: —", 18, Color(0.74, 0.40, 1.0))
 	cv.add_child(_sc_cost_lbl)
 	_sc_breakdown_lbl = RimvaleUtils.label("", 10, RimvaleColors.TEXT_DIM)
-	cv.add_child(_sc_breakdown_lbl)
-	cv.add_child(RimvaleUtils.label("Description:", 12, RimvaleColors.TEXT_WHITE))
-	_sc_desc_lbl = RimvaleUtils.label("", 11, Color(0.70, 0.75, 0.85))
-	_sc_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	cv.add_child(_sc_desc_lbl)
-	_sc_update_preview()
-
-	cv.add_child(RimvaleUtils.spacer(6))
-
-	# Register button
-	var reg_btn = RimvaleUtils.button("Register Custom Spell", Color(0.35, 0.28, 0.65), 44, 14)
-	reg_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	reg_btn.pressed.connect(_sc_register_spell)
-	cv.add_child(reg_btn)
-
-func _rebuild_spell_crafter() -> void:
-	if is_instance_valid(_sc_overlay):
-		_sc_overlay.queue_free(); _sc_overlay = null
-	_open_spell_crafter()
-
-func _sc_register_spell() -> void:
-	var sname: String = _sc_name.strip_edges()
-	if sname.is_empty():
-		_add_log("[color=red]Enter a spell name first.[/color]")
-		return
-	var cost: int = _sc_calc_cost()
-	var is_summon: bool = _sc_is_summon_effect()
-	var is_construct: bool = _sc_is_construct_effect()
-	var is_special: bool = is_summon or is_construct
-	var die_sides: int = 0 if is_special else [4,6,8,10,12][_sc_die_idx]
-	var die_count: int = 0 if is_special else _sc_die_count
-	var dur_rounds: int = SC_DURATION_ROUNDS[_sc_duration_idx]
-	var cond_csv: String = "" if is_special else ",".join(_sc_conditions)
-	var targets: int = 1 if is_special else _sc_targets
-	var area: int = 0 if is_special else _sc_area_idx
-	# Register spell and teach only the selected unit
-	var sc_handle: int = -2
-	if _selected_id != "":
-		var ent = _get_entity(_selected_id)
-		sc_handle = int(ent.get("handle", -2))
-	var sc_tp_range_val: int = _sc_tp_range if _sc_is_teleport else 0
-	_e.add_custom_spell(
-		sname, _sc_domain, cost, _sc_description(),
-		_sc_range_idx, (not _sc_is_saving_throw) and (not _sc_is_healing),
-		die_count, die_sides, _sc_damage_type,
-		_sc_is_healing, dur_rounds, targets,
-		area, cond_csv, _sc_is_teleport,
-		false, sc_handle, sc_tp_range_val, is_summon, is_construct
-	)
-	var display_cost: int = 0 if _sc_is_teleport else cost
-	_add_log("[color=#bd66ff]%s registered and learned: %s (%d SP)[/color]" % [sname, _sc_description().left(60), display_cost])
-	_sc_name = ""
-	if is_instance_valid(_sc_overlay): _sc_overlay.queue_free(); _sc_overlay = null
-	_populate_action_columns()
-
-func _sc_row(label_text: String, ctrl: Control) -> HBoxContainer:
-	var row = HBoxContainer.new(); row.add_theme_constant_override("separation", 8)
-	var lbl = RimvaleUtils.label(label_text, 12, RimvaleColors.TEXT_GRAY)
-	lbl.custom_minimum_size = Vector2(100, 0)
-	row.add_child(lbl)
-	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(ctrl)
-	return row
-
-# ── Shapeshift Form Selection Dialog ─────────────────────────────────────────
-
-func _open_shapeshift_dialog(action: Dictionary) -> void:
-	if _ss_overlay != null and is_instance_valid(_ss_overlay):
-		_ss_overlay.queue_free(); _ss_overlay = null
-	_ss_pending_action = action.duplicate()
-
-	var ent: Dictionary = _get_entity(_selected_id)
-	if ent.is_empty(): return
-	var ch: int = int(ent.get("handle", -1))
-	if ch < 0: return
-	var char_data: Dictionary = _e._chars.get(ch, {})
-	var ss_tier: int = int(char_data.get("feats", {}).get("Shapeshifter's Path", 0))
-	var forms: PackedStringArray = _e._shapeshift_available_forms(ss_tier)
-	var sp_avail: int = int(ent.get("sp", 0))
-	var char_level: int = int(char_data.get("level", 1))
-
-	# Full-screen overlay
-	_ss_overlay = Panel.new()
-	_ss_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var bg_style := StyleBoxFlat.new()
-	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
-	_ss_overlay.add_theme_stylebox_override("panel", bg_style)
-	add_child(_ss_overlay)
-
-	var mgn := MarginContainer.new()
-	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
-	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_ss_overlay.add_child(mgn)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mgn.add_child(scroll)
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
-
-	# Header
-	var hdr := HBoxContainer.new()
-	vbox.add_child(hdr)
-	hdr.add_child(RimvaleUtils.label("Shapeshift — Choose Form", 18, RimvaleColors.TEXT_WHITE))
-	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hdr.add_child(spacer)
-	var close_btn := Button.new(); close_btn.text = "X"; close_btn.flat = true
-	close_btn.add_theme_font_size_override("font_size", 18)
-	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
-	close_btn.pressed.connect(func():
-		if is_instance_valid(_ss_overlay): _ss_overlay.queue_free(); _ss_overlay = null
-	)
-	hdr.add_child(close_btn)
-
-	# Tier info
-	var tier_lbl := RimvaleUtils.label(
-		"Tier %d — SP available: %d — Char level: %d" % [ss_tier, sp_avail, char_level],
-		12, Color(0.65, 0.80, 0.65))
-	vbox.add_child(tier_lbl)
-
-	# SP investment slider
-	var sp_row := HBoxContainer.new()
-	sp_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(sp_row)
-	sp_row.add_child(RimvaleUtils.label("Invest SP:", 12, RimvaleColors.TEXT_GRAY))
-	var sp_slider := HSlider.new()
-	sp_slider.min_value = 0
-	sp_slider.max_value = mini(sp_avail, char_level)
-	sp_slider.value = 0
-	sp_slider.step = 1
-	sp_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sp_slider.custom_minimum_size = Vector2(120, 0)
-	sp_row.add_child(sp_slider)
-	var sp_val_lbl := RimvaleUtils.label("0", 12, Color(0.40, 0.85, 1.0))
-	var sp_info_lbl := RimvaleUtils.label("Creature level: 0 (stats = 0, min 1 HP)", 11, Color(0.55, 0.55, 0.50))
-	vbox.add_child(sp_info_lbl)
-
-	sp_slider.value_changed.connect(func(val: float):
-		sp_val_lbl.text = str(int(val))
-		var cre_lvl: int = int(val)
-		if cre_lvl == 0:
-			sp_info_lbl.text = "Creature level: 0 (stats = 0, min 1 HP)"
-		else:
-			var ratio: float = float(cre_lvl) / float(maxi(1, char_level))
-			sp_info_lbl.text = "Creature level: %d (%.0f%% of form stats)" % [cre_lvl, ratio * 100]
-	)
-
-	# Separator
-	var sep := HSeparator.new()
-	sep.add_theme_constant_override("separation", 8)
-	vbox.add_child(sep)
-
-	# Form list
-	vbox.add_child(RimvaleUtils.label("Available Forms:", 14, RimvaleColors.TEXT_WHITE))
-
-	for form_name in forms:
-		var form: Dictionary = _e.ANIMAL_FORMS[form_name]
-		var size_str: String = str(form["size"])
-		var weapon_str: String = str(form["weapon"])
-		var dice_arr: Array = form.get("dice", [1,6])
-		var special_str: String = str(form.get("special", ""))
-
-		var form_row := HBoxContainer.new()
-		form_row.add_theme_constant_override("separation", 8)
-		vbox.add_child(form_row)
-
-		var select_btn := Button.new()
-		select_btn.text = form_name
-		select_btn.custom_minimum_size = Vector2(100, 32)
-		select_btn.add_theme_font_size_override("font_size", 13)
-
-		# Color code by size
-		var btn_color: Color = Color(0.60, 0.80, 0.60)  # green = small/med
-		if size_str == "Large": btn_color = Color(0.85, 0.70, 0.30)
-		elif size_str == "Huge": btn_color = Color(0.90, 0.40, 0.40)
-		select_btn.add_theme_color_override("font_color", btn_color)
-
-		var captured_form: String = form_name
-		var captured_slider: HSlider = sp_slider
-		select_btn.pressed.connect(func():
-			_confirm_shapeshift(captured_form, int(captured_slider.value))
-		)
-		form_row.add_child(select_btn)
-
-		var stat_str: String = "%s | STR %d SPD %d VIT %d | %dd%d %s" % [
-			size_str, form["str"], form["spd"], form["vit"],
-			dice_arr[0], dice_arr[1], weapon_str]
-		if special_str != "":
-			stat_str += " [%s]" % special_str
-		var info := RimvaleUtils.label(stat_str, 11, Color(0.55, 0.55, 0.50))
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		form_row.add_child(info)
-
-func _confirm_shapeshift(form_name: String, sp_invest: int) -> void:
-	if _ss_overlay != null and is_instance_valid(_ss_overlay):
-		_ss_overlay.queue_free(); _ss_overlay = null
-
-	# Inject form choice + SP into the pending action and execute
-	var action: Dictionary = _ss_pending_action.duplicate()
-	action["_shapeshift_form"] = form_name
-	action["_shapeshift_sp"]   = sp_invest
-	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
-	_handle_action_result(result)
-	_ss_pending_action = {}
-
-# ── Summon Creature Builder Dialog ───────────────────────────────────────────
-
-func _open_summon_builder_dialog(action: Dictionary) -> void:
-	if _sb_overlay != null and is_instance_valid(_sb_overlay):
-		_sb_overlay.queue_free(); _sb_overlay = null
-	_sb_pending_action = action.duplicate()
-	_sb_stats = [0, 0, 0, 0, 0]
-	_sb_feats = {}
-	_sb_abilities = []
-	_sb_name = "Construct"
-
-	var ent: Dictionary = _get_entity(_selected_id)
-	if ent.is_empty(): return
-	var ch: int = int(ent.get("handle", -1))
-	if ch < 0: return
-	var char_data: Dictionary = _e._chars.get(ch, {})
-	var sp_avail: int = int(ent.get("sp", 0))
-	var caster_feats: Dictionary = char_data.get("feats", {})
-	var caster_max_tier: int = 1
-	for fn in caster_feats:
-		caster_max_tier = maxi(caster_max_tier, int(caster_feats[fn]))
-	var spell_nm: String = str(action.get("matrix_id", ""))
-	var spell_entry: Dictionary = _e._SPELL_DB.get(spell_nm, {})
-	var base_cost: int = int(spell_entry.get("sc", 2))
-	if spell_nm == "Animate Undead" and base_cost < 3: base_cost = 3
-
-	# Full-screen overlay
-	_sb_overlay = Panel.new()
-	_sb_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var bg_style := StyleBoxFlat.new()
-	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
-	_sb_overlay.add_theme_stylebox_override("panel", bg_style)
-	add_child(_sb_overlay)
-
-	var mgn := MarginContainer.new()
-	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
-	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_sb_overlay.add_child(mgn)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mgn.add_child(scroll)
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
-
-	# Header
-	var hdr := HBoxContainer.new()
-	vbox.add_child(hdr)
-	var title_str: String = "Summon Creature Builder" if base_cost == 2 else "Animate Undead Builder"
-	hdr.add_child(RimvaleUtils.label(title_str, 18, RimvaleColors.TEXT_WHITE))
-	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hdr.add_child(spacer)
-	var close_btn := Button.new(); close_btn.text = "X"; close_btn.flat = true
-	close_btn.add_theme_font_size_override("font_size", 18)
-	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
-	close_btn.pressed.connect(func():
-		if is_instance_valid(_sb_overlay): _sb_overlay.queue_free(); _sb_overlay = null
-	)
-	hdr.add_child(close_btn)
-
-	# SP available + cost display
-	_sb_cost_lbl = RimvaleUtils.label(
-		"SP available: %d | Base cost: %d | Total: %d" % [sp_avail, base_cost, base_cost],
-		12, Color(0.65, 0.80, 0.65))
-	vbox.add_child(_sb_cost_lbl)
-
-	# Creature name
-	var name_edit := LineEdit.new()
-	name_edit.placeholder_text = "Creature Name"
-	name_edit.text = _sb_name
-	name_edit.custom_minimum_size = Vector2(0, 30)
-	name_edit.add_theme_font_size_override("font_size", 13)
-	name_edit.text_changed.connect(func(t: String): _sb_name = t)
-	vbox.add_child(name_edit)
-
-	# ── Stats (all start at 0, 1 SP per point) ──
-	vbox.add_child(RimvaleUtils.label("Stats (1 SP per point, all start at 0):", 14, RimvaleColors.TEXT_WHITE))
-	var stat_names: Array = ["STR", "SPD", "INT", "VIT", "DIV"]
-	var stat_lbls: Array = []
-	for i in range(5):
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
-		vbox.add_child(row)
-		row.add_child(RimvaleUtils.label(stat_names[i] + ":", 12, RimvaleColors.TEXT_GRAY))
-		var val_lbl := RimvaleUtils.label("0", 13, Color(0.40, 0.85, 1.0))
-		val_lbl.custom_minimum_size = Vector2(30, 0)
-		stat_lbls.append(val_lbl)
-		var minus_btn := Button.new(); minus_btn.text = "-"; minus_btn.flat = true
-		minus_btn.custom_minimum_size = Vector2(28, 28)
-		minus_btn.add_theme_font_size_override("font_size", 14)
-		var plus_btn := Button.new(); plus_btn.text = "+"; plus_btn.flat = true
-		plus_btn.custom_minimum_size = Vector2(28, 28)
-		plus_btn.add_theme_font_size_override("font_size", 14)
-		var ci: int = i
-		var captured_lbl: Label = val_lbl
-		var captured_sp: int = sp_avail
-		var captured_base: int = base_cost
-		minus_btn.pressed.connect(func():
-			if _sb_stats[ci] > 0:
-				_sb_stats[ci] -= 1
-				captured_lbl.text = str(_sb_stats[ci])
-				_sb_update_cost(captured_sp, captured_base)
-		)
-		plus_btn.pressed.connect(func():
-			_sb_stats[ci] += 1
-			captured_lbl.text = str(_sb_stats[ci])
-			_sb_update_cost(captured_sp, captured_base)
-		)
-		row.add_child(minus_btn)
-		row.add_child(val_lbl)
-		row.add_child(plus_btn)
-
-	# ── Separator ──
-	var sep := HSeparator.new()
-	vbox.add_child(sep)
-
-	# ── Abilities from monster table ──
-	vbox.add_child(RimvaleUtils.label("Abilities (cost = AP + SP of ability):", 14, RimvaleColors.TEXT_WHITE))
-	var catalog: Array = _e.get_summon_ability_catalog()
-	for ab in catalog:
-		if int(ab.get("_tier", 1)) > caster_max_tier: continue
-		var ab_name: String = str(ab.get("name", "?"))
-		var ab_cost: int = int(ab.get("_sp_cost", 1))
-		var ab_tier: int = int(ab.get("_tier", 1))
-		var dice: Array = ab.get("dice", [1,6])
-		var ab_row := HBoxContainer.new()
-		ab_row.add_theme_constant_override("separation", 6)
-		vbox.add_child(ab_row)
-		var ab_check := CheckBox.new()
-		ab_check.text = "%s (T%d, %d SP) — %dd%d" % [ab_name, ab_tier, ab_cost, int(dice[0]), int(dice[1])]
-		ab_check.add_theme_font_size_override("font_size", 11)
-		var captured_ab: String = ab_name
-		var cap_sp: int = sp_avail
-		var cap_base: int = base_cost
-		ab_check.toggled.connect(func(on: bool):
-			if on and captured_ab not in _sb_abilities:
-				_sb_abilities.append(captured_ab)
-			elif not on and captured_ab in _sb_abilities:
-				_sb_abilities.erase(captured_ab)
-			_sb_update_cost(cap_sp, cap_base)
-		)
-		ab_row.add_child(ab_check)
-
-	# ── Separator ──
-	vbox.add_child(HSeparator.new())
-
-	# ── Summon button ──
-	var summon_btn := Button.new()
-	summon_btn.text = "✦ SUMMON"
-	summon_btn.custom_minimum_size = Vector2(0, 40)
-	summon_btn.add_theme_font_size_override("font_size", 16)
-	summon_btn.add_theme_color_override("font_color", Color(0.30, 1.0, 0.40))
-	summon_btn.pressed.connect(_confirm_summon_build)
-	vbox.add_child(summon_btn)
-
-func _sb_update_cost(sp_avail: int, base_cost: int) -> void:
-	var stat_total: int = 0
-	for st in _sb_stats: stat_total += st
-	var ability_cost: int = 0
-	for ab_name in _sb_abilities:
-		ability_cost += _e._summon_ability_sp_cost(ab_name)
-	var total: int = base_cost + stat_total + ability_cost
-	var color: Color = Color(0.65, 0.80, 0.65) if total <= sp_avail else Color(1.0, 0.40, 0.30)
-	if _sb_cost_lbl != null and is_instance_valid(_sb_cost_lbl):
-		_sb_cost_lbl.text = "SP available: %d | Base: %d + Stats: %d + Abilities: %d = Total: %d SP" % [
-			sp_avail, base_cost, stat_total, ability_cost, total]
-		_sb_cost_lbl.add_theme_color_override("font_color", color)
-
-func _confirm_summon_build() -> void:
-	if _sb_overlay != null and is_instance_valid(_sb_overlay):
-		_sb_overlay.queue_free(); _sb_overlay = null
-
-	var action: Dictionary = _sb_pending_action.duplicate()
-	action["_summon_build"] = {
-		"stats": _sb_stats.duplicate(),
-		"feats": _sb_feats.duplicate(),
-		"abilities": _sb_abilities.duplicate(),
-		"creature_name": _sb_name,
-	}
-	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
-	_handle_action_result(result)
-	_sb_pending_action = {}
-
-# ── Create Construct Builder Dialog ──────────────────────────────────────────
-
-## Construct cost constants
-const CB_WEAPON_LABELS: PackedStringArray = ["None", "Light Weapon (2 SP)", "Martial Weapon (3 SP)", "Heavy Weapon (4 SP)"]
-const CB_WEAPON_COSTS: PackedInt32Array   = [0, 2, 3, 4]
-const CB_WEAPON_NAMES: PackedStringArray  = ["", "Construct Light Weapon", "Construct Martial Weapon", "Construct Heavy Weapon"]
-const CB_ARMOR_LABELS: PackedStringArray  = ["None", "Light Armor (2 SP)", "Medium Armor (3 SP)", "Heavy Armor (4 SP)"]
-const CB_ARMOR_COSTS: PackedInt32Array    = [0, 2, 3, 4]
-const CB_ARMOR_NAMES: PackedStringArray   = ["", "Construct Light Armor", "Construct Medium Armor", "Construct Heavy Armor"]
-const CB_SHIELD_LABELS: PackedStringArray = ["None", "Shield (1 SP)", "Tower Shield (2 SP)"]
-const CB_SHIELD_COSTS: PackedInt32Array   = [0, 1, 2]
-const CB_SHIELD_NAMES: PackedStringArray  = ["", "Construct Shield", "Construct Tower Shield"]
-
-func _cb_calc_cost(base_cost: int) -> Dictionary:
-	if _cb_mode == 1:  # Structure
-		var struct_sp: int = int(pow(2.0, float(_cb_struct_tier)))  # tier1=2, tier2=4, tier3=8, tier4=16
-		return {"total": base_cost + struct_sp, "struct": struct_sp, "equip": 0, "trr": 0, "discount": 0, "item_count": 0}
-	# Equipment mode
-	var w_cost: int = CB_WEAPON_COSTS[_cb_weapon_idx]
-	var a_cost: int = CB_ARMOR_COSTS[_cb_armor_idx]
-	var s_cost: int = CB_SHIELD_COSTS[_cb_shield_idx]
-	var trr_cost: int = _cb_trr
-	var equip_raw: int = w_cost + a_cost + s_cost + trr_cost
-	# Count items in set (weapons, armor, shields — TRR doesn't count as separate item)
-	var item_count: int = 0
-	if _cb_weapon_idx > 0: item_count += 1
-	if _cb_armor_idx > 0: item_count += 1
-	if _cb_shield_idx > 0: item_count += 1
-	# Set discount: -1 per item, up to -3 (only if multiple items)
-	var discount: int = 0
-	if item_count >= 2: discount = mini(item_count, 3)
-	var equip_final: int = maxi(1, equip_raw - discount)
-	return {"total": base_cost + equip_final, "struct": 0, "equip": equip_raw, "trr": trr_cost, "discount": discount, "item_count": item_count}
-
-func _open_construct_builder_dialog(action: Dictionary) -> void:
-	if _cb_overlay != null and is_instance_valid(_cb_overlay):
-		_cb_overlay.queue_free(); _cb_overlay = null
-	_cb_pending_action = action.duplicate()
-	_cb_mode = 0; _cb_weapon_idx = 0; _cb_armor_idx = 0
-	_cb_shield_idx = 0; _cb_trr = 0; _cb_struct_tier = 1
-
-	var ent: Dictionary = _get_entity(_selected_id)
-	if ent.is_empty(): return
-	var sp_avail: int = int(ent.get("sp", 0))
-	var spell_nm: String = str(action.get("matrix_id", ""))
-	var spell_entry: Dictionary = _e._SPELL_DB.get(spell_nm, {})
-	var base_cost: int = int(spell_entry.get("sc", 2))
-
-	# Full-screen overlay
-	_cb_overlay = Panel.new()
-	_cb_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var bg_style := StyleBoxFlat.new()
-	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
-	_cb_overlay.add_theme_stylebox_override("panel", bg_style)
-	add_child(_cb_overlay)
-
-	var mgn := MarginContainer.new()
-	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
-	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_cb_overlay.add_child(mgn)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mgn.add_child(scroll)
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
-
-	# Header
-	var hdr := HBoxContainer.new()
-	vbox.add_child(hdr)
-	hdr.add_child(RimvaleUtils.label("Create Construct", 18, RimvaleColors.TEXT_WHITE))
-	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hdr.add_child(spacer)
-	var close_btn := Button.new(); close_btn.text = "X"; close_btn.flat = true
-	close_btn.add_theme_font_size_override("font_size", 18)
-	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
-	close_btn.pressed.connect(func():
-		if is_instance_valid(_cb_overlay): _cb_overlay.queue_free(); _cb_overlay = null
-	)
-	hdr.add_child(close_btn)
-
-	# SP + cost display
-	_cb_cost_lbl = RimvaleUtils.label("", 12, Color(0.65, 0.80, 0.65))
-	vbox.add_child(_cb_cost_lbl)
-
-	# Stats preview (HP / AC / DT)
-	_cb_stats_lbl = RimvaleUtils.label("", 11, Color(0.55, 0.70, 0.85))
-	vbox.add_child(_cb_stats_lbl)
-
-	vbox.add_child(HSeparator.new())
-
-	# ── Mode selector: Equipment vs Structure ──
-	vbox.add_child(RimvaleUtils.label("Construct Type", 14, RimvaleColors.TEXT_WHITE))
-	var mode_opt := OptionButton.new()
-	mode_opt.add_item("Equipment Set (weapons, armor, shields, clothing)")
-	mode_opt.add_item("Structure (walls, barriers, platforms)")
-	mode_opt.selected = _cb_mode
-	mode_opt.add_theme_font_size_override("font_size", 12)
-	var cap_sp: int = sp_avail
-	var cap_base: int = base_cost
-	mode_opt.item_selected.connect(func(i: int): _cb_mode = i; _rebuild_construct_builder())
-	vbox.add_child(mode_opt)
-
-	vbox.add_child(HSeparator.new())
-
-	if _cb_mode == 0:
-		# ── Equipment mode ──
-		vbox.add_child(RimvaleUtils.label("Equipment", 14, Color(0.50, 0.70, 1.0)))
-
-		# Weapon
-		var w_opt := OptionButton.new()
-		for wl in CB_WEAPON_LABELS: w_opt.add_item(wl)
-		w_opt.selected = _cb_weapon_idx
-		w_opt.add_theme_font_size_override("font_size", 12)
-		w_opt.item_selected.connect(func(i: int): _cb_weapon_idx = i; _cb_update_cost(cap_sp, cap_base))
-		vbox.add_child(_cb_row("Weapon", w_opt))
-
-		# Armor
-		var a_opt := OptionButton.new()
-		for al in CB_ARMOR_LABELS: a_opt.add_item(al)
-		a_opt.selected = _cb_armor_idx
-		a_opt.add_theme_font_size_override("font_size", 12)
-		a_opt.item_selected.connect(func(i: int): _cb_armor_idx = i; _cb_update_cost(cap_sp, cap_base))
-		vbox.add_child(_cb_row("Armor", a_opt))
-
-		# Shield
-		var s_opt := OptionButton.new()
-		for sl in CB_SHIELD_LABELS: s_opt.add_item(sl)
-		s_opt.selected = _cb_shield_idx
-		s_opt.add_theme_font_size_override("font_size", 12)
-		s_opt.item_selected.connect(func(i: int): _cb_shield_idx = i; _cb_update_cost(cap_sp, cap_base))
-		vbox.add_child(_cb_row("Shield", s_opt))
-
-		vbox.add_child(HSeparator.new())
-
-		# TRR clothing
-		vbox.add_child(RimvaleUtils.label("TRR Clothing / Armor Coating (1 SP per rating)", 12, Color(0.55, 0.70, 0.60)))
-		var trr_lbl := RimvaleUtils.label("TRR: +%d" % _cb_trr, 13, Color(0.40, 0.85, 1.0))
-		var trr_row := HBoxContainer.new()
-		trr_row.add_theme_constant_override("separation", 6)
-		vbox.add_child(trr_row)
-		var trr_minus := Button.new(); trr_minus.text = "-"; trr_minus.flat = true
-		trr_minus.custom_minimum_size = Vector2(28, 28)
-		trr_minus.add_theme_font_size_override("font_size", 14)
-		var trr_plus := Button.new(); trr_plus.text = "+"; trr_plus.flat = true
-		trr_plus.custom_minimum_size = Vector2(28, 28)
-		trr_plus.add_theme_font_size_override("font_size", 14)
-		var cap_trr_lbl: Label = trr_lbl
-		trr_minus.pressed.connect(func():
-			if _cb_trr > 0: _cb_trr -= 1; cap_trr_lbl.text = "TRR: +%d" % _cb_trr; _cb_update_cost(cap_sp, cap_base))
-		trr_plus.pressed.connect(func():
-			_cb_trr += 1; cap_trr_lbl.text = "TRR: +%d" % _cb_trr; _cb_update_cost(cap_sp, cap_base))
-		trr_row.add_child(trr_minus)
-		trr_row.add_child(trr_lbl)
-		trr_row.add_child(trr_plus)
-
-		# Set discount info
-		vbox.add_child(RimvaleUtils.label("Set Discount: -1 SP per item in set (up to -3)", 10, Color(0.50, 0.55, 0.45)))
-
-	else:
-		# ── Structure mode ──
-		vbox.add_child(RimvaleUtils.label("Structure Size", 14, Color(0.50, 0.70, 1.0)))
-
-		var tier_labels: Array = [
-			"5x5x5 ft (1 tile) — 2 SP",
-			"10x10x10 ft (2 tiles) — 4 SP",
-			"15x15x15 ft (3 tiles) — 8 SP",
-			"20x20x20 ft (4 tiles) — 16 SP",
-			"25x25x25 ft (5 tiles) — 32 SP",
-		]
-		var tier_opt := OptionButton.new()
-		for tl in tier_labels: tier_opt.add_item(tl)
-		tier_opt.selected = _cb_struct_tier - 1
-		tier_opt.add_theme_font_size_override("font_size", 12)
-		tier_opt.item_selected.connect(func(i: int): _cb_struct_tier = i + 1; _cb_update_cost(cap_sp, cap_base))
-		vbox.add_child(tier_opt)
-
-		vbox.add_child(RimvaleUtils.label(
-			"Not all sides must be max length. Shape it however you want within the size limit. "
-			+ "The construct is semi-transparent with a glowing outline. It can be attacked and destroyed.",
-			10, Color(0.50, 0.55, 0.45)))
-
-	vbox.add_child(HSeparator.new())
-
-	# ── Create button ──
-	var create_btn := Button.new()
-	create_btn.text = "CREATE CONSTRUCT"
-	create_btn.custom_minimum_size = Vector2(0, 40)
-	create_btn.add_theme_font_size_override("font_size", 16)
-	create_btn.add_theme_color_override("font_color", Color(0.40, 0.70, 1.0))
-	create_btn.pressed.connect(_confirm_construct_build)
-	vbox.add_child(create_btn)
-
-	_cb_update_cost(sp_avail, base_cost)
-
-func _cb_row(label_text: String, ctrl: Control) -> HBoxContainer:
-	var row := HBoxContainer.new(); row.add_theme_constant_override("separation", 8)
-	var lbl := RimvaleUtils.label(label_text, 12, RimvaleColors.TEXT_GRAY)
-	lbl.custom_minimum_size = Vector2(80, 0)
-	row.add_child(lbl)
-	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(ctrl)
-	return row
-
-func _cb_update_cost(sp_avail: int, base_cost: int) -> void:
-	var info: Dictionary = _cb_calc_cost(base_cost)
-	var total: int = int(info["total"])
-	var color: Color = Color(0.65, 0.80, 0.65) if total <= sp_avail else Color(1.0, 0.40, 0.30)
-	if _cb_cost_lbl != null and is_instance_valid(_cb_cost_lbl):
-		if _cb_mode == 0:
-			var disc_str: String = ""
-			if int(info["discount"]) > 0: disc_str = " - Set Discount: %d" % int(info["discount"])
-			_cb_cost_lbl.text = "SP available: %d | Equipment: %d + TRR: %d%s = Total: %d SP" % [
-				sp_avail, int(info["equip"]) - int(info["trr"]), int(info["trr"]), disc_str, total]
-		else:
-			_cb_cost_lbl.text = "SP available: %d | Structure: %d = Total: %d SP" % [sp_avail, int(info["struct"]), total]
-		_cb_cost_lbl.add_theme_color_override("font_color", color)
-	if _cb_stats_lbl != null and is_instance_valid(_cb_stats_lbl):
-		var construct_sp: int = total - base_cost
-		var hp: int = construct_sp * 3
-		var ac: int = 10 + mini(construct_sp, 10)
-		var dt: int = mini(construct_sp, 10)
-		_cb_stats_lbl.text = "Construct Stats — HP: %d | AC: %d | Damage Threshold: %d" % [hp, ac, dt]
-
-func _rebuild_construct_builder() -> void:
-	if is_instance_valid(_cb_overlay):
-		_cb_overlay.queue_free(); _cb_overlay = null
-	_open_construct_builder_dialog(_cb_pending_action)
-
-func _confirm_construct_build() -> void:
-	if _cb_overlay != null and is_instance_valid(_cb_overlay):
-		_cb_overlay.queue_free(); _cb_overlay = null
-
-	var build: Dictionary = {
-		"mode": "equipment" if _cb_mode == 0 else "structure",
-	}
-	if _cb_mode == 0:
-		build["weapon_idx"] = _cb_weapon_idx
-		build["armor_idx"] = _cb_armor_idx
-		build["shield_idx"] = _cb_shield_idx
-		build["trr"] = _cb_trr
-	else:
-		build["struct_tier"] = _cb_struct_tier
-
-	var action: Dictionary = _cb_pending_action.duplicate()
-	action["_construct_build"] = build
-	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
-	_handle_action_result(result)
-	_cb_pending_action = {}
+	cv.

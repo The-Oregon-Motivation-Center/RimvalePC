@@ -1,6 +1,14 @@
 # Rimvale — Session Handoff
 
-Persistent notes for Claude sessions working on this project. Save edits here (not to scratch directories) so the next session can read them. Last updated: 2026-04-23 (post-popup session).
+Persistent notes for Claude sessions working on this project. Save edits here (not to scratch directories) so the next session can read them. Last updated: 2026-07-08.
+
+> **2026-07-08 status corrections:** the "27 subregions with empty NPC
+> rosters" note below is STALE — all 28 subregions now have full rosters at
+> target counts and all 184 dialogue trees exist (verified programmatically).
+> Still open: `quest_hooks` (35 unique ids) remain unwired to missions — this
+> needs quest CONTENT design, not just code. See RELEASE_PLAN.md for the
+> Phase 1-3 work completed (conditions, feat activations, spell costs,
+> save/load restoration fixes, custom-spell persistence).
 
 ## Project snapshot
 
@@ -275,13 +283,4 @@ All optional polish stays additive behind `if _render_style == "region":` so not
 ## Working preferences (Blaine)
 
 - Direct action > process. If a prior session promised something, honor it; don't loop on clarifying questions.
-- Keep popup/panel code connecting `popup_hide -> queue_free` for cleanup.
-- When a session is going to run out of context, write a real handoff file **into the project folder**, not the scratch outputs dir (which vanishes between sessions).
-
-## Key files
-
-- `scenes/explore/explore.gd` — POI panels
-- `scenes/world/world.gd` — tab builders to mirror
-- `autoload/game_state.gd` — party, gold, XP, save/load
-- `autoload/rimvale_fallback_engine.gd` — engine API used by `RimvaleAPI.engine`
-- `MANUAL_AUDIT.md`, `PARITY_PLAN.md` — prior planning docs
+- Keep popup/panel code connecting `popup_hide -> queue_free` for cle

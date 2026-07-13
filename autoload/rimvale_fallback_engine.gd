@@ -256,6 +256,10 @@ func create_character(name: String, lineage: String, age: int) -> int:
 		"name":       name,
 		"lineage":    lineage,
 		"age":        age,
+		# Day the character joined — effective age only accrues from HERE.
+		# Without this, mid-campaign recruits inherited every year that
+		# passed since day 0 and arrived ancient.
+		"birth_game_day": (int(GameState.game_day) if typeof(GameState) != TYPE_NIL else 0),
 		"max_age":    rolled_max_age,
 		"months_sacrificed": 0,
 		"life_bound_sp": 0,
@@ -351,7 +355,11 @@ func get_character_age(handle: int) -> int:
 	if not _chars.has(handle): return 0
 	var c = _chars[handle]
 	var base_age: int = int(c.get("age", 25))
-	var years_from_game: int = GameState.game_day / 365
+	# Only the days lived SINCE this character was created count toward age.
+	# (birth_game_day defaults to 0 for legacy saves — same result as before
+	# for characters that were created at campaign start.)
+	var days_lived: int = maxi(0, int(GameState.game_day) - int(c.get("birth_game_day", 0)))
+	var years_from_game: int = days_lived / 365
 	var years_from_sacrifice: int = int(c.get("months_sacrificed", 0)) / 12
 	return base_age + years_from_game + years_from_sacrifice
 
@@ -482,6 +490,10 @@ func add_xp(handle: int, amount: int, level_limit: int) -> void:
 		c["level"] += 1
 		c["xp_req"] = _xp_required_for_level(c["level"])
 		recalculate_derived_stats(handle)
+		# GMG class auto-build: assigned classes spend the new level's points
+		# toward their class distribution immediately.
+		if str(c.get("npc_class", "")) != "":
+			apply_class_build(handle)
 
 func add_gold(handle: int, amount: int) -> void:
 	if _chars.has(handle): _chars[handle]["gold"] += amount
@@ -793,6 +805,89 @@ func level_up_character(handle: int) -> void:
 	c["skill_pts"] = int(c.get("skill_pts", 0)) + 3   # PHB: 3 skill points per level
 	recalculate_derived_stats(handle)
 
+# ── NPC Classes (GMG pp.103-110 "Examples of NPC builds") ────────────────────
+
+## Assign a GMG build class ("Divine Champion", "Shadowblade", ...) to a
+## character. The class auto-spends stat/skill/feat points toward the GMG
+## distribution for their level — immediately, and again on every level-up.
+## Pass "" to clear the class (manual building resumes; nothing is refunded).
+func assign_npc_class(handle: int, cls: String) -> String:
+	if not _chars.has(handle): return "Character not found."
+	if typeof(EnemyArchetype) == TYPE_NIL: return "Class data unavailable."
+	if cls != "" and not EnemyArchetype.CLASS_DEFS.has(cls):
+		return "Unknown class '%s'." % cls
+	_chars[handle]["npc_class"] = cls
+	if cls != "":
+		apply_class_build(handle)
+	return ""
+
+func get_npc_class(handle: int) -> String:
+	if not _chars.has(handle): return ""
+	return str(_chars[handle].get("npc_class", ""))
+
+## Spend the character's AVAILABLE points toward their class's GMG targets.
+## Additive only — never respecs or refunds, so anything the player built by
+## hand is kept and the class fills in around it. Safe to call repeatedly.
+func apply_class_build(handle: int) -> void:
+	if not _chars.has(handle): return
+	var c = _chars[handle]
+	var cls: String = str(c.get("npc_class", ""))
+	if cls == "" or typeof(EnemyArchetype) == TYPE_NIL: return
+	var lv: int = int(c.get("level", 1))
+
+	# ── Stats: repeatedly raise the stat furthest below its class target ──
+	var target_stats: Array = EnemyArchetype.class_stats_for(cls, lv)
+	var made: bool = true
+	while made:
+		made = false
+		var best_i: int = -1
+		var best_gap: int = 0
+		for i in range(5):
+			var gap: int = int(target_stats[i]) - int(c["stats"][i])
+			if gap > best_gap:
+				best_gap = gap
+				best_i = i
+		if best_i >= 0 and spend_stat_point(handle, best_i):
+			made = true
+
+	# ── Skills: GMG table names → engine skill indices ──
+	# (GMG "Insight" = engine "Intuition" idx 5; engine "Perform" idx 10 has
+	# no GMG column and is left for manual points.)
+	var skill_idx: Dictionary = {
+		"Arcane": 0, "Crafting": 1, "Creature Handling": 2, "Cunning": 3,
+		"Exertion": 4, "Insight": 5, "Learnedness": 6, "Medical": 7,
+		"Nimble": 8, "Perception": 9, "Sneak": 11, "Speechcraft": 12,
+		"Survival": 13,
+	}
+	var target_skills: Dictionary = EnemyArchetype.class_skills_for(cls, lv)
+	made = true
+	while made:
+		made = false
+		for sk_name in target_skills:
+			var idx: int = int(skill_idx.get(str(sk_name), -1))
+			if idx < 0 or idx >= c["skills"].size(): continue
+			if int(c["skills"][idx]) < int(target_skills[sk_name]):
+				if spend_skill_point(handle, idx):
+					made = true
+
+	# ── Feats: walk each class feat up through its EXISTING registry tiers ──
+	_ensure_feat_registry()
+	var target_feats: Dictionary = EnemyArchetype.class_feats_for(cls, lv)
+	for feat_name_v in target_feats:
+		var feat_name: String = str(feat_name_v)
+		if not _FEAT_REGISTRY.has(feat_name): continue
+		var want_tier: int = int(target_feats[feat_name])
+		var tier_keys: Array = _FEAT_REGISTRY[feat_name].get("tiers", {}).keys()
+		tier_keys.sort()
+		for t in tier_keys:
+			var ti: int = int(t)
+			if ti > want_tier: break
+			if int(c.get("feats", {}).get(feat_name, 0)) >= ti: continue
+			if not spend_feat_point(handle, feat_name, ti):
+				break
+
+	recalculate_derived_stats(handle)
+
 func spend_stat_point(handle: int, stat_type: int) -> bool:
 	if not _chars.has(handle): return false
 	var c = _chars[handle]
@@ -833,6 +928,11 @@ func spend_feat_point(handle: int, feat_name: String, tier: int) -> bool:
 	# numbers stay at the pre-feat values until something else triggers
 	# recalc (a level up, equipping/unequipping, etc.).
 	recalculate_derived_stats(handle)
+	# Achievement: 10 feats earned across the whole party.
+	var total_party_feats: int = 0
+	for ch_h in _chars:
+		total_party_feats += _chars[ch_h].get("feats", {}).size()
+	SteamIntegration.on_feat_unlocked(total_party_feats)
 	return true
 
 func is_proficient_in_saving_throw(handle: int, stat_type: int) -> bool:
@@ -867,8 +967,34 @@ func toggle_favored_skill(handle: int, skill_type: int) -> bool:
 		c["favored_skills"].append(skill_type)
 		return true
 
+## Returns one "FeatName|activation_id|state" entry per feat activation the
+## character owns, where state is "ready" or "used" (per-rest flag spent).
+## Backed by the FEAT_ACTIVATIONS table; lets UIs grey out spent feat actions.
 func get_feat_action_states(handle: int) -> PackedStringArray:
-	return PackedStringArray()
+	if not _chars.has(handle): return PackedStringArray()
+	var owned_feats: Dictionary = _chars[handle].get("feats", {})
+	# Find the character's live dungeon entity (used flags live on the entity).
+	var ent: Dictionary = {}
+	for e in _dungeon_entities:
+		if int(e.get("handle", -1)) == handle:
+			ent = e
+			break
+	var out: Array = []
+	for fa in FEAT_ACTIVATIONS:
+		var fa_names: Array = fa[0]
+		var owned_name: String = ""
+		for fn in fa_names:
+			if owned_feats.has(fn):
+				owned_name = str(fn)
+				break
+		if owned_name == "": continue
+		var fa_id: String = str(fa[1])
+		var fa_used_flag: String = str(fa[3])
+		var state: String = "ready"
+		if not ent.is_empty() and fa_used_flag != "" and bool(ent.get(fa_used_flag, false)):
+			state = "used"
+		out.append("%s|%s|%s" % [owned_name, fa_id, state])
+	return PackedStringArray(out)
 
 func get_safeguard_chosen_stats(handle: int) -> PackedInt32Array:
 	if not _chars.has(handle): return PackedInt32Array()
@@ -880,7 +1006,10 @@ func set_safeguard_chosen_stats(handle: int, stats: PackedInt32Array) -> void:
 	_chars[handle]["safeguard_stats"] = Array(stats)
 
 func get_feat_trees_by_character(handle: int) -> PackedStringArray:
-	return PackedStringArray()
+	if not _chars.has(handle): return PackedStringArray()
+	var names: Array = _chars[handle].get("feats", {}).keys()
+	names.sort()
+	return PackedStringArray(names)
 
 func get_learned_spells(handle: int) -> PackedStringArray:
 	if not _chars.has(handle): return PackedStringArray()
@@ -3041,6 +3170,11 @@ func attune_item(handle: int, item_name: String) -> String:
 		return "Not enough max SP. Need %d, but only %d available." % [cost, current_max_sp]
 	c["attuned"].append(item_name)
 	recalculate_derived_stats(handle)
+	# Achievement: attune a top-tier item (Legendary — the highest GMG rarity,
+	# or an Apex-tiered relic).
+	var att_rarity: String = _parse_magic_rarity(item_name)
+	if att_rarity == "Legendary" or att_rarity == "Mythic" or is_apex_item(item_name):
+		SteamIntegration.on_mythic_equipped()
 	return ""
 
 ## SP cost to attune to a vehicle, per rarity. Vehicles cost the same SP
@@ -3955,7 +4089,7 @@ func _ensure_feat_registry() -> void:
 			3: "Store SP in sacrifice pool.",
 			4: "Spend HP to reduce spell SP cost.",
 			5: "Heal twice Divinity on each kill."}},
-		"Create Demiplane": {"cat": cm, "tiers": {
+		"Create Demiplane": {"cat": cm, "hidden": true, "tiers": {
 			1: "Create a 10×10×10 ft extradimensional space; stash/retrieve items ≤10 lbs (2/rest).",
 			2: "Create a 30×30×30 ft customized demiplane. Regain +1 HP/hr inside.",
 			3: "Create a 60×60×60 ft stable demiplane with environmental control; one spirit servant. +2 HP/hr inside."}},
@@ -3973,7 +4107,7 @@ func _ensure_feat_registry() -> void:
 			3: "Each assistant reduces SP cost; ritual time 10 min/SP. Sacred site bonus.",
 			4: "Bind ritual to physical anchor; persists while anchor is intact.",
 			5: "Once/LR free ritual (max SP = 2×Divinity, 10 min). Ending a ritual voluntarily regains 2 SP."}},
-		"Scryer": {"cat": cm, "tiers": {
+		"Scryer": {"cat": cm, "hidden": true, "tiers": {
 			1: "Extend Scrying Eye range to 1 mile without extra SP cost.",
 			2: "Scry any visited location in same region. While scrying, hear surface thoughts.",
 			3: "Scry anywhere on the same plane. Once/LR anchor Scrying Eye for 24 hours."}},
@@ -3983,13 +4117,13 @@ func _ensure_feat_registry() -> void:
 			3: "Beast Channeler: Shapeshift as free action, up to 4 hours. Magically enhanced animals unlocked. Resistance to non-magical damage; attacks deal magical damage. General magic abilities available for creature creation. Once/SR cast a spell while shapeshifted.",
 			4: "Beast Sage: Access magical beast abilities; shapeshift 3/SR. Once/LR shapeshift a willing creature using your rules.",
 			5: "Beast Archon: Shapeshift at will (no limit, no duration cap), up to Huge animals. Cast spells normally while shapeshifted."}},
-		"Soul Weaver": {"cat": cm, "tiers": {
+		"Soul Weaver": {"cat": cm, "hidden": true, "tiers": {
 			4: "Create a soul anchor (24 hr ritual); if anchored creature dies, it returns at the anchor after 1 hour."}},
 		"Spell Shaper": {"cat": cm, "tiers": {
 			1: "Spell DC = 10 + 2×Divinity. Once/LR force a creature to reroll a successful save.",
 			2: "Once/SR add 1d4 to spell DC or attack. Once/LR impose disadvantage on a successful save.",
 			3: "Once/LR all creatures auto-fail their first save against your spell. Once/LR cast a half-cost spell as bonus."}},
-		"Transmuter's Precision": {"cat": cm, "tiers": {
+		"Transmuter's Precision": {"cat": cm, "hidden": true, "tiers": {
 			1: "Transmute materials at 20 SP/ft³ (halved). Once/LR stabilize volatile transmutation.",
 			2: "Transmute at 10 SP/ft³. Once/SR ignore +5 SP complexity cost.",
 			3: "Transmute at 5 SP/ft³. Retain 75% of original material mass."}},
@@ -4040,7 +4174,7 @@ func _ensure_feat_registry() -> void:
 			1: "Climb at full speed; not vulnerable while climbing. Once/LR auto-succeed on a fall/prone check.",
 			2: "Once/rest ignore difficult terrain for 1 minute. Auto-move across narrow surfaces while unencumbered.",
 			3: "Move at normal speed across water or liquids. Once/rest bring a contacting ally along."}},
-		"Explorer's Grit": {"cat": ce, "tiers": {
+		"Explorer's Grit": {"cat": ce, "hidden": true, "tiers": {
 			1: "+1d4 to navigation/survival checks in unknown terrain. Once/LR find a safe path or shortcut.",
 			2: "+1d4 to find hidden objects, traps, or secret doors. Discovering hidden feature gives bonus to next exploration check.",
 			3: "Once/LR lead a group safely; allies gain advantage on environmental danger checks for 1 hour."}},
@@ -4061,7 +4195,7 @@ func _ensure_feat_registry() -> void:
 			2: "Reaction: transfer damage to your minion (within 30 ft). Minion can be Medium. If you drop to 0 HP with a minion alive, it takes one action before vanishing.",
 			3: "Control up to 3 minions at once. Once/LR fall unconscious and transfer your consciousness into a minion (1 mile range).",
 			4: "Control up to 4 minions. Summoned minions gain bonus HP equal to your level. Minions gain resistance to one damage type of your choice."}},
-		"Stealth & Subterfuge": {"cat": ce, "tiers": {
+		"Stealth & Subterfuge": {"cat": ce, "hidden": true, "tiers": {
 			1: "Reduce social manipulation challenge; once/rest advantage on Speechcraft. Once/LR create distraction/disguise to mislead pursuers.",
 			2: "Convince as another person; once/LR mimic voice/mannerisms for 1 hour. Successful deception → target is friendly for 10 min.",
 			3: "Reduce escape challenge; once/LR auto-escape physical or magical restraints."}},
@@ -4100,8 +4234,42 @@ func _ensure_feat_registry() -> void:
 			3: "Primary: When crafting an alchemical item, reduce required preparation time by half (minimum 1 hour). Secondary: 1/week create a potent elixir granting resistance to one damage type or powerful effect for 24 hours."}},
 		"Angelic Rebirth": {"cat": casc, "tiers": {
 			1: "Requirements: Sacrifice 4 SP and 1 STR; committed to Unity; fast 3 days at sacred place; forgiven enemy; die in service of divine cause. Effects: Immortal (no aging, 1/5 rate); Flight (1 AP reduced max: fly speed = foot speed); Radiant Pulse (3SP: 30ft 4d6 radiant blind 1 round); Healing Pulse (2SP: 3d6 to all allies in 30 ft); Safeguard Aura (3 AP reduced max: allies within 15 ft gain +2 AC). Drawback: Vulnerable to void magic; falling in love with a mortal removes flight and normal aging."}},
-		"Apex": {"cat": cap, "tiers": {
-			5: "Primary: Passive, move > 50ft -> 20ft path difficult terrain, structures 3d10 force. Secondary: 10ft DC 16 Dex or prone + 1d10."}},
+		"Arcane Overdrive": {"cat": cap, "tiers": {
+			5: "1/LR activation: channel raw magic — gain +Divinity to all attack rolls for the rest of the combat."}},
+		"Iron Tempest": {"cat": cap, "tiers": {
+			5: "1/LR activation: whirlwind strike — every adjacent enemy takes 1d10 + 2x Strength damage."}},
+		"Cataclysmic Leap": {"cat": cap, "tiers": {
+			5: "1/LR activation: earth-shattering slam — adjacent enemies take 1d8 + Strength damage and are knocked prone."}},
+		"Gravity Shatter": {"cat": cap, "tiers": {
+			5: "1/LR activation: invert gravity — adjacent enemies take 2d6 + Divinity damage and are stunned."}},
+		"Howl Of The Forgotten": {"cat": cap, "tiers": {
+			5: "1/LR activation: unearthly howl — adjacent enemies take 1d6 + Divinity damage and are frightened of you."}},
+		"Phantom Legion": {"cat": cap, "tiers": {
+			5: "1/LR activation: summon 3 Phantoms of your level to fight alongside you."}},
+		"Soulflare Pulse": {"cat": cap, "tiers": {
+			5: "1/LR activation: burn soul-light — heal 3x Divinity HP; adjacent enemies take half that as damage."}},
+		"Stormbound Mantle": {"cat": cap, "tiers": {
+			5: "1/LR activation: wrap yourself in storms — +4 AC and +3 to hit for the rest of the combat."}},
+		"Temporal Rift": {"cat": cap, "tiers": {
+			5: "1/LR activation: tear a rift in time — instantly restore all of your AP."}},
+		"Divine Reversal": {"cat": cap, "tiers": {
+			5: "1/LR activation: rewind your fate — fully restore HP and SP and clear all conditions."}},
+		"Eclipse Veil": {"cat": cap, "tiers": {
+			5: "1/LR activation: swallow the light — become hidden and gain +5 AC."}},
+		"Mythic Regrowth": {"cat": cap, "tiers": {
+			5: "1/LR activation: awaken vital myth — regenerate Divinity + level HP at the start of each turn this combat."}},
+		"Runebreaker Surge": {"cat": cap, "tiers": {
+			5: "1/LR activation: shatter enchantments — adjacent enemies lose all conditions and buffs, take -5 AC and 1d8 + Divinity damage."}},
+		"Soulbrand": {"cat": cap, "tiers": {
+			5: "1/LR activation: brand your own soul — gain +level to attack rolls for the rest of the combat."}},
+		"Titans Echo": {"cat": cap, "tiers": {
+			5: "1/LR activation: echo of the Titans — double your max HP and fully heal."}},
+		"Voidbrand Curse": {"cat": cap, "tiers": {
+			5: "1/LR activation: brand adjacent enemies with void — they are cursed (-2 attacks and saves), lose 3 AC, and take 1d10 + Divinity damage."}},
+		"Worldbreaker Step": {"cat": cap, "tiers": {
+			5: "1/LR activation: shatter the ground — adjacent enemies take 3d6 + 2x Strength damage and are knocked prone."}},
+		"Blood Of The Ancients": {"cat": cap, "tiers": {
+			5: "1/LR activation: awaken ancient blood — +3 AC, regenerate level HP per turn, and +2 to attacks for the combat."}},
 		"Arc-Light Surge": {"cat": cmi, "tiers": {
 			1: "Primary: 1/LR basic action, discharge electric surge — all creatures within 10 ft make Speed save or take 1d6 lightning and drop metal items; spend 1 SP per additional 1d6. Secondary: Metal objects within 10 ft shed dim light for 1 round, revealing hidden or invisible creatures."}},
 		"Arcane Residue": {"cat": cmi, "tiers": {
@@ -4312,6 +4480,9 @@ func get_feat_trees_by_category(category: String) -> PackedStringArray:
 	_ensure_feat_registry()
 	var result: Array = []
 	for feat_name_k in _FEAT_REGISTRY:
+		# Feats flagged hidden are defined but not yet implemented — keep them
+		# out of the level-up picker so players can't buy no-op feats.
+		if bool(_FEAT_REGISTRY[feat_name_k].get("hidden", false)): continue
 		if str(_FEAT_REGISTRY[feat_name_k].get("cat", "")) == category:
 			result.append(feat_name_k)
 	return PackedStringArray(result)
@@ -4337,8 +4508,13 @@ func get_feats_by_tier(tier: int) -> PackedStringArray:
 	_ensure_feat_registry()
 	var feats_at_tier: Array = _FEAT_TIERS_MAP.get(tier, [])
 	feats_at_tier = feats_at_tier.duplicate()
-	feats_at_tier.sort()
-	return PackedStringArray(feats_at_tier)
+	# Filter out hidden (defined-but-unimplemented) feats.
+	var visible: Array = []
+	for fn in feats_at_tier:
+		if not bool(_FEAT_REGISTRY.get(fn, {}).get("hidden", false)):
+			visible.append(fn)
+	visible.sort()
+	return PackedStringArray(visible)
 
 func get_feat_details(feat_name: String, tier: int) -> PackedStringArray:
 	_ensure_feat_registry()
@@ -5221,7 +5397,7 @@ const APEX_STAT_BLOCKS: Dictionary = {
 		"abilities":[
 			{"name":"Vitality Drain","ap":2,"sp":0,"dice":[1,6],"range":1,"conds":[],"cd":"none"},
 			{"name":"Shadow Fade","ap":0,"sp":0,"dice":[0,0],"range":0,"conds":[],"cd":"1/encounter"},
-			{"name":"Hollow Touch","ap":3,"sp":0,"dice":[2,6],"range":1,"conds":["exhaustion"],"cd":"1/turn"},
+			{"name":"Hollow Touch","ap":3,"sp":0,"dice":[2,6],"range":1,"conds":["exhausted"],"cd":"1/turn"},
 		]},
 	"Nirael of the Glass Veil": {"level":5,"stats":[0,2,4,1,3],"ac":11,
 		"immunities":["sleep"],"resistances":["psychic"],
@@ -5481,28 +5657,37 @@ func _build_encounter(party_level: int, difficulty: int) -> Array:
 	return result
 
 ## Pick creature category based on party level (GMG distribution tables).
+## Kaijus are NEVER rolled here — they only appear in dedicated Kaiju Hunt
+## encounters (start_kaiju_dungeon). The 16+ tier folds the kaiju slice into
+## Apex so high-level standard fights still feel dangerous without surprise
+## boss-tier spawns. Encounter Type "Standard Simulation" weighs adversary
+## (humanoid) heavily so the new archetype enemies show up most often.
 func _pick_creature_category(party_level: int) -> int:
 	var roll: int = randi_range(1, 100)
 	if party_level <= 3:
+		if roll <= 40: return CAT_ADVERSARY
 		if roll <= 70: return CAT_ANIMAL
 		if roll <= 90: return CAT_VILLAGER
 		return CAT_MONSTER
 	elif party_level <= 6:
-		if roll <= 30: return CAT_ANIMAL
-		if roll <= 60: return CAT_VILLAGER
+		if roll <= 50: return CAT_ADVERSARY
+		if roll <= 70: return CAT_ANIMAL
+		if roll <= 85: return CAT_VILLAGER
 		return CAT_MONSTER
 	elif party_level <= 10:
-		if roll <= 10: return CAT_ANIMAL
-		if roll <= 30: return CAT_VILLAGER
+		if roll <= 60: return CAT_ADVERSARY
+		if roll <= 75: return CAT_ANIMAL
+		if roll <= 85: return CAT_VILLAGER
 		return CAT_MONSTER
 	elif party_level <= 15:
-		if roll <= 10: return CAT_VILLAGER
-		if roll <= 90: return CAT_MONSTER
+		if roll <= 60: return CAT_ADVERSARY
+		if roll <= 75: return CAT_VILLAGER
+		if roll <= 95: return CAT_MONSTER
 		return CAT_APEX
 	else:
-		if roll <= 60: return CAT_MONSTER
-		if roll <= 90: return CAT_APEX
-		return CAT_KAIJU
+		if roll <= 50: return CAT_ADVERSARY
+		if roll <= 80: return CAT_MONSTER
+		return CAT_APEX
 
 ## Pick a creature name from the category pool.
 ## For Apex/Kaiju, picks from hand-crafted stat block names so they get unique abilities.
@@ -5510,6 +5695,10 @@ func _pick_creature_name(category: int, _level: int) -> String:
 	match category:
 		0: return CREATURE_NAMES_ANIMAL[randi() % CREATURE_NAMES_ANIMAL.size()]
 		1: return CREATURE_NAMES_VILLAGER[randi() % CREATURE_NAMES_VILLAGER.size()]
+		2:  # CAT_ADVERSARY — humanoid combatants share the villager name pool
+			# (Bandit, Thug, Cultist, Mercenary, etc.). The archetype prefix
+			# added in start_dungeon turns them into "Fighter Bandit", etc.
+			return CREATURE_NAMES_VILLAGER[randi() % CREATURE_NAMES_VILLAGER.size()]
 		4:  # CAT_APEX — pick from hand-crafted Apex stat blocks
 			var apex_names: Array = APEX_STAT_BLOCKS.keys()
 			return str(apex_names[randi() % apex_names.size()])
@@ -6377,7 +6566,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			caster["howl_used"] = true
 			var adj: Array = get_adjacent_enemies(caster_id)
 			for enemy in adj:
-				_dung_add_condition(enemy, "frightened")
+				_dung_add_condition(enemy, "frightened", caster_id)
 				var dmg: int = randi_range(1, 6) + div_score
 				_dung_reduce_hp(enemy, dmg)
 				if int(enemy["hp"]) <= 0 and not bool(enemy.get("is_player", false)): enemy["is_dead"] = true; enemy["conditions"].clear()
@@ -6628,7 +6817,7 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			caster["hit_bonus_buff"] = int(caster.get("hit_bonus_buff", 0)) + caster_lv
 			var adj: Array = get_adjacent_enemies(caster_id)
 			for enemy in adj:
-				_dung_add_condition(enemy, "frightened")
+				_dung_add_condition(enemy, "frightened", caster_id)
 			return _dung_ok("%s unleashes abyssal power! 50%% more HP, +%d attacks, enemies frightened!" % [caster["name"], caster_lv], 3, 0)
 		"voidborn_mutation":
 			if not feats.has("Voidborn Mutation"): return _dung_fail("Missing Voidborn Mutation.")
@@ -6638,6 +6827,33 @@ func dung_activate_summon_feat(caster_id: String, feat_type: String) -> Dictiona
 			caster["regen_per_turn"] = div_score * 2
 			caster["hit_bonus_buff"] = int(caster.get("hit_bonus_buff", 0)) + div_score
 			return _dung_ok("%s undergoes Voidborn Mutation! +5 AC, regen %d/turn, +%d attacks!" % [caster["name"], div_score * 2, div_score], 3, 0)
+
+		"lycanthropic_curse":
+			if not feats.has("Lycanthropic Curse"): return _dung_fail("Missing Lycanthropic Curse.")
+			if bool(caster.get("ascendant_used", false)): return _dung_fail("Already ascended this rest.")
+			caster["ascendant_used"] = true
+			caster["max_hp"] = int(float(caster["max_hp"]) * 1.5)
+			caster["hp"] = mini(int(caster["hp"]) + int(caster["max_hp"]) / 3, int(caster["max_hp"]))
+			caster["ac"] = int(caster["ac"]) + 2
+			caster["lifesteal_pct"] = 25
+			var lyc_str: int = int(_chars[ch].get("stats", [1,1,1,1,1])[0])
+			caster["hit_bonus_buff"] = int(caster.get("hit_bonus_buff", 0)) + lyc_str
+			return _dung_ok("%s shifts into beast form! +50%% HP, +2 AC, lifesteal, +%d attacks!" % [caster["name"], lyc_str], 3, 0)
+		"temporal_touch":
+			if not feats.has("Temporal Touch"): return _dung_fail("Missing Temporal Touch.")
+			feat_tier = int(feats["Temporal Touch"])
+			if not _ent_use_feat_charge(caster, "_temporal_touch_used", 1):
+				return _dung_fail("Temporal Touch already used this rest.")
+			_dung_add_condition(caster, "hasted")
+			var tt_log: String = "%s touches the flow of time — hasted!" % caster["name"]
+			# T3: also slow all adjacent enemies
+			if feat_tier >= 3:
+				var tt_adj: Array = get_adjacent_enemies(caster_id)
+				for enemy in tt_adj:
+					_dung_add_condition(enemy, "slowed")
+				if not tt_adj.is_empty():
+					tt_log += " %d adjacent enemies slowed!" % tt_adj.size()
+			return _dung_ok(tt_log, 1, 0)
 
 		# ── Miscellaneous feat activations ─────────────────────────────────────
 		"arc_light_surge":
@@ -7300,6 +7516,17 @@ func _shapeshift_check_revert(ent: Dictionary) -> String:
 ## Call instead of `ent["hp"] = maxi(0, int(ent["hp"]) - dmg)`.
 ## Returns a log string if shapeshift reverted, or "" otherwise.
 func _dung_reduce_hp(ent: Dictionary, dmg: int) -> String:
+	# ── PHB damage-modifying conditions (bless/curse tables) ──────────────────
+	if dmg > 0:
+		# Invulnerable (bless): immune to damage. Frozen-in-time: also immune.
+		if _dung_has_condition(ent, "invulnerable") or _dung_has_condition(ent, "frozen_time"):
+			return ""
+		# Resistant (bless): take half damage (rounded down, min 1).
+		if _dung_has_condition(ent, "resistant"):
+			dmg = maxi(1, dmg / 2)
+		# Vulnerable (curse): take double damage.
+		if _dung_has_condition(ent, "vulnerable"):
+			dmg *= 2
 	ent["hp"] = int(ent["hp"]) - dmg
 	# Check shapeshift revert (needs potentially-negative HP for excess calc)
 	var ss_msg: String = _shapeshift_check_revert(ent)
@@ -8113,13 +8340,21 @@ func add_custom_spell(spell_name: String, domain: int, cost: int, description: S
 	# Teleport spells: if tp_range > 0 the SP cost is pre-paid (ritual) so store cost.
 	# If tp_range == 0 (ad-hoc teleport), use dynamic distance pricing (sc=0).
 	var final_cost: int = cost if (not is_teleport or tp_range > 0) else 0
-	# Parse conditions CSV into Array to match built-in spell format ("conds")
+	# Parse conditions CSV into Array to match built-in spell format ("conds").
+	# Normalize to the engine's lowercase condition vocabulary — older saves and
+	# the pre-fix spell builder stored display names ("Fear", "Bleed") that no
+	# combat code recognizes.
+	var legacy_cond_map: Dictionary = {
+		"bleed": "bleeding", "charm": "charmed", "fear": "frightened",
+		"squeeze": "squeezed", "resistance": "resistant", "stoneskin": "resistant",
+		"exhaustion": "exhausted",
+	}
 	var conds_arr: Array = []
 	if conditions_csv != "":
 		for c in conditions_csv.split(","):
-			var trimmed: String = c.strip_edges()
+			var trimmed: String = c.strip_edges().to_lower()
 			if trimmed != "":
-				conds_arr.append(trimmed)
+				conds_arr.append(str(legacy_cond_map.get(trimmed, trimmed)))
 	_SPELL_DB[spell_name] = {
 		"dom":  dom_str,
 		"sc":   final_cost,
@@ -8184,6 +8419,34 @@ func get_custom_spells() -> Array:
 				str(s.get("rt", 0)), str(s.get("atk", false))])
 	return result
 
+## Full-fidelity export of custom spell records for save files. Without this,
+## player-built spells survived only as dangling names on the character —
+## their _SPELL_DB definitions were lost on every load.
+func export_custom_spells() -> Array:
+	_ensure_spell_db()
+	var result: Array = []
+	for sp_name in _SPELL_DB:
+		var s: Dictionary = _SPELL_DB[sp_name]
+		if bool(s.get("custom", false)):
+			var rec: Dictionary = s.duplicate(true)
+			rec["name"] = str(sp_name)
+			result.append(rec)
+	return result
+
+## Re-register custom spell records from a save file (inverse of export).
+## JSON round-trips numbers as floats; consumers already int()-cast fields.
+func import_custom_spells(records: Array) -> void:
+	_ensure_spell_db()
+	for rec_v in records:
+		if typeof(rec_v) != TYPE_DICTIONARY: continue
+		var rec: Dictionary = rec_v
+		var sp_name: String = str(rec.get("name", ""))
+		if sp_name == "": continue
+		var stored: Dictionary = rec.duplicate(true)
+		stored.erase("name")
+		stored["custom"] = true
+		_SPELL_DB[sp_name] = stored
+
 # ── Terrain registry ──────────────────────────────────────────────────────────
 ## Compact terrain registry: region_name → Array of [subregion_name, style_id]
 static var _TERRAIN_REGISTRY: Dictionary = {}
@@ -8194,7 +8457,7 @@ func _ensure_terrain_registry() -> void:
 		"Underground": [
 			["Cave System", 0], ["Crystal Cavern", 6], ["Magma Tunnel", 4],
 			["Flooded Cave", 5], ["Ancient Tomb", 7], ["Collapsed Mine", 0],
-			["Mushroom Grotto", 2], ["Underdark Passage", 7],
+			["Mushroom Grotto", 2], ["Undervault Passage", 7],
 		],
 		"Forest": [
 			["Temperate Forest", 2], ["Jungle Canopy", 2], ["Haunted Woods", 7],
@@ -8454,6 +8717,10 @@ const MAP_SIZE_CRAWL: int    = 50
 ## Dungeon-Crawl specific — true while a crawl is active. Combat code can
 ## branch on this for spawn density, alert state, etc.
 var _crawl_active: bool = false
+# One-shot: crawl entry points arm this just before start_dungeon; start_dungeon
+# consumes it. Prevents crawl mode from sticking to later classic dungeons
+# (_crawl_active previously was never reset to false anywhere).
+var _crawl_arm: bool = false
 
 # ── Action IDs (mirror mobile ActionType enum) ────────────────────────────────
 const ACT_MELEE:        int = 0
@@ -8487,6 +8754,7 @@ const ACT_IMPROVISED:       int = 81    # melee strike with an improvised weapon
 const ACT_THROW_OBJECT:     int = 82    # throw an improvised weapon (IWM T3+ AoE explosion at T3, single hit at lower tiers)
 const ACT_DUAL_STRIKE:      int = 83    # Twin Fang dual-wield two-weapon attack
 const ACT_PARRY:            int = 84    # Duelist's Path / Twin Fang parry reaction
+const ACT_SUMMON_ABILITY:   int = 85    # Generic ability picked when summoning a creature
 
 # ── Spell database (mirrors SpellRegistry.h) ──────────────────────────────────
 # Fields: sc=sp_cost, dom=domain, rt=range_tiles, atk=is_attack,
@@ -8668,10 +8936,15 @@ func _reset_per_encounter_trackers() -> void:
 
 func start_dungeon(player_handles, enemy_level: int,
 		specific_enemy_handle: int, terrain_style: int) -> void:
-	# Reset crawl state for a standard run unless the caller (a crawl
-	# entry-point) has just set MAP_SIZE / _crawl_active themselves.
-	if not _crawl_active:
-		MAP_SIZE = MAP_SIZE_STANDARD
+	# Crawl entry points arm _crawl_arm just before calling; consume it here.
+	# Everything else gets a clean standard-size, non-crawl reset.
+	if _crawl_arm:
+		_crawl_arm    = false
+		_crawl_active = true
+		MAP_SIZE      = MAP_SIZE_CRAWL
+	else:
+		_crawl_active = false
+		MAP_SIZE      = MAP_SIZE_STANDARD
 	_reset_per_encounter_trackers()
 	_dungeon_active       = true
 	_dungeon_round        = 1
@@ -8840,21 +9113,74 @@ func start_dungeon(player_handles, enemy_level: int,
 			0: e_weapon = CREATURE_WEAPONS_ANIMAL[randi() % CREATURE_WEAPONS_ANIMAL.size()]
 			1: e_weapon = CREATURE_WEAPONS_VILLAGER[randi() % CREATURE_WEAPONS_VILLAGER.size()]
 			_: e_weapon = CREATURE_WEAPONS_MONSTER[randi() % CREATURE_WEAPONS_MONSTER.size()]
-		# Archetypes pick weapons that fit their flavor.
+		# Archetypes pick PHB-real weapons that fit their flavor. All names
+		# below are present in _WEAPON_EXACT so durability HP / damage dice
+		# resolve through the normal lookups.
+		var e_armor: String = "None"
+		var e_shield: String = "None"
 		if use_archetype:
 			match arc_name:
 				"Fighter":
-					var fpool: Array = ["Iron Sword", "Steel Greataxe", "Halberd", "Warhammer"]
-					e_weapon = str(fpool[randi() % fpool.size()])
+					# Heavier weapons unlock at higher levels.
+					var f_low: Array = ["Longsword", "Battleaxe", "Warhammer",
+						"Mace", "Spear"]
+					var f_high: Array = ["Greatsword", "Greataxe", "Halberd",
+						"Glaive", "Maul", "Pike"]
+					if lv >= 8:
+						e_weapon = str(f_high[randi() % f_high.size()])
+					else:
+						e_weapon = str(f_low[randi() % f_low.size()])
+					# Armor scales: Studded → Chain → Splint → Plate
+					if lv >= 13:    e_armor = "Plate"
+					elif lv >= 8:   e_armor = ["Half Plate", "Splint"][randi() % 2]
+					elif lv >= 4:   e_armor = ["Chain Mail", "Breastplate"][randi() % 2]
+					else:           e_armor = ["Scale Mail", "Studded Leather"][randi() % 2]
+					# Shield 50% of the time on lower-level fighters
+					# (greatswords/halberds are 2H, no shield).
+					var two_h: Array = ["Greatsword", "Greataxe", "Halberd",
+						"Glaive", "Maul", "Pike"]
+					if not two_h.has(e_weapon) and randf() < 0.5:
+						e_shield = "Tower Shield" if lv >= 10 else "Standard Shield"
 				"Mage":
-					var mpool: Array = ["Quarterstaff", "Wizard Wand", "Dagger"]
-					e_weapon = str(mpool[randi() % mpool.size()])
+					var m_low: Array = ["Quarterstaff", "Dagger", "Sickle"]
+					var m_high: Array = ["Quarterstaff", "Dagger", "Mace"]
+					e_weapon = str((m_high if lv >= 10 else m_low)[
+						randi() % m_low.size()])
+					# Mages: Padded → Leather (no metal, low AC).
+					e_armor = "Leather" if lv >= 8 else "Padded"
 				"Rogue":
-					var rpool: Array = ["Dagger", "Shortsword", "Crossbow"]
-					e_weapon = str(rpool[randi() % rpool.size()])
+					var r_low: Array = ["Dagger", "Shortsword", "Light Crossbow"]
+					var r_high: Array = ["Shortsword", "Rapier", "Hand Crossbow",
+						"Whip", "Scimitar"]
+					e_weapon = str((r_high if lv >= 8 else r_low)[
+						randi() % r_low.size()])
+					e_armor = "Studded Leather" if lv >= 5 else "Leather"
 				"Monk":
-					var kpool: Array = ["Quarterstaff", "Shortsword", "Sling"]
-					e_weapon = str(kpool[randi() % kpool.size()])
+					var k_low: Array = ["Quarterstaff", "Shortsword",
+						"Sling", "Club"]
+					var k_high: Array = ["Quarterstaff", "Shortsword", "Spear",
+						"Dart"]
+					e_weapon = str((k_high if lv >= 8 else k_low)[
+						randi() % k_low.size()])
+					# Monks fight unarmored — Unarmored Master feat baseline.
+					e_armor = "None"
+			# Patch AC to use the armor's published value as the new base
+			# (e_ac now becomes max(natural, 10 + armor_bonus + SPD)). Then
+			# stack the shield bonus on top. _ARMOR_EXACT keys to AC values
+			# (Plate=18, Half Plate=15, Studded Leather=12, Padded=11, etc.)
+			# Note: the values in _ARMOR_EXACT for armor are absolute ACs,
+			# not bonuses, so we swap rather than add.
+			if e_armor != "None" and _ARMOR_EXACT.has(e_armor):
+				var armor_ac: int = int(_ARMOR_EXACT[e_armor])
+				# Heavy armor ignores SPD; light armor still adds it.
+				var heavy: Array = ["Chain Mail", "Splint", "Plate",
+					"Half Plate", "Ring Mail"]
+				if heavy.has(e_armor):
+					e_ac = maxi(e_ac, armor_ac)
+				else:
+					e_ac = maxi(e_ac, armor_ac + cr_spd)
+			if e_shield != "None" and _ARMOR_EXACT.has(e_shield):
+				e_ac += int(_ARMOR_EXACT[e_shield])
 		_dungeon_entities.append({
 			"id":           "enemy_%d" % i,
 			"name":         e_name,
@@ -8874,8 +9200,8 @@ func start_dungeon(player_handles, enemy_level: int,
 			"actions_taken": 0,
 			"move_used": 0,
 			"equipped_weapon": e_weapon,
-			"equipped_armor":  "None",
-			"equipped_shield": "None",
+			"equipped_armor":  (e_armor if use_archetype else "None"),
+			"equipped_shield": (e_shield if use_archetype else "None"),
 			"equipped_light":  "None",
 			"conditions":    [],
 			"abilities":     e_abilities,
@@ -9717,6 +10043,79 @@ func get_available_weapon_actions(entity_id: String) -> Array:
 
 ## Returns available ability actions for the given entity.
 ## All non-free actions use escalating cost: Nth action = N AP.
+# ── Feat activation table ─────────────────────────────────────────────────────
+# [ [feat name(s) any-of], activation_id, button label, used-flag ("" = engine
+#   gates internally), description ]
+const FEAT_ACTIVATIONS: Array = [
+	# Pact summons
+	[["Chaos Pact Initiate", "Chaos Pact"], "chaos_pact", "🌀 Summon Chaos Creature", "chaos_pact_used", "Summon a Chaos Creature of your level. Once per rest."],
+	[["Unity Pact Initiate", "Unity Pact"], "unity_pact", "✨ Summon Radiant Guardian", "unity_pact_used", "Summon a Radiant Guardian of your level. Once per rest."],
+	[["Void Pact Initiate", "Void Pact"], "void_pact", "🌑 Summon Shadow Minion", "void_pact_used", "Summon a Shadow Minion of your level. Once per rest."],
+	[["Grasp of the Forgotten"], "grasp_forgotten", "👻 Spectral Hand", "", "Summon spectral hand(s) to fight for you."],
+	# Apex feats (1/long rest)
+	[["Arcane Overdrive"], "arcane_overdrive", "⚡ Arcane Overdrive", "arcane_overdrive_used", "+Divinity to all attacks for this combat. Once per rest."],
+	[["Iron Tempest"], "iron_tempest", "🌪 Iron Tempest", "iron_tempest_used", "All adjacent enemies take 1d10 + 2x STR. Once per rest."],
+	[["Cataclysmic Leap"], "cataclysmic_leap", "💥 Cataclysmic Leap", "cataclysmic_leap_used", "Adjacent enemies take 1d8 + STR and fall prone. Once per rest."],
+	[["Gravity Shatter"], "gravity_shatter", "🕳 Gravity Shatter", "gravity_shatter_used", "Adjacent enemies take 2d6 + DIV and are stunned. Once per rest."],
+	[["Howl Of The Forgotten"], "howl_of_the_forgotten", "🐺 Howl of the Forgotten", "howl_used", "Adjacent enemies take 1d6 + DIV and are frightened. Once per rest."],
+	[["Phantom Legion"], "phantom_legion", "👥 Phantom Legion", "phantom_legion_used", "Summon 3 Phantoms of your level. Once per rest."],
+	[["Soulflare Pulse"], "soulflare_pulse", "🔆 Soulflare Pulse", "soulflare_used", "Heal 3x DIV HP; adjacent enemies take half that. Once per rest."],
+	[["Stormbound Mantle"], "stormbound_mantle", "🌩 Stormbound Mantle", "stormbound_used", "+4 AC and +3 to hit for this combat. Once per rest."],
+	[["Temporal Rift"], "temporal_rift", "⏳ Temporal Rift", "temporal_rift_used", "Restore all AP instantly. Once per rest."],
+	[["Divine Reversal"], "divine_reversal", "🙏 Divine Reversal", "divine_reversal_used", "Fully restore HP/SP and clear conditions. Once per rest."],
+	[["Eclipse Veil"], "eclipse_veil", "🌒 Eclipse Veil", "eclipse_veil_used", "Become hidden and gain +5 AC. Once per rest."],
+	[["Mythic Regrowth"], "mythic_regrowth", "🌿 Mythic Regrowth", "mythic_regrowth_used", "Regenerate DIV + level HP per turn this combat. Once per rest."],
+	[["Runebreaker Surge"], "runebreaker_surge", "🔨 Runebreaker Surge", "runebreaker_used", "Strip adjacent enemies' buffs, -5 AC, 1d8 + DIV damage. Once per rest."],
+	[["Soulbrand"], "soulbrand", "🔥 Soulbrand", "soulbrand_used", "+level to attacks for this combat. Once per rest."],
+	[["Titans Echo"], "titans_echo", "🗿 Titan's Echo", "titans_echo_used", "Double max HP and fully heal. Once per rest."],
+	[["Voidbrand Curse"], "voidbrand_curse", "☠ Voidbrand Curse", "voidbrand_used", "Curse adjacent enemies: -3 AC, 1d10 + DIV damage. Once per rest."],
+	[["Worldbreaker Step"], "worldbreaker_step", "🌋 Worldbreaker Step", "worldbreaker_used", "Adjacent enemies take 3d6 + 2x STR and fall prone. Once per rest."],
+	[["Blood Of The Ancients"], "blood_of_the_ancients", "🩸 Blood of the Ancients", "blood_ancients_used", "+3 AC, regen, +2 attacks for this combat. Once per rest."],
+	# Ascendant transformations (1/long rest, shared flag)
+	[["Draconic Apotheosis"], "draconic_apotheosis", "🐉 Draconic Apotheosis", "ascendant_used", "Transform: +5 AC, +50% HP, enhanced attacks. Once per rest."],
+	[["Vampiric Ascension"], "vampiric_ascension", "🦇 Vampiric Ascension", "ascendant_used", "Transform: +3 AC, 50% lifesteal. Once per rest."],
+	[["Lich Binding"], "lich_binding", "💀 Lich Binding", "ascendant_used", "Transform: SP doubled, SP regen per turn. Once per rest."],
+	[["Infernal Coronation"], "infernal_coronation", "👑 Infernal Coronation", "ascendant_used", "Transform: +4 AC, +4 attack, +30% HP. Once per rest."],
+	[["Angelic Rebirth"], "angelic_rebirth", "😇 Angelic Rebirth", "ascendant_used", "Transform: full heal, regen, +3 AC. Once per rest."],
+	[["Seraphic Flame"], "seraphic_flame", "🔥 Seraphic Flame", "ascendant_used", "Transform: burn adjacent enemies, gain regen. Once per rest."],
+	[["Fey Lord's Pact"], "fey_lords_pact", "🍃 Fey Lord's Pact", "ascendant_used", "Transform: hidden, +6 AC, +DIV attacks. Once per rest."],
+	[["Primordial Elemental Fusion"], "primordial_elemental_fusion", "🌊 Elemental Fusion", "ascendant_used", "Transform: +5 AC, +5x level max HP. Once per rest."],
+	[["Stormbound Titan"], "stormbound_titan", "⛈ Stormbound Titan", "ascendant_used", "Transform: HP doubled, +4 AC, +5 attacks. Once per rest."],
+	[["Psychic Maw"], "psychic_maw", "🧠 Psychic Maw", "ascendant_used", "Stun and mind-crush adjacent enemies. Once per rest."],
+	[["Kaiju Core Integration"], "kaiju_core_integration", "🦖 Kaiju Core", "ascendant_used", "Transform: HP tripled, +6 AC, damage threshold. Once per rest."],
+	[["Cryptborn Sovereign"], "cryptborn_sovereign", "🪦 Cryptborn Sovereign", "ascendant_used", "Transform: +4 AC, lifesteal, raise undead servants. Once per rest."],
+	[["Hag Mother's Covenant"], "hag_mothers_covenant", "🕸 Hag Mother's Covenant", "ascendant_used", "Transform: SP tripled, +3 AC. Once per rest."],
+	[["Abyssal Unleashing"], "abyssal_unleashing", "😈 Abyssal Unleashing", "ascendant_used", "Transform: +50% HP, +level attacks, frighten enemies. Once per rest."],
+	[["Voidborn Mutation"], "voidborn_mutation", "🌌 Voidborn Mutation", "ascendant_used", "Transform: +5 AC, heavy regen, +DIV attacks. Once per rest."],
+	[["Lycanthropic Curse"], "lycanthropic_curse", "🐾 Lycanthropic Shift", "ascendant_used", "Transform: +50% HP, +2 AC, 25% lifesteal, +STR attacks. Once per rest."],
+	# Exploration / utility activations
+	[["Temporal Touch"], "temporal_touch", "⏱ Temporal Touch", "", "Haste yourself (1/short rest); at T3 also slows adjacent enemies (1/long rest)."],
+	# Miscellaneous 1/rest activations (engine gates usage internally)
+	[["Arc-Light Surge", "Arc Light Surge"], "arc_light_surge", "⚡ Arc-Light Surge", "", "Discharge an electric surge around you."],
+	[["Blade Scripture"], "blade_scripture", "🗡 Blade Scripture", "", "Inscribe a rune: weapon deals bonus damage and heals you on hit."],
+	[["Barkskin Ritual"], "barkskin_ritual", "🌳 Barkskin Ritual", "", "Grow bark armor: +2 AC, resist slashing."],
+	[["Breath of Stone"], "breath_of_stone", "🪨 Breath of Stone", "", "Brace: immune to push/prone, +2 AC."],
+	[["Chaos Flow", "Chaos's Flow"], "chaos_flow", "🎲 Chaos Flow", "", "Cast a random spell for free."],
+	[["Emberwake"], "emberwake", "🔥 Emberwake", "", "Ignite your wake."],
+	[["Flicker Sparky"], "flicker_sparky", "✨ Flicker Spark", "", "Flicker with sparking energy."],
+	[["Illusory Double"], "illusory_double", "🪞 Illusory Double", "", "Create an illusory double that absorbs attacks."],
+	[["Mirrorsteel Glint"], "mirrorsteel_glint", "🛡 Mirrorsteel Glint", "", "Ready to reflect the next spell cast at you."],
+	[["Refraction Twist"], "refraction_twist", "🌈 Refraction Twist", "", "Bend light: impose disadvantage on the next attack against you."],
+	[["Resonant Pulse"], "resonant_pulse", "📢 Resonant Pulse", "", "Release a resonant shockwave."],
+	[["Sacrifice"], "sacrifice", "🩸 Sacrifice", "", "Sacrifice vitality for power."],
+	[["Soulmark"], "soulmark", "🎯 Soulmark", "", "Mark a creature — you always know where it is."],
+	[["Spark Leech"], "spark_leech", "🔋 Spark Leech", "", "Leech magical energy."],
+	[["Temporal Shift"], "temporal_shift", "⏲ Temporal Shift", "", "Shift briefly through time."],
+	[["Tether Link"], "tether_link", "🔗 Tether Link", "", "Tether yourself to a creature."],
+	[["Verdant Pulse"], "verdant_pulse", "🌱 Verdant Pulse", "", "Release healing verdant energy."],
+	[["Veilbreaker Voice"], "veilbreaker_voice", "📣 Veilbreaker Voice", "", "Shatter veils and illusions with a word."],
+	[["Unity's Ebb"], "unitys_ebb", "🌊 Unity's Ebb", "", "Channel Unity: free healing spell or SP conversion."],
+	[["Erylon's Echo"], "erylons_echo", "🔔 Erylon's Echo", "", "Invoke Erylon's lingering echo."],
+	[["Astral Shear"], "astral_shear", "🌠 Astral Shear", "", "Phase through solid matter."],
+	[["Bender"], "bender", "🎛 Bend Fate", "", "Bend the outcome of a d20 roll."],
+	[["Echoed Steps"], "echoed_steps", "👣 Echoed Steps", "", "Leave echoing afterimages of your movement."],
+]
+
 func get_available_ability_actions(entity_id: String) -> Array:
 	var ent = _dung_find(entity_id)
 	if ent == null or not ent["is_player"] or ent["is_dead"]: return []
@@ -9724,6 +10123,53 @@ func get_available_ability_actions(entity_id: String) -> Array:
 	var actions: Array = []
 	# Hoisted: IWM/Twin Fang/Parry blocks below all need the int handle.
 	var handle: int = int(ent.get("handle", -1))
+
+	# ── Summon abilities: when this entity is a player-controlled summon
+	# (handle == -1, has its own abilities array), surface every ability the
+	# caster picked at summon time as an Ability-category action. The
+	# generic ACT_SUMMON_ABILITY dispatcher handles the dice + condition
+	# resolution. Cooldowns keyed by ability name on the entity dict.
+	if bool(ent.get("is_summon", false)):
+		var sum_abilities: Array = ent.get("abilities", [])
+		var ab_cds: Dictionary = ent.get("ability_cooldowns", {})
+		for ab in sum_abilities:
+			var ab_dict: Dictionary = ab if ab is Dictionary else {}
+			if ab_dict.is_empty(): continue
+			var ab_name: String = str(ab_dict.get("name", "Ability"))
+			# Skip the auto-added "Strike" — the basic melee is already
+			# surfaced through the weapon column.
+			if ab_name == "Strike":
+				continue
+			var ab_ap: int = int(ab_dict.get("ap", 1))
+			var ab_sp: int = int(ab_dict.get("sp", 0))
+			var ab_range: int = int(ab_dict.get("range", 1))
+			var on_cd: bool = bool(ab_cds.get(ab_name, false))
+			var cd_str: String = str(ab_dict.get("cd", "none"))
+			var dice: Array = ab_dict.get("dice", [0, 0])
+			var dn: int = int(dice[0]) if dice.size() > 0 else 0
+			var ds: int = int(dice[1]) if dice.size() > 1 else 0
+			var dmg_str: String = ""
+			if dn > 0 and ds > 0:
+				dmg_str = " · %dd%d dmg" % [dn, ds]
+			var conds: Array = ab_dict.get("conds", [])
+			var cond_str: String = ""
+			if not conds.is_empty():
+				cond_str = " · " + ", ".join(conds.map(func(c): return str(c)))
+			var label: String = "%s%s%s%s" % [
+				ab_name, dmg_str, cond_str,
+				" [CD]" if on_cd else ""]
+			# Range > 0 → needs a target. _make_action range_idx 1 = melee.
+			actions.append(_make_action(
+				label, "Ability", ACT_SUMMON_ABILITY, ab_ap,
+				ab_sp, ab_range > 0, false,
+				ab_name,    # stuff ability name in matrix_id slot for dispatch
+				0, 1, false, (1 if ab_range <= 1 else 2),
+				"%s%s%s. %s%s" % [
+					"AP %d" % ab_ap,
+					(", SP %d" % ab_sp) if ab_sp > 0 else "",
+					(", range %d" % ab_range) if ab_range > 0 else "",
+					str(ab_dict.get("desc", "")),
+					(" (Cooldown: %s)" % cd_str) if cd_str != "none" else ""]))
 
 	# Dodge — escalating AP cost, grants +3 AC until next turn
 	actions.append(_make_action(
@@ -9906,6 +10352,31 @@ func get_available_ability_actions(entity_id: String) -> Array:
 						0, false, false, "minion_consciousness", 0, 1, false, 0,
 						"Fall unconscious and transfer consciousness to a minion. Once per long rest."))
 
+	# ── Feat activations (apex / ascendant / pact / misc) ─────────────────────
+	# Every entry maps an activation id (handled in dung_activate_summon_feat)
+	# to the feat name(s) that unlock it, a button label, an optional
+	# "already used" flag on the entity, and a short description.
+	# Previously none of these had UI buttons, so the feats did nothing.
+	if handle >= 0 and _chars.has(handle):
+		var owned_feats: Dictionary = _chars[handle].get("feats", {})
+		for fa in FEAT_ACTIVATIONS:
+			var fa_names: Array = fa[0]
+			var fa_id: String = str(fa[1])
+			var fa_label: String = str(fa[2])
+			var fa_used_flag: String = str(fa[3])
+			var fa_desc: String = str(fa[4])
+			var owns: bool = false
+			for fn in fa_names:
+				if owned_feats.has(fn):
+					owns = true
+					break
+			if not owns: continue
+			if fa_used_flag != "" and bool(ent.get(fa_used_flag, false)): continue
+			actions.append(_make_action(
+				fa_label, "Ability", ACT_SUMMON_FEAT, next_cost,
+				0, false, false, fa_id, 0, 1, false, 0,
+				"%s (%d AP)" % [fa_desc, next_cost]))
+
 	# ── Construct management actions ──
 	var active_constructs: Array = ent.get("_active_constructs", [])
 	if not active_constructs.is_empty():
@@ -9983,6 +10454,37 @@ func get_available_ability_actions(entity_id: String) -> Array:
 	return actions
 
 ## Returns spell actions for the entity based on their learned spells.
+## Pure preview of the SP a caster will actually pay for a spell — mirrors the
+## modifier chain applied at cast time in _dung_dispatch_spell (alignment +
+## regional + feat discounts, ritual, Arcane Wellspring, domain expertise)
+## WITHOUT consuming charges or flags. Used so the cast menu shows real costs.
+func get_effective_spell_cost(ent: Dictionary, spell_name: String, is_ritual: bool = false) -> int:
+	_ensure_spell_db()
+	if not _SPELL_DB.has(spell_name): return 0
+	var s: Dictionary = _SPELL_DB[spell_name]
+	if bool(s.get("ritual", false)): return 0
+	var sp_cost: int = int(s.get("sc", 0))
+	var spell_dom: String = str(s.get("dom", "Physical"))
+	var total_mod: int = _alignment_sp_modifier(ent, spell_dom)
+	total_mod += _regional_sp_modifier()
+	total_mod += _feat_sp_modifier(ent, spell_dom)
+	sp_cost = maxi(0, sp_cost + total_mod)
+	sp_cost = _ritual_adjusted_cost(sp_cost, is_ritual)
+	# Arcane Wellspring preview (side-effect-free mirror of _arcane_wellspring_sp_modify)
+	var aw_ch: int = int(ent.get("handle", -1))
+	if aw_ch >= 0 and _chars.has(aw_ch):
+		var aw_feats: Dictionary = _chars[aw_ch].get("feats", {})
+		if aw_feats.has("Arcane Wellspring"):
+			var aw_tier: int = int(aw_feats["Arcane Wellspring"])
+			if aw_tier >= 5 and int(ent.get("aw_free_cast_budget", 0)) >= sp_cost:
+				return 0
+			if aw_tier >= 1 and not bool(ent.get("aw_deep_used", false)):
+				var aw_div: int = int(_chars[aw_ch].get("stats", [1,1,1,1,1])[4])
+				sp_cost = maxi(0, sp_cost - aw_div)
+	if bool(ent.get("blood_magic_free_spell", false)):
+		return 0
+	return _domain_expertise_sp_modify(ent, spell_dom, sp_cost)
+
 func get_available_spell_actions(entity_id: String) -> Array:
 	_ensure_spell_db()
 	var ent = _dung_find(entity_id)
@@ -10009,11 +10511,16 @@ func get_available_spell_actions(entity_id: String) -> Array:
 		# Skip spells that are already sustained as active matrices
 		if active_matrix_names.has(spell_name): continue
 		var s: Dictionary = _SPELL_DB[spell_name]
-		var sc: int = int(s["sc"])
+		var base_sc: int = int(s["sc"])
 		var spell_is_ritual: bool = bool(s.get("ritual", false))
-		# Ritual spells cost 0 SP — they are never gated by SP
+		# Ritual spells cost 0 SP — they are never gated by SP.
+		# Non-rituals show the EFFECTIVE cost (alignment/domain/feat discounts),
+		# matching what _dung_dispatch_spell will actually charge.
+		var sc: int
 		if spell_is_ritual:
 			sc = 0
+		else:
+			sc = get_effective_spell_cost(ent, spell_name)
 		# Always include spells so the UI can show them (grayed out if unaffordable).
 		# The button renderer in dungeon.gd handles disabling based on AP/SP.
 
@@ -10027,6 +10534,17 @@ func get_available_spell_actions(entity_id: String) -> Array:
 		else:         range_idx = 3
 
 		var desc_suffix: String = " [Ritual] (%d AP)" % next_cost if spell_is_ritual else " (%d AP)" % next_cost
+		# Show the discount and, for non-attack harmful spells, the save DC the
+		# target must beat — so players can judge a spell before casting it.
+		if not spell_is_ritual and sc != base_sc:
+			desc_suffix += "  SP %d→%d" % [base_sc, sc]
+		var is_harmful_spell: bool = not bool(s["heal"]) \
+			and (int(s["dc"]) > 0 or not s.get("conds", []).is_empty())
+		if is_harmful_spell:
+			if bool(s["atk"]):
+				desc_suffix += "  • Attack roll"
+			else:
+				desc_suffix += "  • Save DC %d" % _spell_save_dc(ent)
 		var act: Dictionary = _make_action(
 			spell_name, "Spell", ACT_CAST_SPELL,
 			next_cost,                # escalating AP cost
@@ -10102,6 +10620,79 @@ func get_available_item_actions(entity_id: String) -> Array:
 	return actions
 
 ## Dispatch a lineage trait activation: marks cooldown, applies generic effect.
+## Generic dispatcher for summon-creature abilities (the abilities the
+## player picked at summon time). Looks up the ability dict on the entity,
+## rolls a basic attack vs target AC if range > 0, deals dice damage on
+## hit, applies any conditions in the ability's conds list, then sets a
+## cooldown flag if applicable.
+func _dung_dispatch_summon_ability(ent: Dictionary, ability_name: String,
+		target_id: String, ap_cost: int, sp_cost: int) -> Dictionary:
+	if ability_name == "":
+		return _dung_fail("No ability selected.")
+	var ab_list: Array = ent.get("abilities", [])
+	var ab: Dictionary = {}
+	for a in ab_list:
+		if a is Dictionary and str(a.get("name", "")) == ability_name:
+			ab = a
+			break
+	if ab.is_empty():
+		return _dung_fail("Ability '%s' not on this creature." % ability_name)
+	# Cooldown check.
+	var ab_cds: Dictionary = ent.get("ability_cooldowns", {})
+	if bool(ab_cds.get(ability_name, false)):
+		return _dung_fail("'%s' is on cooldown." % ability_name)
+	# Resolve target if needed.
+	var ab_range: int = int(ab.get("range", 1))
+	var tgt: Dictionary = {}
+	if ab_range > 0 and target_id != "":
+		var t = _dung_find(target_id)
+		if t != null and not t.is_empty():
+			tgt = t
+	# Pay costs first.
+	ent["ap_spent"] = int(ent.get("ap_spent", 0)) + ap_cost
+	ent["sp"] = maxi(0, int(ent.get("sp", 0)) - sp_cost)
+	var log_lines: Array = ["%s uses %s." % [
+		str(ent.get("name", "Summon")), ability_name]]
+	# Roll a simple d20+stat hit vs target AC.
+	var hit: bool = true
+	if not tgt.is_empty() and bool(ab.get("conds", []) != null):
+		var stats: Array = ent.get("stats", [1, 1, 1, 1, 1])
+		var atk_bonus: int = int(stats[0]) if stats.size() > 0 else 0
+		var roll: int = randi_range(1, 20) + atk_bonus
+		var ac: int = int(tgt.get("ac", 10))
+		hit = (roll >= ac)
+		log_lines.append("Roll %d vs AC %d → %s" % [
+			roll, ac, "HIT" if hit else "MISS"])
+	# Damage.
+	if hit and not tgt.is_empty():
+		var dice: Array = ab.get("dice", [0, 0])
+		var dn: int = int(dice[0]) if dice.size() > 0 else 0
+		var ds: int = int(dice[1]) if dice.size() > 1 else 0
+		if dn > 0 and ds > 0:
+			var dmg: int = 0
+			for _i in range(dn):
+				dmg += randi_range(1, ds)
+			tgt["hp"] = maxi(0, int(tgt.get("hp", 0)) - dmg)
+			log_lines.append("Deals %d damage (%dd%d)." % [dmg, dn, ds])
+			if int(tgt["hp"]) <= 0 and not bool(tgt.get("is_player", false)):
+				tgt["is_dead"] = true
+				log_lines.append("%s is slain!" % str(tgt.get("name", "Target")))
+		# Apply conditions.
+		var conds: Array = ab.get("conds", [])
+		for c in conds:
+			var cs: String = str(c)
+			if cs != "":
+				_dung_add_condition(tgt, cs)
+				log_lines.append("Applied %s." % cs)
+	# Set cooldown if not "none".
+	var cd_str: String = str(ab.get("cd", "none"))
+	if cd_str != "" and cd_str != "none" and cd_str != "passive":
+		ab_cds[ability_name] = true
+		ent["ability_cooldowns"] = ab_cds
+	# Bump action counter.
+	ent["actions_taken"] = int(ent.get("actions_taken", 0)) + 1
+	return _dung_ok("\n".join(log_lines), ap_cost, sp_cost)
+
 func _dung_dispatch_trait(ent: Dictionary, trait_id: String, ap_cost: int) -> Dictionary:
 	var handle: int = int(ent.get("handle", -1))
 	var key: String = "%d:%s" % [handle, trait_id]
@@ -10924,6 +11515,18 @@ func dungeon_advance_enemy_phase() -> Array:
 		if ent["is_player"] and not bool(ent.get("is_dying", false)):
 			_dungeon_player_queue.append(ent["id"])
 
+	# Drain condition-tick and death-save log lines stashed on entities during
+	# the round-start _dung_tick_conditions pass above, so damage-over-time and
+	# lost-turn events surface in the battle log THIS round (the earlier drain
+	# only catches lines stashed during the enemy phase).
+	for ent2 in _dungeon_entities:
+		for stash_key in ["tick_logs", "death_save_logs"]:
+			var stash: Array = ent2.get(stash_key, [])
+			if stash.size() > 0:
+				for log_text in stash:
+					logs.append(str(log_text))
+				ent2[stash_key] = []
+
 	_update_fog()   # refresh visibility at round start
 	return logs
 
@@ -11004,13 +11607,46 @@ func move_dungeon_player(id: String, nx: int, ny: int) -> bool:
 	ent["y"] = ny
 	ent["move_used"] += cost   # movement costs tiles only — never AP
 
-	# If this entity is grappling, move the grappled target to the old position
+	# If this entity is grappling, the target rolls a STR save (DC 10 + grappler
+	# STR) to break free as soon as the grappler tries to move them. Pass:
+	# grapple ends, target stays put. Fail: target is dragged to the
+	# grappler's old tile so it remains within 1 space.
 	var grappling_id: String = str(ent.get("grappling", ""))
 	if grappling_id != "":
 		var grappled = _dung_find(grappling_id)
 		if grappled != null:
-			grappled["x"] = old_x
-			grappled["y"] = old_y
+			# Grappler STR — pulls from char sheet for players, from the
+			# entity's own stats array for enemies/creatures.
+			var grap_h: int = int(ent.get("handle", -1))
+			var grap_str: int = 0
+			if grap_h >= 0 and _chars.has(grap_h):
+				grap_str = int(_chars[grap_h].get("stats", [1,1,1,1,1])[0])
+			else:
+				var ent_stats: Array = ent.get("stats", [])
+				if ent_stats.size() >= 5:
+					grap_str = int(ent_stats[0])
+			var save_dc: int = 10 + grap_str
+			var broke_free: bool = _spell_save_roll(grappled, save_dc, 0)  # STR save
+			if broke_free:
+				# Target wrenches free.
+				_dung_remove_condition(grappled, "grappled")
+				grappled.erase("grappled_by")
+				ent.erase("grappling")
+				var holds: Array = ent.get("_grappled_ids", [])
+				holds.erase(grappling_id)
+				ent["_grappled_ids"] = holds
+				ent["_grapple_holds"] = maxi(0,
+					int(ent.get("_grapple_holds", 1)) - 1)
+				print("[Grapple] %s wrenched free of %s (DC %d STR save)" % [
+					str(grappled.get("name", "?")),
+					str(ent.get("name", "?")), save_dc])
+			else:
+				# Save failed → dragged to grappler's old tile.
+				grappled["x"] = old_x
+				grappled["y"] = old_y
+				print("[Grapple] %s drags %s along (DC %d STR save failed)" % [
+					str(ent.get("name", "?")),
+					str(grappled.get("name", "?")), save_dc])
 
 	_update_fog()
 	# Dungeon Crawl: after the player moves, run perception checks against
@@ -11071,6 +11707,20 @@ func _enraged_movement_forbidden(ent: Dictionary, dest_x: int, dest_y: int) -> b
 	var dest_dist: int = absi(dest_x - src_x) + absi(dest_y - src_y)
 	return dest_dist > cur_dist
 
+## Frightened (PHB): cannot willingly move closer to the source of fear.
+## Returns true if the destination tile would DECREASE distance to the source.
+func _frightened_movement_forbidden(ent: Dictionary, dest_x: int, dest_y: int) -> bool:
+	if not _dung_has_condition(ent, "frightened"): return false
+	var src_id: String = str(ent.get("cond_src", {}).get("frightened", ""))
+	if src_id == "": return false
+	var src = _dung_find(src_id)
+	if src == null or src.get("is_dead", false): return false
+	var src_x: int = int(src.get("x", -99))
+	var src_y: int = int(src.get("y", -99))
+	var cur_dist: int = absi(int(ent.get("x", 0)) - src_x) + absi(int(ent.get("y", 0)) - src_y)
+	var dest_dist: int = absi(dest_x - src_x) + absi(dest_y - src_y)
+	return dest_dist < cur_dist
+
 func get_valid_dungeon_moves(id: String) -> Array:
 	var ent = _dung_find(id)
 	if ent == null or not ent["is_player"] or ent["is_dead"]: return []
@@ -11097,9 +11747,11 @@ func get_valid_dungeon_moves(id: String) -> Array:
 	while not queue.is_empty():
 		var cur: Dictionary = queue.pop_front()
 		# Reachable stop tile: cost > 0 and not blocked by a standing ally,
-		# AND not forbidden by Fury's Call enrage tether (T2/T5).
+		# AND not forbidden by Fury's Call enrage tether (T2/T5),
+		# AND not forbidden by the frightened condition (can't approach source).
 		if cur["cost"] > 0 and not cur["pass_only"]:
-			if not _enraged_movement_forbidden(ent, int(cur["x"]), int(cur["y"])):
+			if not _enraged_movement_forbidden(ent, int(cur["x"]), int(cur["y"])) \
+					and not _frightened_movement_forbidden(ent, int(cur["x"]), int(cur["y"])):
 				result.append({"x": cur["x"], "y": cur["y"], "tile_cost": cur["cost"]})
 		if cur["cost"] >= budget: continue
 
@@ -11232,6 +11884,9 @@ func dungeon_perform_action(
 			result = _dung_dispatch_end_matrix(ent, str(action.get("matrix_id","")), ap_cost)
 		ACT_TRAIT:
 			result = _dung_dispatch_trait(ent, str(action.get("matrix_id","")), ap_cost)
+		ACT_SUMMON_ABILITY:
+			result = _dung_dispatch_summon_ability(
+				ent, str(action.get("matrix_id", "")), target_id, ap_cost, sp_cost)
 		ACT_FLY_TOGGLE:
 			result = dungeon_toggle_fly(entity_id)
 		ACT_FLY_LAND:
@@ -12705,22 +13360,28 @@ func _spell_apply_to_target(
 		var dc: int = _spell_save_dc(caster)
 		# Condition-only spells: INT save; damage-heavy spells: VIT save
 		var save_stat: int = 2 if die_count == 0 else 3
+		var save_stat_name: String = "INT" if save_stat == 2 else "VIT"
 		if _spell_save_roll(tgt, dc, save_stat):
 			if die_count > 0:
 				save_halved = true
 			if not conds.is_empty():
 				save_nullified = true
-			parts.append("SAVED vs DC%d" % dc)
+			parts.append("SAVED vs DC%d (%s save)" % [dc, save_stat_name])
+		else:
+			parts.append("FAILED save vs DC%d (%s)" % [dc, save_stat_name])
 
 	# Damage
 	if (is_attack or is_harm_effect) and die_count > 0 and die_sides > 0 and not is_heal:
-		var dmg: int = _roll_dice(die_count, die_sides)
+		var spell_dmg_base: int = _roll_dice(die_count, die_sides)
+		var dmg: int = spell_dmg_base
 		# Blood Magic T2+: add caster's Vitality score to spell damage
 		var bm_vit_bonus: int = _blood_magic_vitality_bonus(caster)
 		dmg += bm_vit_bonus
+		var pre_save_dmg: int = dmg
 		if save_halved:
 			dmg = maxi(1, dmg / 2)
 		# Magic-item resistances (e.g. Stormbound Cloak halves lightning/thunder)
+		var pre_resist_dmg: int = dmg
 		dmg = _apply_magic_resistances(tgt, dmg, dmg_type)
 		_dung_reduce_hp(tgt, dmg)
 		if tgt["hp"] == 0 and not bool(tgt.get("is_player", false)):
@@ -12730,7 +13391,16 @@ func _spell_apply_to_target(
 		if t_handle >= 0 and _chars.has(t_handle): _chars[t_handle]["hp"] = tgt["hp"]
 		var dead_sfx: String = " [DEFEATED]" if bool(tgt["is_dead"]) else ""
 		var type_sfx: String = (" %s" % dmg_type) if dmg_type != "" else ""
-		parts.append("dealt %d%s dmg%s" % [dmg, type_sfx, dead_sfx])
+		# Build a breakdown: dice + VIT bonus + (halved on save) + (resist).
+		var dmg_break: Array = ["%dd%d=%d" % [die_count, die_sides, spell_dmg_base]]
+		if bm_vit_bonus != 0:
+			dmg_break.append("+VIT(%d)" % bm_vit_bonus)
+		if save_halved:
+			dmg_break.append("÷2 saved")
+		if dmg != pre_resist_dmg:
+			dmg_break.append("-resist(%d)" % (pre_resist_dmg - dmg))
+		parts.append("dealt %d%s dmg%s  [%s]" % [
+			dmg, type_sfx, dead_sfx, " ".join(dmg_break)])
 		# Blood Magic on-kill trigger (T4: regain SP, T5: heal + free spell)
 		if bool(tgt.get("is_dead", false)):
 			var bm_log: String = _blood_magic_on_kill(caster)
@@ -12752,7 +13422,7 @@ func _spell_apply_to_target(
 							tgt["x"] = nx; tgt["y"] = ny
 					parts.append("pushed 5ft")
 				else:
-					_dung_add_condition(tgt, auto_cond)
+					_dung_add_condition(tgt, auto_cond, str(caster.get("id", "")))
 					parts.append(auto_cond)
 
 	# Healing
@@ -12795,7 +13465,7 @@ func _spell_apply_to_target(
 	for cond in conds:
 		if save_nullified: break
 		if not bool(tgt.get("is_dead", false)):
-			_dung_add_condition(tgt, cond)
+			_dung_add_condition(tgt, cond, str(caster.get("id", "")))
 			parts.append(cond)
 
 	var effect_str: String = (", ".join(parts)) if not parts.is_empty() else "no effect"
@@ -12915,6 +13585,13 @@ func _spell_save_roll(target: Dictionary, dc: int, stat_idx: int = 3) -> bool:
 	else:
 		bonus = int(target.get("save_bonus", 2))
 
+	# Cursed (curse brand): -2 to saving throws
+	if _dung_has_condition(target, "cursed"):
+		bonus -= 2
+	# Exhausted (PHB): penalty to all checks equal to exhaustion level
+	if _dung_has_condition(target, "exhausted"):
+		bonus -= maxi(1, int(target.get("exhaustion_stacks", 1)))
+
 	var roll: int = randi_range(1, 20)
 
 	# Safeguard T2: Once/SR advantage on saving throw with chosen stat
@@ -12969,8 +13646,8 @@ func _spell_save_roll(target: Dictionary, dc: int, stat_idx: int = 3) -> bool:
 					if ent.get("is_dead", false): continue
 					if int(ent.get("handle", -1)) == ch: continue
 					if int(ent.get("handle", -1)) >= 0:  # ally (has handle = party member)
-						if not ent.has("conditions"): ent["conditions"] = {}
-						ent["conditions"]["safeguard_inspire"] = 1  # +1d4 next action
+						if not ent.has("conditions"): ent["conditions"] = []
+						_dung_add_condition(ent, "safeguard_inspire")  # +1d4 next action
 
 	# Safeguard T5: Once/SR on successful save, regain HP equal to Level
 	if success and ch >= 0 and _chars.has(ch):
@@ -13062,6 +13739,25 @@ func _feat_sp_modifier(caster: Dictionary, spell_dom: String) -> int:
 		var t2: int = int(feats.get("Spell Shaper", 0)) if feats.get("Spell Shaper") is int \
 			else (1 if feats["Spell Shaper"] else 0)
 		delta -= clampi(t2, 0, 2)
+	# Alignment Initiate/Scholar feats, Tier 3: "orb of chaos/light/shadows,
+	# −1 spell cost" for spells in the alignment's favored domain(s).
+	# Favored domains mirror _alignment_sp_modifier:
+	#   Chaos → Chemical & Physical, Unity → Biological, Void → Spiritual.
+	var align_feat_domains: Dictionary = {
+		"Chaos Initiate":        ["Chemical", "Physical"],
+		"Chaos Scholar":         ["Chemical", "Physical"],
+		"Unity Scholar Initiate":["Biological"],
+		"Unity Scholar":         ["Biological"],
+		"Void Initiate":         ["Spiritual"],
+		"Void Scholar":          ["Spiritual"],
+	}
+	for af_name in align_feat_domains:
+		if not feats.has(af_name): continue
+		var af_tier: int = int(feats.get(af_name, 0)) if feats.get(af_name) is int \
+			else (1 if feats[af_name] else 0)
+		if af_tier >= 3 and spell_dom in align_feat_domains[af_name]:
+			delta -= 1
+			break  # orbs don't stack across multiple alignment feats
 	# Blood Magic (magic feat) Tier 4: spend HP to reduce spell SP cost
 	# (tier1 already grants 2HP→1SP via active ability, handled elsewhere; this
 	# is the passive discount when the feat is unlocked at tier 4+).
@@ -13337,10 +14033,47 @@ func _domain_expertise_sp_modify(caster: Dictionary, spell_dom: String, sp_cost:
 
 ## Internal attack resolution used by both player and enemy attacks.
 func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarmed: bool, cover_bonus: int = 0) -> Dictionary:
+	# ── PHB hard blocks: calm & charmed ──────────────────────────────────────────
+	# Calm (bless): cannot take hostile actions while calm.
+	if _dung_has_condition(atk, "calm"):
+		return {"hit": false, "damage": 0,
+			"log": "%s is becalmed and cannot take hostile actions!" % atk["name"],
+			"target_dead": false, "target_id": tgt["id"]}
+	# Charmed (curse): can't harm the charmer.
+	if _dung_has_condition(atk, "charmed"):
+		var charm_src: String = str(atk.get("cond_src", {}).get("charmed", ""))
+		if charm_src != "" and charm_src == str(tgt.get("id", "")):
+			return {"hit": false, "damage": 0,
+				"log": "%s is charmed and cannot bring themselves to harm %s!" % [
+					atk["name"], tgt["name"]],
+				"target_dead": false, "target_id": tgt["id"]}
+
 	# ── Condition modifiers ───────────────────────────────────────────────────────
 	# Blinded attacker: roll twice, take lower
 	var advantage_atk: bool  = false
 	var disadvantage_atk: bool = _dung_has_condition(atk, "blinded")
+
+	# Frightened attacker: attacks have disadvantage (PHB curse table)
+	if _dung_has_condition(atk, "frightened"):
+		disadvantage_atk = true
+
+	# Fever (curse): disadvantage on attack rolls
+	if _dung_has_condition(atk, "fever"):
+		disadvantage_atk = true
+
+	# Invisible target: attackers can't see them — disadvantage, unless the
+	# target is also glowing (Faerie Fire style: glow cancels invisibility).
+	if _dung_has_condition(tgt, "invisible") and not _dung_has_condition(tgt, "glowing"):
+		disadvantage_atk = true
+
+	# Invisible attacker: advantage on attack, then invisibility is revealed
+	if _dung_has_condition(atk, "invisible"):
+		advantage_atk = true
+		_dung_remove_condition(atk, "invisible")
+
+	# Glowing target (Faerie Fire): attacks against have advantage
+	if _dung_has_condition(tgt, "glowing"):
+		advantage_atk = true
 
 	# Prone target: ranged attackers have disadvantage, melee have advantage
 	var is_ranged_atk: bool = _weapon_is_ranged(weapon)
@@ -13348,8 +14081,9 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 		if is_ranged_atk: disadvantage_atk = true
 		else:             advantage_atk    = true
 
-	# Paralyzed / stunned target: attacks against have advantage
-	if _dung_has_condition(tgt, "paralyzed") or _dung_has_condition(tgt, "stunned"):
+	# Paralyzed / stunned / unconscious target: attacks against have advantage
+	if _dung_has_condition(tgt, "paralyzed") or _dung_has_condition(tgt, "stunned") \
+			or _dung_has_condition(tgt, "unconscious"):
 		advantage_atk = true
 
 	# Restrained target: attacks against have advantage
@@ -13404,6 +14138,12 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 	hit_bonus += int(atk.get("hit_bonus_buff", 0))
 	# Penalty from injuries (e.g. Broken Arm)
 	hit_bonus -= int(atk.get("hit_penalty", 0))
+	# Exhausted (PHB): penalty to all checks equal to exhaustion level
+	if _dung_has_condition(atk, "exhausted"):
+		hit_bonus -= maxi(1, int(atk.get("exhaustion_stacks", 1)))
+	# Cursed (generic curse brand, e.g. Voidbrand): -2 to attack rolls
+	if _dung_has_condition(atk, "cursed"):
+		hit_bonus -= 2
 	var atk_z: int = int(atk.get("z", 1))
 	var tgt_z: int = int(tgt.get("z", 1))
 	if atk_z > tgt_z: hit_bonus += 1
@@ -13616,22 +14356,37 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 						weapon, _get_equip_hp(_ac, "weapon")]
 
 		return {"hit": false, "damage": 0,
-			"log": "%s attacks %s — MISS! (rolled %d vs AC %d)%s%s" % [
-				atk["name"], tgt["name"], roll, effective_ac, elev_note, crit_fail_note],
+			"log": "%s attacks %s — MISS! (rolled %d vs AC %d)%s%s  [d20:%d+%d=%d]" % [
+				atk["name"], tgt["name"], roll, effective_ac, elev_note, crit_fail_note,
+				raw_roll, hit_bonus, roll],
 			"target_dead": false, "target_id": tgt["id"]}
 
 	# ── Damage ────────────────────────────────────────────────────────────────────
+	# Track checkpoints so we can show the player a clean breakdown in the
+	# battle log: base weapon roll → +feat bonuses → +misc bonuses → ×crit.
 	var dmg: int
+	var base_label: String = ""
 	if is_unarmed:
 		# Iron Fist: T1 1d6, T2 1d8, T3 1d10
-		if if_t >= 3: dmg = randi_range(1, 10) + int(atk_stats[0])
-		elif if_t >= 2: dmg = randi_range(1, 8) + int(atk_stats[0])
-		elif if_t >= 1: dmg = randi_range(1, 6) + int(atk_stats[0])
-		else: dmg = randi_range(1, 4) + 1
+		if if_t >= 3:
+			dmg = randi_range(1, 10) + int(atk_stats[0])
+			base_label = "1d10+STR(%d)" % int(atk_stats[0])
+		elif if_t >= 2:
+			dmg = randi_range(1, 8) + int(atk_stats[0])
+			base_label = "1d8+STR(%d)" % int(atk_stats[0])
+		elif if_t >= 1:
+			dmg = randi_range(1, 6) + int(atk_stats[0])
+			base_label = "1d6+STR(%d)" % int(atk_stats[0])
+		else:
+			dmg = randi_range(1, 4) + 1
+			base_label = "1d4+1"
 	elif weapon == "" or weapon == "None":
 		dmg = randi_range(1, 6) + 1
+		base_label = "1d6+1 (improvised)"
 	else:
 		dmg = _weapon_damage(weapon)
+		base_label = "%s" % weapon
+	var dmg_base: int = dmg
 
 	# Weapon Mastery: +1 damage per tier
 	if wm_t >= 1:
@@ -13707,6 +14462,9 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 	# ── Crafting & Artifice energy core: +1d6 elemental ──────────────────────────
 	if bool(atk.get("energy_core_active", false)):
 		dmg += _roll_dice(1, 6)
+
+	# Snapshot after all feat damage bonuses for the breakdown log line.
+	var dmg_after_feats: int = dmg
 
 	# ── Magic item damage bonus (Anvilstone +1, etc.) ────────────────────────────
 	dmg += _magic_item_bonus(atk_h, "dmg_bonus")
@@ -14035,8 +14793,30 @@ func _dung_do_attack(atk: Dictionary, tgt: Dictionary, weapon: String, is_unarme
 	var suffix: String = " [DEFEATED]" if dead else ""
 	var ss_note: String = (" " + _ss_revert_msg) if _ss_revert_msg != "" else ""
 	var mm_note: String = mm_transfer_msg  # already has leading space if non-empty
+	# Breakdown line: roll → AC → damage components.
+	var feat_bonus: int = dmg_after_feats - dmg_base
+	var misc_bonus: int = dmg - dmg_after_feats
+	# Note: dmg has already been crit-doubled / halved at this point. Show
+	# the pre-modifier sum so the breakdown adds up cleanly.
+	var pre_mult: int = dmg_base + feat_bonus + misc_bonus
+	var breakdown_parts: Array = []
+	breakdown_parts.append("d20:%d+%d=%d vs AC %d" % [
+		raw_roll, hit_bonus, roll, effective_ac])
+	breakdown_parts.append("dmg %s=%d" % [base_label, dmg_base])
+	if feat_bonus != 0:
+		breakdown_parts.append("feats%+d" % feat_bonus)
+	if misc_bonus != 0:
+		breakdown_parts.append("misc%+d" % misc_bonus)
+	if dmg != pre_mult:
+		breakdown_parts.append("→×crit/dmg-mod=%d" % dmg)
+	# Settings.verbose_battle_log toggles the dice breakdown suffix.
+	var verbose_log: bool = bool(Engine.get_meta("verbose_battle_log", true))
+	var breakdown: String = ""
+	if verbose_log:
+		breakdown = "  [%s]" % " · ".join(
+			breakdown_parts.map(func(s): return str(s)))
 	return {"hit": true, "damage": dmg,
-		"log": "%s attacks %s for %d damage%s%s%s!%s%s%s%s" % [atk["name"], tgt["name"], dmg, crit_note, elev_note, suffix, ss_note, mm_note, dur_note, dr_note],
+		"log": "%s attacks %s for %d damage%s%s%s!%s%s%s%s%s" % [atk["name"], tgt["name"], dmg, crit_note, elev_note, suffix, ss_note, mm_note, dur_note, dr_note, breakdown],
 		"target_dead": dead, "target_id": tgt["id"]}
 
 # ── Legacy compatibility wrappers ─────────────────────────────────────────────
@@ -14226,12 +15006,20 @@ func _get_enemies_in_burst(id: String, radius: int) -> Array:
 func _dung_has_condition(ent: Dictionary, cond: String) -> bool:
 	return cond in ent.get("conditions", [])
 
-func _dung_add_condition(ent: Dictionary, cond: String) -> void:
+func _dung_add_condition(ent: Dictionary, cond: String, src_id: String = "") -> void:
 	if not _dung_has_condition(ent, cond):
 		ent["conditions"].append(cond)
+	# Track the source of source-dependent conditions (charmed: can't harm the
+	# charmer; frightened: can't approach the source). PHB conditions table.
+	if src_id != "" and (cond == "charmed" or cond == "frightened"):
+		var srcs: Dictionary = ent.get("cond_src", {})
+		srcs[cond] = src_id
+		ent["cond_src"] = srcs
 
 func _dung_remove_condition(ent: Dictionary, cond: String) -> void:
 	ent["conditions"].erase(cond)
+	if ent.has("cond_src"):
+		ent["cond_src"].erase(cond)
 
 ## Perform a death saving throw for a dying entity. Returns log string.
 func _do_death_save(ent: Dictionary) -> String:
@@ -14277,6 +15065,14 @@ func _do_death_save(ent: Dictionary) -> String:
 		return "%s stabilizes! (rolled %d, 3/3 successes) — unconscious but stable." % [name, roll]
 	var status: String = "(rolled %d — %d/3 successes, %d/3 failures)" % [roll, successes, failures]
 	return "%s makes a death saving throw %s" % [name, status]
+
+## Stash a battle-log line on the entity during condition ticking. Drained
+## into the phase log array by dungeon_advance_enemy_phase so damage-over-time
+## and lost-turn events are visible to the player.
+func _stash_tick_log(ent: Dictionary, msg: String) -> void:
+	var stash: Array = ent.get("tick_logs", [])
+	stash.append(msg)
+	ent["tick_logs"] = stash
 
 ## Called at the start of each entity's turn to clear transient conditions.
 func _dung_tick_conditions(ent: Dictionary) -> void:
@@ -14343,15 +15139,20 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 		var elw_t: int = _ent_feat_tier(ent, "Elemental Ward")
 		if elw_t >= 1: bleed_dmg = maxi(0, bleed_dmg - elw_t * 2)
 		_dung_reduce_hp(ent, bleed_dmg)
+		if bleed_dmg > 0:
+			var bleed_sfx: String = " (x%d stacks)" % bleed_stacks if bleed_stacks > 1 else ""
+			_stash_tick_log(ent, "🩸 %s bleeds for %d damage%s." % [str(ent.get("name", "???")), bleed_dmg, bleed_sfx])
 		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 			ent["is_dead"] = true
 			ent["conditions"].clear()
+			_stash_tick_log(ent, "%s succumbs to their wounds!" % str(ent.get("name", "???")))
 			return
 
 	# Stunned: consume all AP this turn, then auto-clear after 1 round
 	if _dung_has_condition(ent, "stunned"):
 		ent["ap_spent"] = int(ent.get("max_ap", 10))
 		ent["conditions"].erase("stunned")
+		_stash_tick_log(ent, "💫 %s is stunned — they lose this turn." % str(ent.get("name", "???")))
 
 	# Poisoned: 1d4 poison damage + disadvantage on attacks
 	if _dung_has_condition(ent, "poisoned"):
@@ -14362,10 +15163,14 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 		var sg_t: int = _ent_feat_tier(ent, "Safeguard")
 		if sg_t >= 1 and randi() % 2 == 0:
 			ent["conditions"].erase("poisoned"); poison_dmg = 0
+			_stash_tick_log(ent, "%s shakes off the poison (Safeguard)." % str(ent.get("name", "???")))
 		_dung_reduce_hp(ent, poison_dmg)
+		if poison_dmg > 0:
+			_stash_tick_log(ent, "🧪 %s suffers %d poison damage." % [str(ent.get("name", "???")), poison_dmg])
 		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 			ent["is_dead"] = true
 			ent["conditions"].clear()
+			_stash_tick_log(ent, "%s succumbs to the poison!" % str(ent.get("name", "???")))
 			return
 
 	# Burning: 1d6 fire damage at start of turn, 50% chance to self-extinguish
@@ -14374,12 +15179,16 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 		var elw_t3: int = _ent_feat_tier(ent, "Elemental Ward")
 		if elw_t3 >= 3: burn_dmg = maxi(0, burn_dmg - elw_t3 * 2)
 		_dung_reduce_hp(ent, burn_dmg)
+		if burn_dmg > 0:
+			_stash_tick_log(ent, "🔥 %s burns for %d damage." % [str(ent.get("name", "???")), burn_dmg])
 		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)):
 			ent["is_dead"] = true
 			ent["conditions"].clear()
+			_stash_tick_log(ent, "%s is consumed by the flames!" % str(ent.get("name", "???")))
 			return
 		if randi() % 2 == 0:
 			ent["conditions"].erase("burning")
+			_stash_tick_log(ent, "%s's flames go out." % str(ent.get("name", "???")))
 
 	# Exhaustion: cumulative penalties — each stack gives -1 to all rolls (tracked via exhaustion_stacks)
 	if _dung_has_condition(ent, "exhausted"):
@@ -14398,6 +15207,7 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 	if _dung_has_condition(ent, "dazed"):
 		ent["ap_spent"] = int(ent.get("ap_spent", 0)) + 2
 		ent["conditions"].erase("dazed")
+		_stash_tick_log(ent, "😵 %s is dazed — loses 2 AP." % str(ent.get("name", "???")))
 
 	# Slowed: halve speed
 	if _dung_has_condition(ent, "slowed"):
@@ -14411,6 +15221,7 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 	if _dung_has_condition(ent, "paralyzed"):
 		ent["speed"] = 0
 		ent["ap_spent"] = int(ent.get("max_ap", 10))  # can't act
+		_stash_tick_log(ent, "⚡ %s is paralyzed and cannot act." % str(ent.get("name", "???")))
 
 	# Petrified: turned to stone, can't act
 	if _dung_has_condition(ent, "petrified"):
@@ -14421,10 +15232,17 @@ func _dung_tick_conditions(ent: Dictionary) -> void:
 	if _dung_has_condition(ent, "incapacitated"):
 		ent["ap_spent"] = int(ent.get("max_ap", 10))
 
+	# Unconscious (PHB): cannot take actions; attackers hit with advantage
+	# (handled in _dung_do_attack).
+	if _dung_has_condition(ent, "unconscious"):
+		ent["speed"] = 0
+		ent["ap_spent"] = int(ent.get("max_ap", 10))
+
 	# Squeezed (PHB): 1d4 bludgeoning at start of turn
 	if _dung_has_condition(ent, "squeezed"):
 		var squeeze_dmg: int = randi_range(1, 4)
 		_dung_reduce_hp(ent, squeeze_dmg)
+		_stash_tick_log(ent, "🗜 %s is crushed for %d damage." % [str(ent.get("name", "???")), squeeze_dmg])
 		if int(ent["hp"]) <= 0 and not bool(ent.get("is_player", false)): ent["is_dead"] = true; ent["conditions"].clear(); return
 
 	# Frozen in time: immune to damage, cannot act
@@ -15160,895 +15978,4 @@ const APEX_STATS: Array = [
 	["Zorin Blackscale",             "the Draconic Sovereign",       190, 17, 16, 8, 6, 11, "Black Talon"],
 	["Thalia Darksong",              "the Mournful Aria",            145, 13, 14, 12,5,  9, "Dirge Lute"],
 	["Gorrim Ironfist",              "the Mountain's Wrath",         175, 18, 12, 0, 4, 10, "Runic Warhammer"],
-	["Seraphina Windwalker",         "the Skybound Saint",           135, 14, 16, 6, 8,  7, "Solar Lance"],
-	["Rurik Stormbringer",           "the Thunder-Crowned",          150, 15, 14, 4, 6,  8, "Storm Maul"],
-	["Lyra Moonshadow",              "the Hunter Beneath the Pines", 125, 14, 16, 4, 8,  7, "Twin Daggers"],
-	["Ilyra",                        "the Glasswright",              115, 14, 14, 10,6,  6, "Crystal Spear"],
-	["Kael",                         "the Ashwalker",                130, 15, 14, 2, 7,  8, "Cinder Spear"],
-	["Morthis the Binder",           "Warden of Forsaken Souls",     160, 16, 12, 8, 5, 10, "Soul Chain"],
-	["Kaelen the Hollow",            "the Unmade",                   165, 16, 14, 6, 5, 10, "Void Edge"],
-	["Nirael of the Glass Veil",     "the Shrouded Seer",            150, 14, 14, 10,6,  9, "Mirror Staff"],
-]
-
-## Militia group configs: [name, size, level, ac, weapon, ability]
-const MILITIA_STATS: Array = [
-	["Ironroot Guard",    10, 5, 19, "Spear",      "Shield Wall"],
-	["Emberveil Recon",    5, 4, 14, "Shortbow",   "Ambush Tactics"],
-	["Crimson Crusaders", 10, 6, 18, "Longsword",  "Battle Chant"],
-	["Shadow Blades",      5, 5, 16, "Dagger",     "Vanish"],
-	["Bone Wardens",       8, 4, 15, "Axe",        "Undead Frenzy"],
-	["Void Warband",      10, 6, 14, "Void Blade", "Void-Touched Frenzy"],
-	["Storm Riders",      10, 5, 14, "Lance",      "Skirmisher"],
-	["Sacred Vigil",      10, 5, 18, "Mace",       "Divine Zeal"],
-]
-
-func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> void:
-	# Starts like a standard dungeon but then replaces enemies with multi-part kaiju
-	start_dungeon(player_handles, 1, -1, terrain_style)
-	_dungeon_type = 1
-	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
-
-	var idx: int = clamp(kaiju_idx, 0, KAIJU_STATS.size() - 1)
-	var ks: Array = KAIJU_STATS[idx]
-	var boss_hp: int = int(ks[1])
-	_dungeon_encounter_name = "Kaiju Hunt: %s" % str(ks[0])
-	_dungeon_enemy_level    = int(ks[5])
-
-	# Create multi-part kaiju entity with hit zones: Body, Head, Left Limb, Right Limb.
-	# All four parts live inside a 4×4 tile footprint (Colossal size per the spec).
-	# Footprint origin (top-left): (19, 19). Footprint covers tiles (19..22, 19..22).
-	# The renderer reads `footprint_w` / `footprint_h` / `footprint_origin_x` /
-	# `footprint_origin_y` on the Body entity to draw a 4-tile-wide trunk dome.
-	var kaiju_name: String = str(ks[0])
-	var hp_per_zone: int = boss_hp / 4
-
-	var KAIJU_FOOTPRINT_W: int = 4
-	var KAIJU_FOOTPRINT_H: int = 4
-	var KAIJU_FOOTPRINT_X0: int = 19
-	var KAIJU_FOOTPRINT_Y0: int = 19
-
-	# Body (main) — anchor carries footprint metadata so the renderer draws a
-	# 4×4 trunk. Sits at tile (20, 21) = center-bottom of the footprint.
-	_dungeon_entities.append({
-		"id":             "kaiju_body",
-		"name":           kaiju_name + " (Body)",
-		"handle":         -1,
-		"lineage_name":   kaiju_name,
-		"x": 20, "y": 21, "z": 0,
-		"is_player":   false,
-		"is_friendly": false,
-		"is_dead":     false,
-		"is_flying":   false,
-		"is_kaiju":    true,
-		"kaiju_part":  "Body",
-		"is_kaiju_trunk":      true,  # render a 4×4 trunk dome on top
-		"footprint_w":         KAIJU_FOOTPRINT_W,
-		"footprint_h":         KAIJU_FOOTPRINT_H,
-		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
-		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
-		"size":        "Colossal",
-		"size_id":     "colossal",
-		"size_tile_count": KAIJU_FOOTPRINT_W * KAIJU_FOOTPRINT_H,
-		"reach_ft":    20,
-		"hp":    hp_per_zone * 2, "max_hp": hp_per_zone * 2,
-		"ap":    int(ks[3]),  "max_ap": int(ks[3]),
-		"sp":    0,           "max_sp": 0,
-		"ac":    int(ks[2]),
-		"speed": int(ks[4]),
-		"ap_spent":  0, "move_used": 0,
-		"equipped_weapon": str(ks[6]),
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":   _generate_creature_loot(_dungeon_enemy_level + 4),
-		"looted":      false,
-		"is_boss":     true,
-		"boss_desc":   str(ks[7]),
-	})
-
-	# Head — top-center of the 4×4 footprint.
-	_dungeon_entities.append({
-		"id":             "kaiju_head",
-		"name":           kaiju_name + " (Head)",
-		"handle":         -1,
-		"lineage_name":   kaiju_name,
-		"x": 21, "y": 19, "z": 0,
-		"is_player":   false,
-		"is_friendly": false,
-		"is_dead":     false,
-		"is_flying":   false,
-		"is_kaiju":    true,
-		"kaiju_part":  "Head",
-		"is_kaiju_part":       true,
-		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
-		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
-		"size":        "Colossal",
-		"hp":    hp_per_zone, "max_hp": hp_per_zone,
-		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
-		"sp":    0,           "max_sp": 0,
-		"ac":    int(ks[2]) + 1,
-		"speed": 0,
-		"ap_spent":  0, "move_used": 0,
-		"equipped_weapon": "None",
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":   [],
-		"looted":      false,
-		"is_boss":     true,
-	})
-
-	# Left Limb — left edge of the 4×4 footprint.
-	_dungeon_entities.append({
-		"id":             "kaiju_left",
-		"name":           kaiju_name + " (Left Limb)",
-		"handle":         -1,
-		"lineage_name":   kaiju_name,
-		"x": 19, "y": 22, "z": 0,
-		"is_player":   false,
-		"is_friendly": false,
-		"is_dead":     false,
-		"is_flying":   false,
-		"is_kaiju":    true,
-		"kaiju_part":  "Left Limb",
-		"is_kaiju_part":       true,
-		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
-		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
-		"size":        "Colossal",
-		"hp":    hp_per_zone, "max_hp": hp_per_zone,
-		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
-		"sp":    0,           "max_sp": 0,
-		"ac":    int(ks[2]),
-		"speed": 2,
-		"ap_spent":  0, "move_used": 0,
-		"equipped_weapon": "Kaiju Claw",
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":   [],
-		"looted":      false,
-		"is_boss":     true,
-	})
-
-	# Right Limb — right edge of the 4×4 footprint.
-	_dungeon_entities.append({
-		"id":             "kaiju_right",
-		"name":           kaiju_name + " (Right Limb)",
-		"handle":         -1,
-		"lineage_name":   kaiju_name,
-		"x": 22, "y": 22, "z": 0,
-		"is_player":   false,
-		"is_friendly": false,
-		"is_dead":     false,
-		"is_flying":   false,
-		"is_kaiju":    true,
-		"kaiju_part":  "Right Limb",
-		"is_kaiju_part":       true,
-		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
-		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
-		"size":        "Colossal",
-		"hp":    hp_per_zone, "max_hp": hp_per_zone,
-		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
-		"sp":    0,           "max_sp": 0,
-		"ac":    int(ks[2]),
-		"speed": 2,
-		"ap_spent":  0, "move_used": 0,
-		"equipped_weapon": "Kaiju Claw",
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":   [],
-		"looted":      false,
-		"is_boss":     true,
-	})
-
-	_update_fog()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DUNGEON CRAWL — extended dungeon mode (50×50, detection AI, chests)
-# ─────────────────────────────────────────────────────────────────────────────
-##
-## Dungeon Crawl differs from a standard dungeon in three ways:
-##   1. Map is 2× the linear size (50×50 vs 25×25 — so 4× the area).
-##   2. Enemies start with `is_alerted = false` and only act once they have
-##      detected a player via line-of-sight + perception range. Once one
-##      member of a group is alerted, allies within an "alert radius" of
-##      that enemy are pulled into combat too.
-##   3. Treasure chests are scattered through the map and contain pre-rolled
-##      loot from `_generate_creature_loot`. Chests trip when a player walks
-##      onto their tile (existing entity step-on path picks them up).
-##
-## Internally this delegates to `start_dungeon()` for the heavy lifting,
-## then post-processes the entity list to add the alert state and chests.
-## Possible objective items for search-and-find dungeons.
-## Random one is picked per dungeon and placed in the goal chest.
-const SEARCH_GOAL_ITEMS: Array = [
-	"The Lost Artifact",
-	"Sealed Tome of Riftcraft",
-	"Crown of the Forgotten King",
-	"Heartstone of the Mire",
-	"The Whispering Idol",
-	"Phial of First Light",
-	"Sigil of the Vanishing Order",
-	"The Pilgrim's Locket",
-	"Charter of the Hollow Pact",
-	"Ash-Etched Map",
-]
-
-## Search-and-find dungeon — same generation as Dungeon Crawl, but with a
-## single GOAL CHEST containing the objective item placed at a far-away
-## tile. Victory triggers the moment the party loots that chest, even if
-## enemies remain. Optional `goal_item_override` lets a quest pin a name.
-func start_dungeon_search_and_find(player_handles, enemy_level: int,
-		terrain_style: int, extra_enemies: int = 5,
-		goal_item_override: String = "") -> void:
-	# Spin up a normal crawl first.
-	start_dungeon_crawl(player_handles, enemy_level, terrain_style, extra_enemies)
-	# Layer the search-and-find state on top.
-	_dungeon_search_active     = true
-	_dungeon_search_goal_found = false
-	if goal_item_override != "":
-		_dungeon_search_goal_item = goal_item_override
-	else:
-		_dungeon_search_goal_item = SEARCH_GOAL_ITEMS[randi() % SEARCH_GOAL_ITEMS.size()]
-	_dungeon_encounter_name = "Search & Find: %s" % _dungeon_search_goal_item
-	_spawn_search_goal_chest()
-
-
-## Place a uniquely-tagged chest on a far floor tile. Falls back to any
-## floor tile if no distant one is available. Used by search-and-find.
-func _spawn_search_goal_chest() -> void:
-	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
-	for ent in _dungeon_entities:
-		if bool(ent.get("is_player", false)):
-			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
-			break
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-	var best: Vector2i = Vector2i(-1, -1)
-	var best_dist: int = -1
-	for attempt in range(400):
-		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
-		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
-		var idx: int = ty * MAP_SIZE + tx
-		if idx < 0 or idx >= _dungeon_map.size(): continue
-		if _dungeon_map[idx] != TILE_FLOOR: continue
-		if _dung_occupied(tx, ty): continue
-		var d: int = absi(tx - anchor.x) + absi(ty - anchor.y)
-		if d > best_dist:
-			best_dist = d
-			best = Vector2i(tx, ty)
-	if best.x < 0: return
-	_dungeon_entities.append({
-		"id":         "goal_chest",
-		"name":       "Lost Treasure",
-		"handle":     -1,
-		"is_player":  false,
-		"is_friendly": false,
-		"is_dead":    false,
-		"is_flying":  false,
-		"is_chest":   true,
-		"is_goal_chest": true,
-		"goal_item":  _dungeon_search_goal_item,
-		"x": best.x, "y": best.y, "z": 0,
-		"hp":   1, "max_hp": 1,
-		"ap":   0, "max_ap": 0,
-		"sp":   0, "max_sp": 0,
-		"ac":   0,
-		"speed": 0,
-		"ap_spent": 0, "move_used": 0,
-		"equipped_weapon": "None",
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":  [_dungeon_search_goal_item],
-		"looted":     false,
-	})
-
-
-func start_dungeon_crawl(player_handles, enemy_level: int, terrain_style: int,
-		extra_enemies: int = 5) -> void:
-	# Reset search-and-find state — pure crawl mode doesn't use it.
-	_dungeon_search_active     = false
-	_dungeon_search_goal_found = false
-	_dungeon_search_goal_item  = ""
-
-	# Switch global map size BEFORE start_dungeon runs so its fog/elevation
-	# arrays size correctly. _crawl_active gates the start_dungeon reset.
-	_crawl_active = true
-	MAP_SIZE      = MAP_SIZE_CRAWL
-
-	start_dungeon(player_handles, enemy_level, -1, terrain_style)
-
-	_dungeon_type = 3   # 0=standard, 1=kaiju, 2=apex, 3=crawl
-	_dungeon_encounter_name = "Dungeon Crawl: %s" % _dungeon_terrain_name
-
-	# Tag every enemy with detection state. Players + allies are unaffected.
-	for ent in _dungeon_entities:
-		if bool(ent.get("is_player", false)) or bool(ent.get("is_friendly", false)):
-			continue
-		if bool(ent.get("is_dead", false)):
-			continue
-		# Default perception: 12 + DIV-ish stat. Fall back to 12 if missing.
-		var perc_div: int = int(ent.get("div", 0))
-		if perc_div == 0:
-			perc_div = int(ent.get("perception", 0))
-		ent["is_alerted"]      = false
-		ent["alert_radius"]    = 6     # tiles — allies within this radius alert too
-		ent["perception_range"] = 12 + maxi(0, perc_div)
-		ent["last_seen_x"]     = -1
-		ent["last_seen_y"]     = -1
-
-	# CRITICAL: start_dungeon spawned the base encounter assuming a 25×25
-	# arena, so all those enemies are clustered next to the player spawn.
-	# Re-scatter every enemy to the outer ring of the 50×50 map BEFORE the
-	# player can see them. This is what makes Crawl feel like exploration
-	# instead of a 25-mob ambush at the doorway.
-	# 95% of enemies must be at least 25 tiles away; 5% can ambush closer.
-	_redistribute_crawl_enemies(25, 0.05, 8)
-
-	# Spawn additional crawl enemies — the larger map needs more density.
-	# Pull encounters from the same builder used by start_dungeon, just tag
-	# them as un-alerted and place them in outer rings.
-	if extra_enemies > 0:
-		_spawn_crawl_extra_enemies(enemy_level, extra_enemies)
-
-	# Spawn 5–8 chests. Count scales with map area, not enemy budget.
-	_spawn_crawl_chests(maxi(5, enemy_level / 2 + 4))
-
-	_update_fog()
-
-## Walks every non-player, non-friendly, non-chest entity and teleports them
-## to a random walkable tile whose Manhattan distance from EVERY player is
-## at least `min_dist`. A small `ambush_chance` (per enemy) instead uses the
-## smaller `ambush_min_dist` — those become the rare close-up ambushes.
-##
-## Called once at the end of start_dungeon_crawl so the standard-encounter
-## spawn (which clusters near the player anchor) ends up dispersed across
-## the 50×50 map. Without this, opening a crawl drops you straight into a
-## point-blank ambush.
-func _redistribute_crawl_enemies(min_dist: int,
-		ambush_chance: float = 0.0, ambush_min_dist: int = 8) -> void:
-	# Snapshot player positions.
-	var player_positions: Array = []
-	for ent in _dungeon_entities:
-		if bool(ent.get("is_player", false)) and not bool(ent.get("is_dead", false)):
-			player_positions.append(Vector2i(int(ent["x"]), int(ent["y"])))
-	if player_positions.is_empty():
-		return
-
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-
-	for ent in _dungeon_entities:
-		# Skip players, allies, dead bodies, and chests.
-		if bool(ent.get("is_player", false)):     continue
-		if bool(ent.get("is_friendly", false)):   continue
-		if bool(ent.get("is_dead", false)):       continue
-		if bool(ent.get("is_chest", false)):      continue
-		if bool(ent.get("is_kaiju", false)):      continue   # bosses keep their pos
-
-		# Roll per-enemy: most enemies use the strict min_dist; a small
-		# percentage become "ambush" enemies allowed in closer.
-		var this_min: int = min_dist
-		if ambush_chance > 0.0 and rng.randf() < ambush_chance:
-			this_min = ambush_min_dist
-
-		var placed: bool = false
-		for attempt in range(200):
-			var tx: int = rng.randi_range(2, MAP_SIZE - 3)
-			var ty: int = rng.randi_range(2, MAP_SIZE - 3)
-			# Walkability
-			var idx: int = ty * MAP_SIZE + tx
-			if idx < 0 or idx >= _dungeon_map.size():
-				continue
-			if _dungeon_map[idx] != TILE_FLOOR:
-				continue
-			if _dung_occupied(tx, ty):
-				continue
-			# Min-distance from every player
-			var ok: bool = true
-			for pp in player_positions:
-				if absi(tx - pp.x) + absi(ty - pp.y) < this_min:
-					ok = false
-					break
-			if not ok:
-				continue
-			ent["x"] = tx
-			ent["y"] = ty
-			placed = true
-			break
-		# If no spot was found in 200 attempts (very dense walls), leave
-		# the entity in place — they'll just be a closer encounter.
-
-## Spawn a few extra enemies on the outer ring of the crawl map, all
-## un-alerted. Re-uses the existing build_encounter / spawn helpers.
-func _spawn_crawl_extra_enemies(enemy_level: int, n: int) -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-	# Find player anchor for distance checks.
-	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
-	for ent in _dungeon_entities:
-		if bool(ent.get("is_player", false)):
-			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
-			break
-
-	var spawned: int = 0
-	var attempts: int = 0
-	while spawned < n and attempts < 200:
-		attempts += 1
-		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
-		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
-		# Distance gate: 95% require at least 25 tiles from the player anchor;
-		# 5% become "ambush" spawns allowed as close as 8 tiles.
-		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
-		var ambush: bool = (rng.randf() < 0.05)
-		var min_dist: int = 8 if ambush else 25
-		if dist < min_dist:
-			continue
-		# Walkable check
-		var idx: int = ty * MAP_SIZE + tx
-		if idx < 0 or idx >= _dungeon_map.size():
-			continue
-		if _dungeon_map[idx] != TILE_FLOOR:
-			continue
-		if _dung_occupied(tx, ty):
-			continue
-
-		# Build a single creature using a real creature name from the pools
-		# so the sprite-portrait lookup matches files like wolf.png /
-		# boar.png / etc. Three category pools (animal, villager, monster)
-		# are chosen at random per spawn to give the crawl variety.
-		var c_lv: int = enemy_level
-		var pools: Array = [
-			CREATURE_NAMES_ANIMAL,
-			CREATURE_NAMES_VILLAGER,
-			CREATURE_NAMES_MONSTER,
-		]
-		var pool: Array = pools[rng.randi() % pools.size()]
-		var creature_name: String = str(pool[rng.randi() % pool.size()])
-		# Pick a weapon from the matching weapon pool.
-		var weapon: String
-		if pool == CREATURE_NAMES_ANIMAL:
-			weapon = CREATURE_WEAPONS_ANIMAL[rng.randi() % CREATURE_WEAPONS_ANIMAL.size()]
-		elif pool == CREATURE_NAMES_VILLAGER:
-			weapon = CREATURE_WEAPONS_VILLAGER[rng.randi() % CREATURE_WEAPONS_VILLAGER.size()]
-		else:
-			weapon = CREATURE_WEAPONS_MONSTER[rng.randi() % CREATURE_WEAPONS_MONSTER.size()]
-		var c_max_hp: int = 10 + 4 * c_lv + rng.randi_range(0, c_lv * 2)
-		var ac: int = 10 + (c_lv / 2) + rng.randi_range(0, 2)
-		_dungeon_entities.append({
-			"id":             "crawl_enemy_%d" % spawned,
-			"name":           creature_name,
-			"handle":         -1,
-			"lineage_name":   creature_name,   # ← drives wolf.png / boar.png / etc.
-			"x": tx, "y": ty, "z": 1,
-			"is_player":   false,
-			"is_friendly": false,
-			"is_dead":     false,
-			"is_flying":   false,
-			"hp":          c_max_hp, "max_hp": c_max_hp,
-			"ap":          10 + c_lv,    "max_ap": 10 + c_lv,
-			"sp":          5,             "max_sp": 5,
-			"ac":          ac,
-			"speed":       3,
-			"ap_spent":    0, "move_used": 0,
-			"equipped_weapon": weapon,
-			"equipped_armor":  "Leather Armor",
-			"equipped_shield": "None",
-			"equipped_light":  "None",
-			"conditions":  [],
-			"inventory":   _generate_creature_loot(c_lv),
-			"looted":      false,
-			"div":         2,
-			# Crawl-specific detection state
-			"is_alerted":       false,
-			"alert_radius":     6,
-			"perception_range": 14,
-			"last_seen_x":     -1,
-			"last_seen_y":     -1,
-		})
-		spawned += 1
-
-## Spawn `n` treasure chests on walkable tiles, biased toward the middle
-## ring (not too close to spawn, not too far from any explored area).
-func _spawn_crawl_chests(n: int) -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
-	for ent in _dungeon_entities:
-		if bool(ent.get("is_player", false)):
-			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
-			break
-
-	var spawned: int = 0
-	var attempts: int = 0
-	while spawned < n and attempts < 300:
-		attempts += 1
-		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
-		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
-		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
-		if dist < 6 or dist > 38:
-			continue
-		var idx: int = ty * MAP_SIZE + tx
-		if idx < 0 or idx >= _dungeon_map.size():
-			continue
-		if _dungeon_map[idx] != TILE_FLOOR:
-			continue
-		if _dung_occupied(tx, ty):
-			continue
-
-		# Loot quality scales with distance from spawn — deeper chests
-		# carry better loot. Use the existing creature-loot generator at a
-		# scaled-up level.
-		var loot_level: int = _dungeon_enemy_level + (dist / 8)
-		_dungeon_entities.append({
-			"id":             "crawl_chest_%d" % spawned,
-			"name":           "Treasure Chest",
-			"handle":         -1,
-			"lineage_name":   "",
-			"x": tx, "y": ty, "z": 1,
-			"is_player":   false,
-			"is_friendly": false,
-			"is_dead":     false,
-			"is_flying":   false,
-			"is_chest":    true,    # ← marks this entity as a chest
-			"hp":          1, "max_hp": 1,
-			"ap":          0, "max_ap": 0,
-			"sp":          0, "max_sp": 0,
-			"ac":          10,
-			"speed":       0,
-			"conditions":  [],
-			"inventory":   _generate_creature_loot(loot_level),
-			"looted":      false,
-		})
-		spawned += 1
-
-func start_apex_dungeon(player_handles, apex_idx: int, terrain_style: int) -> void:
-	start_dungeon(player_handles, 1, -1, terrain_style)
-	_dungeon_type = 2
-	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
-
-	var idx: int = clamp(apex_idx, 0, APEX_STATS.size() - 1)
-	var as_: Array = APEX_STATS[idx]
-	var boss_hp: int = int(as_[2])
-	_dungeon_encounter_name = "Apex: %s %s" % [str(as_[0]), str(as_[1])]
-	_dungeon_enemy_level    = int(as_[7])
-	_dungeon_entities.append({
-		"id":             "enemy_0",
-		"name":           "%s %s" % [str(as_[0]), str(as_[1])],
-		"handle":         -1,
-		"lineage_name":   "Apex",
-		"x": 21, "y": 21, "z": 0,
-		"is_player":   false,
-		"is_friendly": false,
-		"is_dead":     false,
-		"is_flying":   false,
-		"hp":    boss_hp,    "max_hp": boss_hp,
-		"ap":    int(as_[4]),  "max_ap": int(as_[4]),
-		"sp":    int(as_[5]),  "max_sp": int(as_[5]),
-		"ac":    int(as_[3]),
-		"speed": int(as_[6]),
-		"ap_spent":  0, "move_used": 0,
-		"equipped_weapon": str(as_[8]),
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":   _generate_creature_loot(_dungeon_enemy_level + 2),
-		"looted":      false,
-		"is_boss":     true,
-	})
-	_update_fog()
-
-func start_militia_dungeon(player_handles, militia_idx: int, terrain_style: int) -> void:
-	start_dungeon(player_handles, 1, -1, terrain_style)
-	_dungeon_type = 3
-	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
-
-	var idx: int = clamp(militia_idx, 0, MILITIA_STATS.size() - 1)
-	var ms: Array = MILITIA_STATS[idx]
-	var squad_size: int = int(ms[1])
-	var mlv: int        = int(ms[2])
-	var mac: int        = int(ms[3])
-	# Apply adversary leveling
-	var party_levels: Array = []
-	for h in player_handles:
-		if _chars.has(h):
-			party_levels.append(int(_chars[h].get("level", 1)))
-	if not party_levels.is_empty():
-		mlv = _WS.calc_adversary_level(party_levels, _dungeon_encounters_survived)
-	_dungeon_encounter_name = "Militia: %s" % str(ms[0])
-	_dungeon_enemy_level    = mlv
-
-	var e_spawns: Array = [
-		[20,20],[21,20],[20,21],[19,20],[20,19],[22,21],
-		[21,19],[19,21],[22,20],[20,22],[18,20],[20,18]
-	]
-	var ehp: int = 6 + mlv * 3
-	for i in range(mini(squad_size, e_spawns.size())):
-		var pos: Array = e_spawns[i]
-		_dungeon_entities.append({
-			"id":             "enemy_%d" % i,
-			"name":           "%s #%d" % [str(ms[0]), i + 1],
-			"handle":         -1,
-			"lineage_name":   "Militia",
-			"x": pos[0], "y": pos[1], "z": 0,
-			"is_player":   false,
-			"is_friendly": false,
-			"is_dead":     false,
-			"is_flying":   false,
-			"hp":    ehp,  "max_hp": ehp,
-			"ap":    10,   "max_ap": 10,
-			"sp":    0,    "max_sp": 0,
-			"ac":    mac,
-			"speed": 5,
-			"ap_spent":  0, "move_used": 0,
-			"equipped_weapon": str(ms[4]),
-			"equipped_armor":  "None",
-			"equipped_shield": "None",
-			"equipped_light":  "None",
-			"conditions":  [],
-			"inventory":   _generate_creature_loot(mlv),
-			"looted":      false,
-		})
-	_update_fog()
-
-func start_mob_dungeon(player_handles, mob_count: int, mob_level: int, terrain_style: int) -> void:
-	start_dungeon(player_handles, 1, -1, terrain_style)
-	_dungeon_type = 4
-	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
-
-	# Apply adversary leveling
-	var adjusted_mob_level: int = maxi(1, mob_level)
-	var party_levels_mob: Array = []
-	for h in player_handles:
-		if _chars.has(h):
-			party_levels_mob.append(int(_chars[h].get("level", 1)))
-	if not party_levels_mob.is_empty():
-		adjusted_mob_level = _WS.calc_adversary_level(party_levels_mob, _dungeon_encounters_survived)
-
-	_dungeon_encounter_name = "Mob Encounter (%d)" % mob_count
-	_dungeon_enemy_level    = adjusted_mob_level
-
-	var mob_names: Array = ["Kobold", "Goblin", "Skeleton", "Zombie", "Cultist",
-		"Bandit", "Imp", "Ghoul", "Ratfolk", "Cave Troll"]
-	var mob_name: String = mob_names[adjusted_mob_level % mob_names.size()]
-
-	# Scatter up to min(mob_count, 24) across the map (avoid spawn room)
-	var available_tiles: Array = []
-	for x in range(10, 24):
-		for y in range(10, 24):
-			var tidx: int = x * MAP_SIZE + y
-			if tidx < _dungeon_map.size() and _dungeon_map[tidx] == TILE_FLOOR:
-				available_tiles.append([x, y])
-	available_tiles.shuffle()
-
-	var actual_count: int = mini(mob_count, available_tiles.size())
-	var ehp: int = 3 + adjusted_mob_level * 2
-	for i in range(actual_count):
-		var pos: Array = available_tiles[i]
-		_dungeon_entities.append({
-			"id":             "enemy_%d" % i,
-			"name":           mob_name,
-			"handle":         -1,
-			"lineage_name":   "Enemy",
-			"x": pos[0], "y": pos[1], "z": 0,
-			"is_player":   false,
-			"is_friendly": false,
-			"is_dead":     false,
-			"is_flying":   false,
-			"hp":    ehp,  "max_hp": ehp,
-			"ap":    6,    "max_ap": 6,
-			"sp":    0,    "max_sp": 0,
-			"ac":    8 + adjusted_mob_level,
-			"speed": 4,
-			"ap_spent":  0, "move_used": 0,
-			"equipped_weapon": "Rusty Dagger",
-			"equipped_armor":  "None",
-			"equipped_shield": "None",
-			"equipped_light":  "None",
-			"conditions":  [],
-			"inventory":   _generate_creature_loot(adjusted_mob_level),
-			"looted":      false,
-		})
-	_update_fog()
-
-func start_custom_monster_dungeon(player_handles, custom_monster: Dictionary, terrain_style: int) -> void:
-	start_dungeon(player_handles, 1, -1, terrain_style)
-	_dungeon_type = 5  # Custom Monster
-	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
-
-	var level: int = int(custom_monster.get("level", 1))
-	var is_apex: bool = bool(custom_monster.get("apex", false))
-	var name_str: String = str(custom_monster.get("name", "Custom Monster"))
-	var stats: Dictionary = custom_monster.get("stats", {"STR": 1, "SPD": 1, "INT": 1, "VIT": 1, "DIV": 1})
-
-	# Calculate derived stats based on monster creation rules
-	var str_val: int = int(stats.get("STR", 1))
-	var spd_val: int = int(stats.get("SPD", 1))
-	var int_val: int = int(stats.get("INT", 1))
-	var vit_val: int = int(stats.get("VIT", 1))
-	var div_val: int = int(stats.get("DIV", 1))
-
-	var hp: int
-	var ap: int
-	var sp: int
-	var ac: int = 10
-
-	if is_apex:
-		hp = 5 * level + vit_val
-		ap = 10 + str_val
-		sp = 10 + level + div_val
-	else:
-		hp = 3 * level + vit_val
-		ap = 3 + str_val
-		sp = 3 + level + div_val
-
-	_dungeon_encounter_name = "Custom Monster: %s" % name_str
-	_dungeon_enemy_level = level
-
-	# Find a valid floor tile far from players
-	var occupied: Dictionary = {}
-	for e in _dungeon_entities:
-		occupied[Vector2i(int(e["x"]), int(e["y"]))] = true
-	var best_pos: Array = [12, 12]
-	var best_dist: int = 0
-	for fy in range(MAP_SIZE):
-		for fx in range(MAP_SIZE):
-			if _dungeon_map[fy * MAP_SIZE + fx] == 0:  # floor
-				if occupied.has(Vector2i(fx, fy)):
-					continue
-				var min_pd: int = 999
-				for e in _dungeon_entities:
-					var dx: int = abs(fx - int(e["x"]))
-					var dy: int = abs(fy - int(e["y"]))
-					min_pd = mini(min_pd, maxi(dx, dy))
-				if min_pd > best_dist:
-					best_dist = min_pd
-					best_pos = [fx, fy]
-
-	_dungeon_entities.append({
-		"id":             "enemy_0",
-		"name":           name_str,
-		"handle":         -1,
-		"lineage_name":   "Custom",
-		"x": best_pos[0], "y": best_pos[1], "z": 0,
-		"is_player":   false,
-		"is_friendly": false,
-		"is_dead":     false,
-		"is_flying":   false,
-		"hp":    hp,    "max_hp": hp,
-		"ap":    ap,    "max_ap": ap,
-		"sp":    sp,    "max_sp": sp,
-		"ac":    ac,
-		"speed": 5 + spd_val,
-		"ap_spent":  0, "actions_taken": 0, "move_used": 0,
-		"equipped_weapon": "Claw",
-		"equipped_armor":  "None",
-		"equipped_shield": "None",
-		"equipped_light":  "None",
-		"conditions":  [],
-		"inventory":   _generate_creature_loot(level),
-		"looted":      false,
-		"is_boss":     is_apex,
-	})
-	_update_fog()
-
-## Siege Warfare Mode — Players must destroy a wall defended by waves of enemies
-func start_siege_dungeon(player_handles, tier: int, terrain_style: int = 0) -> void:
-	# Initialize base dungeon
-	start_dungeon(player_handles, 1, -1, clampi(terrain_style, 0, 7))
-	_dungeon_type = 6  # Siege mode
-	# Remove default enemies and clear for siege setup
-	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
-
-	var siege_data: Dictionary = _WS.SIEGE_TIERS[clampi(tier - 1, 0, 4)]
-	_dungeon_encounter_name = "Siege: %s" % siege_data.get("name", "Unknown")
-	_dungeon_enemy_level = tier
-
-	# ── Place the wall in the center-right area ──────────────────────────────────
-	var wall_hp: int = int(siege_data.get("wall_hp", 50))
-	var occupied: Dictionary = {}
-	for e in _dungeon_entities:
-		occupied[Vector2i(int(e["x"]), int(e["y"]))] = true
-
-	_dungeon_entities.append({
-		"id": "wall_0",
-		"name": siege_data.get("name", "Fortress Wall"),
-		"handle": -1,
-		"is_player": false,
-		"is_friendly": false,
-		"is_dead": false,
-		"is_wall": true,
-		"hp": wall_hp,
-		"max_hp": wall_hp,
-		"ac": 10 + tier * 2,
-		"speed": 0,
-		"x": MAP_SIZE / 2,
-		"y": 1,
-		"z": 0,
-		"ap": 0,
-		"max_ap": 0,
-		"ap_spent": 0,
-		"actions_taken": 0,
-		"move_used": 0,
-		"conditions": [],
-		"inventory": [],
-		"looted": false,
-		"equipped_weapon": "None",
-		"equipped_armor": "None",
-		"equipped_shield": "None",
-		"equipped_light": "None",
-	})
-
-	# ── Spawn defender waves based on tier ───────────────────────────────────────
-	var defender_type: String = str(siege_data.get("defenders", "militia"))
-	var defender_count: int = 2 + tier  # 3-7 defenders based on tier
-	var spawned: int = 0
-
-	# Use floor tiles for spawning defenders
-	var floor_tiles: Array = []
-	for fy in range(MAP_SIZE):
-		for fx in range(MAP_SIZE):
-			if _dungeon_map[fy * MAP_SIZE + fx] == 0:  # floor
-				floor_tiles.append([fx, fy])
-
-	# Spawn defenders near the wall
-	for i in range(defender_count):
-		if floor_tiles.is_empty():
-			break
-		var pick_idx: int = randi() % floor_tiles.size()
-		var pos: Array = floor_tiles[pick_idx]
-		pos = _find_nearest_floor(pos[0], pos[1], occupied)
-		occupied[Vector2i(pos[0], pos[1])] = true
-
-		# Create defender based on tier
-		var def_level: int = tier + randi_range(-1, 1)
-		def_level = clampi(def_level, 1, 20)
-		var def_name: String = ["Guard", "Sergeant", "Captain", "Commander", "Elite Guard"][mini(tier - 1, 4)]
-
-		var def_hp: int = 10 + def_level * 3
-		var def_ap_max: int = 5 + def_level / 2
-		var def_speed: int = 4 + tier
-		var def_ac: int = 11 + tier
-
-		_dungeon_entities.append({
-			"id": "defender_%d" % i,
-			"name": "%s (Lv.%d)" % [def_name, def_level],
-			"handle": -1,
-			"lineage_name": "Guard",
-			"x": pos[0],
-			"y": pos[1],
-			"z": 0,
-			"is_player": false,
-			"is_friendly": false,
-			"is_dead": false,
-			"is_flying": false,
-			"hp": def_hp,
-			"max_hp": def_hp,
-			"ap": def_ap_max,
-			"max_ap": def_ap_max,
-			"sp": 3 + tier,
-			"max_sp": 3 + tier,
-			"ac": def_ac,
-			"speed": def_speed,
-			"ap_spent": 0,
-			"actions_taken": 0,
-			"move_used": 0,
-			"equipped_weapon": "Sword",
-			"equipped_armor": "Chain",
-			"equipped_shield": "Shield",
-			"equipped_light": "None",
-			"conditions": [],
-			"inventory": _generate_creature_loot(def_level),
-			"looted": false,
-		})
-		spawned += 1
-
-	_update_fog()
+	["Seraphina Windwalker",         "the Skybound Saint",           135, 14, 

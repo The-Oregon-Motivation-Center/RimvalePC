@@ -127,10 +127,29 @@ func _ready() -> void:
 	_new_game_btn.pressed.connect(_on_new_game)
 	_menu_vbox.add_child(_new_game_btn)
 
+	# Battle Mode — RTS-style skirmish branch (separate from story saves)
+	var battle_btn = _make_menu_btn("⚔ Battle Mode", RimvaleColors.ORANGE, 18)
+	battle_btn.pressed.connect(func():
+		get_tree().change_scene_to_file("res://scenes/battle/battle_setup.tscn")
+	)
+	_menu_vbox.add_child(battle_btn)
+
+	# Region Conquest — the Battle Mode meta-campaign (own save, separate too)
+	var conquest_btn = _make_menu_btn("🗺 Conquest", RimvaleColors.GOLD, 18)
+	conquest_btn.pressed.connect(func():
+		get_tree().change_scene_to_file("res://scenes/battle/conquest_map.tscn")
+	)
+	_menu_vbox.add_child(conquest_btn)
+
 	# Settings
 	_settings_btn = _make_menu_btn("Settings", RimvaleColors.TEXT_LIGHT, 16)
 	_settings_btn.pressed.connect(_on_settings)
 	_menu_vbox.add_child(_settings_btn)
+
+	# Credits & Legal (includes the SRD 5.2.1 CC-BY attribution — required)
+	var credits_btn: Button = _make_menu_btn("Credits", RimvaleColors.TEXT_GRAY, 16)
+	credits_btn.pressed.connect(_show_credits)
+	_menu_vbox.add_child(credits_btn)
 
 	# Quit
 	_quit_btn = _make_menu_btn("Quit", RimvaleColors.TEXT_GRAY, 16)
@@ -154,6 +173,23 @@ func _ready() -> void:
 	_fade_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_fade_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_fade_rect)
+
+	# Title music — fade in shortly after the screen appears.
+	if typeof(AudioManager) != TYPE_NIL:
+		AudioManager.play_music("music_title", 2.0)
+
+	# Gamepad: grab focus on the most relevant button so D-pad / stick can
+	# navigate without the user needing to click first.
+	call_deferred("_grab_initial_focus")
+
+
+func _grab_initial_focus() -> void:
+	if _continue_btn != null and _continue_btn.visible:
+		_continue_btn.grab_focus()
+	elif _load_game_btn != null and _load_game_btn.visible:
+		_load_game_btn.grab_focus()
+	elif _new_game_btn != null:
+		_new_game_btn.grab_focus()
 
 func _process(delta: float) -> void:
 	if _fading_in:
@@ -203,6 +239,12 @@ func _make_menu_btn(text: String, color: Color, font_size: int) -> Button:
 	sb_pressed.set_corner_radius_all(6)
 	sb_pressed.set_content_margin_all(10)
 	btn.add_theme_stylebox_override("pressed", sb_pressed)
+
+	# Audio: subtle hover + click.
+	btn.mouse_entered.connect(func():
+		if typeof(AudioManager) != TYPE_NIL: AudioManager.hover())
+	btn.pressed.connect(func():
+		if typeof(AudioManager) != TYPE_NIL: AudioManager.click())
 
 	return btn
 
@@ -602,7 +644,16 @@ func _show_confirm(title_text: String, body_text: String,
 	add_child(_confirm_overlay)
 
 func _on_settings() -> void:
-	_show_settings()
+	if typeof(AudioManager) != TYPE_NIL:
+		AudioManager.open_panel()
+	# Prefer the tabbed dialog when present; fall back to the legacy overlay.
+	var dlg_script := load("res://scenes/popups/settings_dialog.gd")
+	if dlg_script != null:
+		var dlg = dlg_script.new()
+		add_child(dlg)
+		dlg.open()
+	else:
+		_show_settings()
 
 func _on_quit() -> void:
 	get_tree().quit()
@@ -722,26 +773,4 @@ func _make_setting_row(label_text: String, on_change: Callable, initial: float) 
 	row.add_theme_constant_override("separation", 12)
 
 	var lbl := Label.new()
-	lbl.text = label_text
-	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	lbl.add_theme_font_size_override("font_size", 14)
-	lbl.add_theme_color_override("font_color", RimvaleColors.TEXT_LIGHT)
-	row.add_child(lbl)
-
-	var slider := HSlider.new()
-	slider.min_value = 0.0
-	slider.max_value = 1.0
-	slider.step = 0.05
-	slider.value = clampf(initial, 0.0, 1.0)
-	slider.custom_minimum_size = Vector2(160, 0)
-	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	slider.value_changed.connect(on_change)
-	row.add_child(slider)
-
-	return row
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-func _spacer(h: int) -> Control:
-	var s := Control.new()
-	s.custom_minimum_size = Vector2(0, h)
-	return s
+	lbl.text = label

@@ -1,4 +1,11 @@
 # Rimvale PC — Manual Audit Report
+
+> ⚠️ **HISTORICAL — DO NOT USE FOR PLANNING (marked stale 2026-07-08).**
+> Most "Not implemented" claims below were since fixed: spell save DCs,
+> overreach, ritual casting, domain/alignment affinities, damage-type effects,
+> Spell Shaper, and the age HP factor are all live in the fallback engine.
+> Current status lives in RELEASE_PLAN.md.
+
 *Generated from PHB v0.943, GMG v0.942, WG v0.942 cross-referenced against Rimvale PC Godot codebase*
 
 ---
@@ -225,11 +232,4 @@
 | Starting Skill Points | 12 at Level 1 |
 | Skill Points per Level | 3 per level after Level 1 |
 | Stat Points at Level 1 | 6 |
-| Stat Points per Level | 1 per level after Level 1 |
-| Ranks 1–5 cost | 1 stat/skill point each |
-| Ranks 6–10 cost | 2 stat/skill points each |
-| Feat Points | awarded by GM; track in `feat_pts` |
-
----
-
-*This report was generated after reading all three Rimvale game manuals (PHB v0.943, GMG v0.942, WG v0.942) and cross-referencing against the Godot 4 PC codebase.*
+| Stat Points per Level

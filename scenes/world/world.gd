@@ -2322,6 +2322,7 @@ func _check_and_award_story_badges() -> void:
 				all_done = false; break
 		if all_done:
 			GameState.story_earned_badges.append(badge)
+			SteamIntegration.on_story_badge_earned(GameState.story_earned_badges.size())
 
 func _build_dungeon_tab(parent: Control) -> void:
 	var dungeon_panel = Control.new()
@@ -7132,6 +7133,4 @@ func _get_region_display_name(region_id: String) -> String:
 		"forest": return "Forest"
 		"mountain": return "Mountain"
 		"swamp": return "Swamp"
-		"desert": return "Desert"
-		"coast": return "Coast"
-		_: return region_id.capitalize()
+		"desert

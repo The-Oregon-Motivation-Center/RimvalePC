@@ -502,10 +502,14 @@ func _filter_items(cat: String) -> void:
 func _on_buy(item_name: String, price: int) -> void:
 	if not GameState.spend_gold(price):
 		_show_notice("Not enough gold! (need %dg, have %dg)" % [price, GameState.gold])
+		if typeof(AudioManager) != TYPE_NIL:
+			AudioManager.play_ui("ui_back", -3.0)
 		return
 	GameState.add_to_stash(item_name)
 	_update_gold()
 	_show_notice("Bought: %s for %dg → Stash" % [item_name, price])
+	if typeof(AudioManager) != TYPE_NIL:
+		AudioManager.play_sfx("coin")
 
 func _update_gold() -> void:
 	_gold_label.text = "💰  %d gold" % GameState.gold

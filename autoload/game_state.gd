@@ -204,16 +204,63 @@ var busy_handles: Array = []
 ## Characters age by game_day / 365 years from their starting age.
 var game_day: int = 1
 
+# ── Tutorial state ───────────────────────────────────────────────────────────
+## Set of tutorial step ids that have already been shown to the player.
+## Hints never reappear once dismissed. Persisted to the save file.
+var tutorial_steps_shown: Array = []
+## When true, the user disabled all tutorial hints. Settable from settings.
+var tutorial_disabled: bool = false
+
+
+func tutorial_step_was_shown(step_id: String) -> bool:
+	return tutorial_steps_shown.has(step_id)
+
+
+func mark_tutorial_step_shown(step_id: String) -> void:
+	if not tutorial_steps_shown.has(step_id):
+		tutorial_steps_shown.append(step_id)
+		save_game()
+
+
+# ── Achievements ─────────────────────────────────────────────────────────────
+## Locally-cached set of unlocked achievement ids. Persists across sessions
+## so the in-game celebration UI can fire even when Steam is offline; Steam
+## reconciles on next launch.
+var achievements_unlocked: Array = []
+
+
+func mark_achievement_unlocked(achievement_id: String) -> void:
+	if not achievements_unlocked.has(achievement_id):
+		achievements_unlocked.append(achievement_id)
+		save_game()
+
+
+func has_achievement(achievement_id: String) -> bool:
+	return achievements_unlocked.has(achievement_id)
+
+
+# ── Codex view tracking (Loremaster achievement) ────────────────────────────
+var codex_viewed: Array = []
+
+func mark_codex_viewed(entry_id: String) -> void:
+	if not codex_viewed.has(entry_id):
+		codex_viewed.append(entry_id)
+		SteamIntegration.on_codex_viewed(codex_viewed.size())
+
+
 # ── Debug ────────────────────────────────────────────────────────────────────
 var debug_mode: bool = false
 
 ## Advance the game clock by a number of days. Checks for aging effects.
 func advance_days(days: int) -> Array:
+	var prev_day: int = game_day
 	game_day += days
 	propagate_reputation()  # Spread reputation events to neighboring regions
 	var deaths: Array = []  # names of characters who died of old age
 	var e = RimvaleAPI.engine if RimvaleAPI != null else null
-	if e == null: return deaths
+	if e == null:
+		_maybe_autosave(prev_day)
+		return deaths
 	# Snapshot the collection because move_to_cemetery mutates it.
 	var snapshot: Array = collection.duplicate()
 	for h in snapshot:
@@ -230,7 +277,19 @@ func advance_days(days: int) -> Array:
 			var nm: String = e.get_character_name(h)
 			deaths.append(nm)
 			move_to_cemetery(int(h), "old age")
+	_maybe_autosave(prev_day)
 	return deaths
+
+
+# Autosave according to the user's preference. 0 = off; otherwise save when
+# game_day has crossed a multiple of the configured frequency.
+func _maybe_autosave(prev_day: int) -> void:
+	var freq: int = int(Engine.get_meta("autosave_freq", 3))
+	if freq <= 0:
+		return
+	# Cross a boundary?
+	if (game_day / freq) != (prev_day / freq):
+		save_game()
 
 # ── Cemetery ─────────────────────────────────────────────────────────────────
 
@@ -376,6 +435,7 @@ func revive_from_cemetery(grave_idx: int, extend_years: int = 0) -> String:
 	gold -= cost
 	collection.append(new_handle)
 	cemetery.remove_at(grave_idx)
+	SteamIntegration.on_revive_from_cemetery()
 	return ""
 
 ## Roll mission completion time and advance the calendar.
@@ -1356,6 +1416,7 @@ func acquire_vehicle(name: String) -> bool:
 		"st_current": int(stats.get("st_max", 1)),
 		"hp_current": int(stats.get("hp", 50)),
 	}
+	SteamIntegration.on_vehicle_acquired()
 	return true
 
 ## Remove a vehicle from the garage (sold, lost, etc.)
@@ -1969,6 +2030,11 @@ func check_level_up() -> bool:
 		var e = RimvaleAPI.engine
 		for handle in active_team:
 			e.level_up_character(int(handle))
+		# Steam achievement tier check on each new level we crossed.
+		if typeof(SteamIntegration) != TYPE_NIL:
+			SteamIntegration.on_player_level(player_level)
+	if leveled and typeof(AudioManager) != TYPE_NIL:
+		AudioManager.play_sfx("jingle_levelup")
 	return leveled
 
 ## Map player level → rank title (mirrors Rimvale Mobile)
@@ -2082,6 +2148,7 @@ func wipe_all() -> void:
 	faction_reputation.clear()
 	gathered_intel.clear()
 	social_consequences.clear()
+	codex_viewed.clear()
 	active_quests.clear()
 	completed_quest_ids.clear()
 	base_tier = 1
@@ -2160,6 +2227,8 @@ func save_game() -> bool:
 			"stat_pts":      int(cd.get("stat_pts",   0)),
 			"stats":         Array(cd.get("stats",    [1,1,1,1,1])),
 			"skills":        Array(cd.get("skills",   [])),
+			"birth_game_day": int(cd.get("birth_game_day", 0)),
+			"npc_class":     str(cd.get("npc_class", "")),
 			"feats":         cd.get("feats",          {}).duplicate(),
 			"spells":        Array(cd.get("spells",   [])),
 			"injuries":      Array(cd.get("injuries", [])),
@@ -2210,7 +2279,10 @@ func save_game() -> bool:
 		active_ritual_data.append(_serialize_ritual(r))
 
 	var data: Dictionary = {
-		"version":                   5,
+		"version":                   6,
+		"custom_spells":             (RimvaleAPI.engine.export_custom_spells()
+			if RimvaleAPI.engine != null and RimvaleAPI.engine.has_method("export_custom_spells")
+			else []),
 		"player_name":               player_name,
 		"player_level":              player_level,
 		"player_xp":                 player_xp,
@@ -2279,6 +2351,10 @@ func save_game() -> bool:
 		"ritual_tasks":              ritual_task_data,
 		"active_rituals":            active_ritual_data,
 		"last_login_date":           last_login_date,
+		"tutorial_steps_shown":      tutorial_steps_shown,
+		"tutorial_disabled":         tutorial_disabled,
+		"achievements_unlocked":     achievements_unlocked,
+		"codex_viewed":              codex_viewed,
 	}
 
 	# Multi-slot routing — rotate previous autos and write the new one to
@@ -2433,6 +2509,10 @@ func load_game() -> bool:
 	party_in_metropolitan    = bool(data.get("party_in_metropolitan", false))
 	active_vehicle           = str(data.get("active_vehicle", ""))
 	last_login_date          = str(data.get("last_login_date", ""))
+	tutorial_steps_shown     = Array(data.get("tutorial_steps_shown", []))
+	tutorial_disabled        = bool(data.get("tutorial_disabled", false))
+	achievements_unlocked    = Array(data.get("achievements_unlocked", []))
+	codex_viewed             = Array(data.get("codex_viewed", []))
 
 	# Restore quest state
 	quest_state = {
@@ -2488,6 +2568,9 @@ func load_game() -> bool:
 		if char_dict != null:
 			# Restore lifespan fields (override the random max_age from create_character)
 			char_dict["max_age"]           = int(cd.get("max_age", char_dict.get("max_age", 100)))
+			# Legacy saves (no birth day) get 0 — preserves their old effective age.
+			char_dict["birth_game_day"]    = int(cd.get("birth_game_day", 0))
+			char_dict["npc_class"]         = str(cd.get("npc_class", ""))
 			char_dict["months_sacrificed"] = int(cd.get("months_sacrificed", 0))
 			char_dict["life_bound_sp"]     = int(cd.get("life_bound_sp", 0))
 			char_dict["insanity"]          = int(cd.get("insanity", 0))
@@ -2530,6 +2613,25 @@ func load_game() -> bool:
 			char_dict["safeguard_stats"] = saved_sg_stats
 			var saved_fav: Array = Array(cd.get("favored_skills", []))
 			char_dict["favored_skills"] = saved_fav
+			# ── Fields that were saved but never restored (Phase 3 audit fix):
+			# apex item attunement tiers, magic-item toggles, vehicle attunement,
+			# weapon-mastery choices. Without these the data silently reset on load.
+			var saved_apex = cd.get("apex_tiers", {})
+			if typeof(saved_apex) == TYPE_DICTIONARY:
+				char_dict["apex_tiers"] = saved_apex.duplicate()
+			var saved_mi_tog = cd.get("mi_active_toggles", {})
+			if typeof(saved_mi_tog) == TYPE_DICTIONARY:
+				char_dict["mi_active_toggles"] = saved_mi_tog.duplicate()
+			var saved_veh = cd.get("attuned_vehicles", {})
+			if typeof(saved_veh) == TYPE_DICTIONARY:
+				char_dict["attuned_vehicles"] = saved_veh.duplicate()
+			elif typeof(saved_veh) == TYPE_ARRAY:
+				char_dict["attuned_vehicles"] = saved_veh.duplicate()
+			var saved_mw = cd.get("mastered_weapons", [])
+			if typeof(saved_mw) == TYPE_ARRAY or typeof(saved_mw) == TYPE_DICTIONARY:
+				char_dict["mastered_weapons"] = saved_mw.duplicate()
+			if cd.has("wm_can_rechoose"):
+				char_dict["wm_can_rechoose"] = bool(cd.get("wm_can_rechoose", true))
 		# Restore equipped items via equip_item so weapon/armor AC calculations apply
 		var weapon: String = str(cd.get("weapon", ""))
 		var armor:  String = str(cd.get("armor",  ""))
@@ -2597,6 +2699,13 @@ func load_game() -> bool:
 			if cname in name_to_handle:
 				t["character_handle"] = name_to_handle[cname]
 
+	# Re-register custom (player-built) spell definitions BEFORE ritual spells —
+	# without this, custom non-ritual spells survived only as dangling names.
+	var saved_custom_spells: Array = Array(data.get("custom_spells", []))
+	if not saved_custom_spells.is_empty() and RimvaleAPI.engine != null \
+			and RimvaleAPI.engine.has_method("import_custom_spells"):
+		RimvaleAPI.engine.import_custom_spells(saved_custom_spells)
+
 	# Re-register completed ritual spells AFTER characters exist and handles remapped
 	ensure_ritual_spells_registered()
 
@@ -2604,56 +2713,4 @@ func load_game() -> bool:
 
 # ── Ritual serialization helpers ─────────────────────────────────────────────
 
-func _serialize_ritual(r: Dictionary) -> Dictionary:
-	return {
-		"id":              str(r.get("id", "")),
-		"spell_name":      str(r.get("spell_name", "")),
-		"spell_desc":      str(r.get("spell_desc", "")),
-		"caster_handle":   int(r.get("caster_handle", -1)),
-		"caster_name":     str(r.get("caster_name", "")),
-		"sp_committed":    int(r.get("sp_committed", 1)),
-		"sp_cost":         int(r.get("sp_cost", r.get("sp_committed", 1))),
-		"domain":          int(r.get("domain", 0)),
-		"domain_name":     str(r.get("domain_name", "")),
-		"range_idx":       int(r.get("range_idx", 1)),
-		"is_attack":       bool(r.get("is_attack", true)),
-		"die_count":       int(r.get("die_count", 1)),
-		"die_sides":       int(r.get("die_sides", 6)),
-		"damage_type":     int(r.get("damage_type", 3)),
-		"damage_type_name": str(r.get("damage_type_name", "Force")),
-		"is_healing":      bool(r.get("is_healing", false)),
-		"duration_rounds": int(r.get("duration_rounds", 0)),
-		"max_targets":     int(r.get("max_targets", 1)),
-		"area_type":       int(r.get("area_type", 0)),
-		"conditions_csv":  str(r.get("conditions_csv", "")),
-		"is_teleport":     bool(r.get("is_teleport", false)),
-		"tp_range":        int(r.get("tp_range", 0)),
-		"is_combustion":   bool(r.get("is_combustion", false)),
-	}
-
-func _deserialize_ritual(d: Dictionary) -> Dictionary:
-	return {
-		"id":              str(d.get("id", "")),
-		"spell_name":      str(d.get("spell_name", "")),
-		"spell_desc":      str(d.get("spell_desc", "")),
-		"caster_handle":   int(d.get("caster_handle", -1)),
-		"caster_name":     str(d.get("caster_name", "")),
-		"sp_committed":    int(d.get("sp_committed", 1)),
-		"sp_cost":         int(d.get("sp_cost", d.get("sp_committed", 1))),
-		"domain":          int(d.get("domain", 0)),
-		"domain_name":     str(d.get("domain_name", "")),
-		"range_idx":       int(d.get("range_idx", 1)),
-		"is_attack":       bool(d.get("is_attack", true)),
-		"die_count":       int(d.get("die_count", 1)),
-		"die_sides":       int(d.get("die_sides", 6)),
-		"damage_type":     int(d.get("damage_type", 3)),
-		"damage_type_name": str(d.get("damage_type_name", "Force")),
-		"is_healing":      bool(d.get("is_healing", false)),
-		"duration_rounds": int(d.get("duration_rounds", 0)),
-		"max_targets":     int(d.get("max_targets", 1)),
-		"area_type":       int(d.get("area_type", 0)),
-		"conditions_csv":  str(d.get("conditions_csv", "")),
-		"is_teleport":     bool(d.get("is_teleport", false)),
-		"tp_range":        int(d.get("tp_range", 0)),
-		"is_combustion":   bool(d.get("is_combustion", false)),
-	}
+func _serialize_

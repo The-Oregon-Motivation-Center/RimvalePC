@@ -101,6 +101,7 @@ func _build_lineages_tab(parent: Control) -> void:
 	hbox.add_child(_lineage_details_panel)
 
 func _on_lineage_selected(lineage: String) -> void:
+	GameState.mark_codex_viewed("lineage:" + lineage)
 	selected_lineage = lineage
 	for child in _lineage_details_panel.get_children():
 		child.queue_free()
@@ -243,6 +244,7 @@ func _on_feat_category_selected(idx: int) -> void:
 		_feat_trees_list.add_child(btn)
 
 func _on_feat_tree_selected(tree: String) -> void:
+	GameState.mark_codex_viewed("feat:" + tree)
 	selected_feat_tree = tree
 	for child in _feats_list.get_children():
 		child.queue_free()
@@ -430,6 +432,7 @@ func _refresh_items_list() -> void:
 		_items_list.add_child(btn)
 
 func _on_item_selected(item: String) -> void:
+	GameState.mark_codex_viewed("item:" + item)
 	for c in _item_detail_panel.get_children():
 		c.queue_free()
 
@@ -500,6 +503,7 @@ func _build_geography_tab(parent: Control) -> void:
 	hbox.add_child(_region_details_panel)
 
 func _on_region_selected(region: String) -> void:
+	GameState.mark_codex_viewed("region:" + region)
 	selected_region = region
 	for child in _region_details_panel.get_children():
 		child.queue_free()
@@ -631,6 +635,8 @@ func _on_spell_domain_selected(domain: String) -> void:
 func _on_spell_selected(spell: Array) -> void:
 	if not _spell_detail_panel:
 		return
+	if spell.size() > 0:
+		GameState.mark_codex_viewed("spell:" + str(spell[0]))
 	for child in _spell_detail_panel.get_children():
 		child.queue_free()
 
@@ -665,8 +671,4 @@ func _on_spell_selected(spell: Array) -> void:
 	if desc != "":
 		var desc_lbl := Label.new()
 		desc_lbl.text = desc
-		desc_lbl.add_theme_font_size_override("font_size", 12)
-		desc_lbl.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
-		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		_spell_detail_panel.add_child(desc_lbl)
+		desc_lbl.add_theme_font

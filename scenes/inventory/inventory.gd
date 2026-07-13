@@ -37,6 +37,12 @@ func _ready() -> void:
 	RimvaleUtils.add_bg(self, RimvaleColors.BG_DARK)
 	_build_ui()
 
+	RimvaleUtils.show_hint(self, "inventory_basics",
+		"Click an item in your inventory and choose Equip to gear up your unit. " +
+		"Off-Hand (visible when Twin Fang is taken) equips a second weapon for dual wielding. " +
+		"Switch to Stash to manage shared items across the whole party.",
+		"Inventory")
+
 # ── UI Construction ───────────────────────────────────────────────────────────
 
 func _build_ui() -> void:
@@ -281,6 +287,8 @@ func _refresh_equipped() -> void:
 			var x_btn = RimvaleUtils.button("✕ Unequip", RimvaleColors.DANGER, 26, 10)
 			x_btn.pressed.connect(func():
 				_e.unequip_item(_handle, si_cap)
+				if typeof(AudioManager) != TYPE_NIL:
+					AudioManager.play_sfx("unequip")
 				_refresh_equipped()
 				_rebuild_items()
 			)
@@ -496,6 +504,8 @@ func _build_item_row(d: Dictionary) -> Control:
 		use_btn.custom_minimum_size = Vector2(78, 0)
 		use_btn.pressed.connect(func():
 			_e.use_consumable(_handle, in_cap)
+			if typeof(AudioManager) != TYPE_NIL:
+				AudioManager.play_sfx("potion")
 			_refresh_equipped()
 			_rebuild_items()
 		)
@@ -505,6 +515,13 @@ func _build_item_row(d: Dictionary) -> Control:
 		eq_btn.custom_minimum_size = Vector2(78, 0)
 		eq_btn.pressed.connect(func():
 			_e.equip_item(_handle, in_cap)
+			if typeof(AudioManager) != TYPE_NIL:
+				var sfx_id := "equip"
+				if item_type == "Weapon":
+					sfx_id = "equip_weapon"
+				elif item_type == "Armor":
+					sfx_id = "equip_armor"
+				AudioManager.play_sfx(sfx_id)
 			_refresh_equipped()
 			_rebuild_items()
 		)

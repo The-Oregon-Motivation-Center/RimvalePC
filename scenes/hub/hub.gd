@@ -47,6 +47,16 @@ func _ready() -> void:
 	# Populate
 	_refresh_party_list()
 
+	# Hub music — relaxed pizzicato.
+	if typeof(AudioManager) != TYPE_NIL:
+		AudioManager.play_music("music_hub", 1.5)
+
+	RimvaleUtils.show_hint(self, "hub_basics",
+		"This is your party hub. Tap a character to view their sheet and manage stats, " +
+		"skills, feats, and gear. Use the bottom tabs to switch between Hub, Inventory, " +
+		"Codex, Shop, World, and Profile.",
+		"Welcome to Rimvale")
+
 # ── Header ───────────────────────────────────────────────────────────────────
 
 func _make_header() -> Control:

@@ -3,6 +3,80 @@
 
 extends Node
 
+
+# ── Settings helpers ──────────────────────────────────────────────────────────
+# SettingsManager pushes preferences into Engine.get_meta(), so any system
+# can query them without depending on the Settings autoload.
+
+## Combat-animation duration after applying the user's "Animation Speed"
+## preference. Pass the *baseline* tween duration; the function returns a
+## faster value if the user wants snappier combat (or slower if they prefer
+## cinematic pacing). Use everywhere a fixed-duration combat tween fires.
+func combat_dur(base_seconds: float) -> float:
+	var speed: float = float(Engine.get_meta("combat_speed", 1.0))
+	if speed < 0.01:
+		speed = 1.0
+	return base_seconds / speed
+
+
+## True when the user has opted into "Reduce Motion" — gate camera shakes,
+## screen flashes, and ambient camera moves on this.
+func reduce_motion() -> bool:
+	return bool(Engine.get_meta("reduce_motion", false))
+
+
+## True when verbose battle-log dice/modifier breakdowns should be shown.
+func verbose_battle_log() -> bool:
+	return bool(Engine.get_meta("verbose_battle_log", true))
+
+
+## True when verbose tooltips should be shown across the UI.
+func verbose_tooltips() -> bool:
+	return bool(Engine.get_meta("verbose_tooltips", true))
+
+
+## UI text scale factor (1.0 = normal). Multiply font sizes by this where
+## the UI cares to honour the accessibility preference.
+func text_scale() -> float:
+	var s: float = float(Engine.get_meta("text_scale", 1.0))
+	return clampf(s, 0.5, 2.0)
+
+
+## Spawn the tabbed settings dialog over the given parent (any Node).
+## Used by every screen that wires F10 / gamepad Back to "open settings."
+func open_settings_dialog(parent: Node) -> void:
+	if parent == null:
+		return
+	var script := load("res://scenes/popups/settings_dialog.gd")
+	if script == null:
+		return
+	if typeof(AudioManager) != TYPE_NIL:
+		AudioManager.open_panel()
+	var dlg = script.new()
+	parent.add_child(dlg)
+	dlg.open()
+
+
+## Show a tutorial hint if it hasn't been shown before. No-op if the user
+## has already dismissed this step, or has turned tutorials off entirely.
+## `parent` is any Node — the popup adds itself as a child and free()s itself
+## on dismiss. Safe to call from anywhere; deferred so caller can finish its
+## own _ready before the popup mounts.
+func show_hint(parent: Node, step_id: String, body: String, title: String = "Tip") -> void:
+	if parent == null:
+		return
+	if GameState.tutorial_disabled:
+		return
+	if GameState.tutorial_step_was_shown(step_id):
+		return
+	var script := load("res://scenes/popups/tutorial_hint.gd")
+	if script == null:
+		return
+	var dlg = script.new()
+	parent.add_child(dlg)
+	dlg.open(step_id, body, title)
+
+
 const PORTRAIT_BASE = "res://assets/characters/"
 const PORTRAIT_FALLBACK = "res://assets/characters/regal_human.png"
 const SPRITE_PORTRAIT_BASE = "res://assets/characters_3d/"

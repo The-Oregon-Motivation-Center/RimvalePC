@@ -32,10 +32,14 @@ RimvaleColors="*res://autoload/rimvale_colors.gd"
 RimvaleUtils="*res://autoload/rimvale_utils.gd"
 CharacterModelBuilder="*res://autoload/character_model_builder.gd"
 EnemyArchetype="*res://autoload/enemy_archetype.gd"
+AudioManager="*res://autoload/audio_manager.gd"
+Settings="*res://autoload/settings_manager.gd"
+InputManager="*res://autoload/input_manager.gd"
+SteamIntegration="*res://autoload/steam_integration.gd"
+BattleSystem="*res://autoload/battle_system.gd"
+Conquest="*res://autoload/conquest.gd"
 DebugMonitor="*res://scenes/test/debug_monitor.gd"
 
 [display]
 
-window/size/viewport_width=1920
-window/size/viewport_height=1080
-window/stretch/mode="canvas_items"
+window/size/v

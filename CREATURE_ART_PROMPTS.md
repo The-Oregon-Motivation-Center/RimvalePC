@@ -182,7 +182,7 @@ Tall mossy-green humanoid, regenerating fresh wounds visible across the skin, lo
 Tusked green-skinned warrior in spiked iron-and-leather armor, two-handed war axe, tribal red war paint, battle scars, snarling battle cry.
 
 ## dark_elf.png
-Pale-skinned drow elf with long silver-white hair, dark obsidian armor, twin scimitars crossed in front, crimson eyes, sinister elegant grace.
+Ash-gray dark elf in jagged obsidian armor, a single curved blade at rest, ember-orange eyes, moving with predatory patience.
 
 ## ghoul.png
 Emaciated undead creature with elongated black claws and needle teeth, hairless gray flesh stretched over bones, hungry sunken yellow eyes.

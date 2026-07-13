@@ -1,4 +1,15 @@
 # Rimvale PC — Mobile Parity Plan
+
+> ⚠️ **PARTIALLY STALE (verified 2026-07-08).** Confirmed already fixed since
+> this was written: skill-point allocation at level-up (§4.2 — only the
+> character-creation step is still absent), the base tab (§5.8 — real,
+> read-only by design), enemy loot tables (§5.6 — full weighted generator),
+> custom-spell save button (§4.3), and most named conditions in §3.3 (all
+> conditions now have effects + tooltips as of Phase 1-2). §3.1's
+> "ACT_FEAT_ACTION" does not exist in the PC engine; feat actives go through
+> the FEAT_ACTIVATIONS table instead, and Deep Reserves/Safeguard rerolls fire
+> automatically. Current status lives in RELEASE_PLAN.md.
+
 *Generated from full code audit of both codebases*
 
 ---
@@ -350,17 +361,4 @@ Each phase is ordered by gameplay importance. Within each phase, steps are order
 
 ## Priority Order Summary
 
-| Priority | Phase | Description |
-|---|---|---|
-| P0 | 1.1, 1.2 | Quest completion + all dungeon types — game is not playable without these |
-| P1 | 1.3, 3.1 | XP system + full action types in dungeon |
-| P2 | 1.4, 1.5, 1.6 | Crafting / Foraging / Rituals timers |
-| P3 | 2.1, 2.2 | Story progression + contract system |
-| P4 | 3.2, 3.3 | Enemy AI depth + full condition effects |
-| P5 | 4.1–4.6 | Tab-level polish (skills step, custom spell save, rank, etc.) |
-| P6 | 5.1–5.8 | Polish & feature depth (loot, boss stat blocks, injuries, etc.) |
-| P7 | 6.1–6.2 | Full save/load round-trip for all fields |
-
----
-
-*Total estimated steps: ~65 discrete tasks across both engine and UI layers.*
+| Priority | Phase | Descript

@@ -13,11 +13,19 @@ func _ready() -> void:
 	if GameState.check_daily_login():
 		_show_daily_bonus_toast()
 
+	# ── Layout: full-width header card, then two columns, dev tools last ──
+	# (Was: nine sections stacked flat in one endless column, with the dev
+	# cheat panel sitting fourth from the top. Cemetery now lives on the
+	# Team page as its own tab.)
 	var main_scroll = ScrollContainer.new()
 	main_scroll.anchor_left = 0.0
 	main_scroll.anchor_top = 0.0
 	main_scroll.anchor_right = 1.0
 	main_scroll.anchor_bottom = 1.0
+	main_scroll.offset_left = 16
+	main_scroll.offset_top = 12
+	main_scroll.offset_right = -16
+	main_scroll.offset_bottom = -12
 	add_child(main_scroll)
 
 	var main_vbox = VBoxContainer.new()
@@ -25,48 +33,44 @@ func _ready() -> void:
 	main_vbox.add_theme_constant_override("separation", 16)
 	main_scroll.add_child(main_vbox)
 
-	# Profile card section
+	# Header: profile card spans the full width
 	_build_profile_card(main_vbox)
 
+	# Two-column body
+	var columns = HBoxContainer.new()
+	columns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	columns.add_theme_constant_override("separation", 24)
+	main_vbox.add_child(columns)
+
+	var col_left = VBoxContainer.new()
+	col_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col_left.size_flags_stretch_ratio = 1.0
+	col_left.add_theme_constant_override("separation", 12)
+	columns.add_child(col_left)
+
+	var col_right = VBoxContainer.new()
+	col_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col_right.size_flags_stretch_ratio = 1.0
+	col_right.add_theme_constant_override("separation", 12)
+	columns.add_child(col_right)
+
+	# Left column: progression & persistence
+	_build_xp_section(col_left)
+	col_left.add_child(RimvaleUtils.separator())
+	_build_resources_section(col_left)
+	col_left.add_child(RimvaleUtils.separator())
+	_build_save_section(col_left)
+
+	# Right column: shortcuts, garage, collection stats
+	_build_actions_section(col_right)
+	col_right.add_child(RimvaleUtils.separator())
+	_build_vehicles_section(col_right)
+	col_right.add_child(RimvaleUtils.separator())
+	_build_stats_section(col_right)
+
+	# Dev tools live at the very bottom, out of the way of normal play
 	main_vbox.add_child(RimvaleUtils.separator())
-
-	# XP Progress section
-	_build_xp_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Resources section
-	_build_resources_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Dev Tools / cheat panel
 	_build_devtools_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Save Game section — manual saves + autosave info
-	_build_save_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Garage — owned arcane vehicles
-	_build_vehicles_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Cemetery — fallen units, revive for gold cost
-	_build_cemetery_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Actions section
-	_build_actions_section(main_vbox)
-
-	main_vbox.add_child(RimvaleUtils.separator())
-
-	# Stats summary section
-	_build_stats_section(main_vbox)
 
 	main_vbox.add_child(RimvaleUtils.spacer(20))
 
@@ -325,7 +329,7 @@ func _build_actions_section(parent: VBoxContainer) -> void:
 	rename_action_btn.pressed.connect(_on_rename_pressed)
 	actions_vbox.add_child(rename_action_btn)
 
-	var manage_btn = RimvaleUtils.button("⚔ Manage Units", RimvaleColors.ACCENT, 60, 12)
+	var manage_btn = RimvaleUtils.button("⚔ Manage Units & Cemetery", RimvaleColors.ACCENT, 60, 12)
 	manage_btn.pressed.connect(func():
 		get_tree().root.get_child(0).go_to_tab(0)
 	)
@@ -596,160 +600,7 @@ func _build_vehicle_card(name: String) -> Control:
 	vbox.add_child(spec_lbl)
 	return card
 
-func _build_cemetery_section(parent: VBoxContainer) -> void:
-	parent.add_child(RimvaleUtils.label("⚰  Cemetery", 14, RimvaleColors.ACCENT))
-	if GameState.cemetery.is_empty():
-		parent.add_child(RimvaleUtils.label(
-			"No fallen units. (Lost characters appear here and can be revived for gold.)",
-			11, RimvaleColors.TEXT_GRAY))
-		return
-	parent.add_child(RimvaleUtils.label(
-		"%d unit%s buried. Revive cost: 10,000 base + 1,000 per level." % [
-			GameState.cemetery.size(),
-			"s" if GameState.cemetery.size() != 1 else ""],
-		11, RimvaleColors.TEXT_GRAY))
-	for i in range(GameState.cemetery.size()):
-		parent.add_child(_build_grave_card(i))
-
-func _build_grave_card(grave_idx: int) -> Control:
-	var grave: Dictionary = GameState.cemetery[grave_idx]
-	var card := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.10, 0.08, 0.13, 1.0)
-	sb.border_color = Color(0.45, 0.35, 0.45, 0.55)
-	sb.set_border_width_all(1); sb.set_corner_radius_all(6); sb.set_content_margin_all(12)
-	card.add_theme_stylebox_override("panel", sb)
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 4)
-	card.add_child(vbox)
-
-	var name_str: String = str(grave.get("name", "Unknown"))
-	var lineage: String = str(grave.get("lineage", "Human"))
-	var lvl: int = int(grave.get("level", 1))
-	var age: int = int(grave.get("age_at_death", 0))
-	var cause: String = str(grave.get("cause", "unknown"))
-	var day: int = int(grave.get("day_of_death", 0))
-	var needs_ext: bool = GameState.grave_needs_extension(grave_idx)
-
-	var trow := HBoxContainer.new()
-	trow.add_theme_constant_override("separation", 8)
-	vbox.add_child(trow)
-	trow.add_child(RimvaleUtils.label("%s   (Lv %d)" % [name_str, lvl], 14, RimvaleColors.GOLD))
-	var spc := Control.new(); spc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	trow.add_child(spc)
-
-	vbox.add_child(RimvaleUtils.label(
-		"%s · died age %d · cause: %s · day %d" % [lineage, age, cause, day],
-		11, RimvaleColors.TEXT_GRAY))
-
-	# Old-age deaths require extension. Show a slider 1..N, where N is the
-	# number of years that wouldn't drop max_hp to ≤ 0. Killed-in-action
-	# graves use a simple revive button at the base cost.
-	var captured_idx: int = grave_idx
-	var captured_name: String = name_str
-
-	if needs_ext:
-		# Show extension picker.
-		# Recover stored max_hp from the serialized character (best effort).
-		# If we can't parse it, default to 50 — player will see the cap dynamically.
-		var grave_max_hp: int = 50
-		var serialized: String = str(grave.get("serialized", ""))
-		var json := JSON.new()
-		if serialized != "" and json.parse(serialized) == OK:
-			var data = json.data
-			if data is Dictionary:
-				grave_max_hp = int(data.get("max_hp", grave_max_hp))
-		var max_extend: int = maxi(1, grave_max_hp - 1)   # at least 1, at most max_hp-1
-
-		vbox.add_child(RimvaleUtils.label(
-			"⏳ Old-age death — lifespan must be extended.", 11,
-			Color(0.85, 0.55, 0.35)))
-		vbox.add_child(RimvaleUtils.label(
-			"Each year extended costs 10,000g and removes 1 max HP " +
-			"(current max %d → drops to 0 = permadead)." % grave_max_hp,
-			10, RimvaleColors.TEXT_DIM))
-
-		var ext_row := HBoxContainer.new()
-		ext_row.add_theme_constant_override("separation", 8)
-		vbox.add_child(ext_row)
-		ext_row.add_child(RimvaleUtils.label(
-			"Extend years:", 11, RimvaleColors.TEXT_GRAY))
-		var slider := HSlider.new()
-		slider.min_value = 1
-		slider.max_value = max_extend
-		slider.step = 1
-		slider.value = 1
-		slider.custom_minimum_size = Vector2(160, 0)
-		ext_row.add_child(slider)
-		var ext_lbl := RimvaleUtils.label("1", 11, RimvaleColors.GOLD)
-		ext_lbl.custom_minimum_size = Vector2(28, 0)
-		ext_row.add_child(ext_lbl)
-
-		var brow := HBoxContainer.new()
-		brow.add_theme_constant_override("separation", 8)
-		vbox.add_child(brow)
-		var status_lbl := RimvaleUtils.label("", 11, RimvaleColors.GOLD)
-		status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		brow.add_child(status_lbl)
-
-		var revive_btn := RimvaleUtils.button("⚱ Revive", RimvaleColors.GOLD, 32, 11)
-		brow.add_child(revive_btn)
-
-		var refresh_status := func():
-			var ext_y: int = int(slider.value)
-			var total_cost: int = GameState.revive_total_cost(captured_idx, ext_y)
-			var resulting_hp: int = grave_max_hp - ext_y
-			ext_lbl.text = str(ext_y)
-			var can_afford: bool = GameState.gold >= total_cost
-			var s: String = "Cost: %dg · Max HP after: %d" % [total_cost, resulting_hp]
-			if not can_afford:
-				s += "  (need %d more)" % (total_cost - GameState.gold)
-			status_lbl.text = s
-			status_lbl.add_theme_color_override("font_color",
-				RimvaleColors.GOLD if can_afford else Color(0.95, 0.45, 0.45))
-			revive_btn.disabled = not can_afford
-		slider.value_changed.connect(func(_v): refresh_status.call())
-		refresh_status.call()
-
-		revive_btn.pressed.connect(func():
-			var err: String = GameState.revive_from_cemetery(
-				captured_idx, int(slider.value))
-			if err != "":
-				_show_notice(err)
-			else:
-				_show_notice("%s has been revived!" % captured_name)
-			_refresh()
-		)
-	else:
-		# Killed-in-action: simple revive at base cost.
-		var cost: int = GameState.cemetery_revive_cost(lvl)
-		var can_afford: bool = GameState.gold >= cost
-		var brow := HBoxContainer.new()
-		brow.add_theme_constant_override("separation", 8)
-		vbox.add_child(brow)
-		var status_text: String = "Cost: %d gold" % cost
-		if not can_afford:
-			status_text += "  (need %d more)" % (cost - GameState.gold)
-		var status_lbl := RimvaleUtils.label(status_text, 11,
-			RimvaleColors.GOLD if can_afford else Color(0.95, 0.45, 0.45))
-		status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		brow.add_child(status_lbl)
-		var btn_color: Color = RimvaleColors.GOLD if can_afford else RimvaleColors.TEXT_GRAY
-		var revive_btn := RimvaleUtils.button("⚱ Revive", btn_color, 32, 11)
-		revive_btn.disabled = not can_afford
-		revive_btn.pressed.connect(func():
-			var err: String = GameState.revive_from_cemetery(captured_idx, 0)
-			if err != "":
-				_show_notice(err)
-			else:
-				_show_notice("%s has been revived!" % captured_name)
-			_refresh()
-		)
-		brow.add_child(revive_btn)
-
-	return card
+# Cemetery UI moved to the Team page (scenes/team/team.gd, "⚰ Cemetery" tab).
 
 # ── Restored from HEAD: helpers needed by profile-page logic ─────────────
 
@@ -846,6 +697,31 @@ func _build_devtools_section(parent: VBoxContainer) -> void:
 	debug_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	debug_row.add_child(debug_hint)
 	rows.add_child(debug_row)
+
+	# 2D render mode toggle (experimental) — top-down orthographic camera on
+	# region maps and dungeons. 3D perspective is the default.
+	var r2d_row := HBoxContainer.new()
+	r2d_row.add_theme_constant_override("separation", 8)
+	var r2d_lbl := RimvaleUtils.label("🎨 2.5D Mode", 12, RimvaleColors.CYAN)
+	r2d_lbl.custom_minimum_size = Vector2(100, 0)
+	r2d_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	r2d_row.add_child(r2d_lbl)
+	var r2d_check := CheckButton.new()
+	r2d_check.button_pressed = Settings.render_2d()
+	r2d_check.add_theme_font_size_override("font_size", 13)
+	r2d_check.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
+	r2d_check.text = "ON" if Settings.render_2d() else "OFF"
+	r2d_check.toggled.connect(func(on: bool):
+		Settings.set_value("display_render_2d", on)
+		r2d_check.text = "ON" if on else "OFF"
+	)
+	r2d_row.add_child(r2d_check)
+	var r2d_hint := RimvaleUtils.label(
+		"Experimental: low side-on camera on region maps & battles (MapleStory-ish angle)",
+		10, RimvaleColors.TEXT_DIM)
+	r2d_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	r2d_row.add_child(r2d_hint)
+	rows.add_child(r2d_row)
 
 	# Cheat rows below only render in debug mode — toggle above flips them.
 	if not GameState.debug_mode:
@@ -1128,44 +1004,4 @@ func _devtools_row(label_txt: String, col: Color,
 		btn.text = btn_label
 		btn.custom_minimum_size = Vector2(80, 36)
 		btn.add_theme_font_size_override("font_size", 13)
-		# Normal style
-		var ns := StyleBoxFlat.new()
-		ns.bg_color = Color(col, 0.18)
-		ns.border_color = Color(col, 0.55)
-		ns.set_border_width_all(1)
-		ns.set_corner_radius_all(5)
-		ns.content_margin_left   = 6
-		ns.content_margin_right  = 6
-		ns.content_margin_top    = 4
-		ns.content_margin_bottom = 4
-		btn.add_theme_stylebox_override("normal", ns)
-		# Hover
-		var hs := ns.duplicate() as StyleBoxFlat
-		hs.bg_color = Color(col, 0.32)
-		btn.add_theme_stylebox_override("hover", hs)
-		# Pressed
-		var ps := ns.duplicate() as StyleBoxFlat
-		ps.bg_color = Color(col, 0.45)
-		btn.add_theme_stylebox_override("pressed", ps)
-		btn.add_theme_color_override("font_color", col)
-		btn.pressed.connect(func(): callback.call(btn_amount))
-		row.add_child(btn)
-
-	return row
-
-## Update the resource display labels after a cheat is applied.
-
-func _update_name_display() -> void:
-	if _player_name_lbl:
-		_player_name_lbl.text = GameState.player_name
-
-func _close_rename_dialog(dialog: Control) -> void:
-	dialog.queue_free()
-	rename_dialog_open = false
-
-func _close_wipe_dialog(dialog: Control) -> void:
-	dialog.queue_free()
-	wipe_confirm_dialog_open = false
-
-# ── Daily Login Toast ─────────────────────────────────────────────────────────
- 
+		#
