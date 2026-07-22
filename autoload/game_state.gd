@@ -2713,4 +2713,56 @@ func load_game() -> bool:
 
 # ── Ritual serialization helpers ─────────────────────────────────────────────
 
-func _serialize_
+func _serialize_ritual(r: Dictionary) -> Dictionary:
+	return {
+		"id":              str(r.get("id", "")),
+		"spell_name":      str(r.get("spell_name", "")),
+		"spell_desc":      str(r.get("spell_desc", "")),
+		"caster_handle":   int(r.get("caster_handle", -1)),
+		"caster_name":     str(r.get("caster_name", "")),
+		"sp_committed":    int(r.get("sp_committed", 1)),
+		"sp_cost":         int(r.get("sp_cost", r.get("sp_committed", 1))),
+		"domain":          int(r.get("domain", 0)),
+		"domain_name":     str(r.get("domain_name", "")),
+		"range_idx":       int(r.get("range_idx", 1)),
+		"is_attack":       bool(r.get("is_attack", true)),
+		"die_count":       int(r.get("die_count", 1)),
+		"die_sides":       int(r.get("die_sides", 6)),
+		"damage_type":     int(r.get("damage_type", 3)),
+		"damage_type_name": str(r.get("damage_type_name", "Force")),
+		"is_healing":      bool(r.get("is_healing", false)),
+		"duration_rounds": int(r.get("duration_rounds", 0)),
+		"max_targets":     int(r.get("max_targets", 1)),
+		"area_type":       int(r.get("area_type", 0)),
+		"conditions_csv":  str(r.get("conditions_csv", "")),
+		"is_teleport":     bool(r.get("is_teleport", false)),
+		"tp_range":        int(r.get("tp_range", 0)),
+		"is_combustion":   bool(r.get("is_combustion", false)),
+	}
+
+func _deserialize_ritual(d: Dictionary) -> Dictionary:
+	return {
+		"id":              str(d.get("id", "")),
+		"spell_name":      str(d.get("spell_name", "")),
+		"spell_desc":      str(d.get("spell_desc", "")),
+		"caster_handle":   int(d.get("caster_handle", -1)),
+		"caster_name":     str(d.get("caster_name", "")),
+		"sp_committed":    int(d.get("sp_committed", 1)),
+		"sp_cost":         int(d.get("sp_cost", d.get("sp_committed", 1))),
+		"domain":          int(d.get("domain", 0)),
+		"domain_name":     str(d.get("domain_name", "")),
+		"range_idx":       int(d.get("range_idx", 1)),
+		"is_attack":       bool(d.get("is_attack", true)),
+		"die_count":       int(d.get("die_count", 1)),
+		"die_sides":       int(d.get("die_sides", 6)),
+		"damage_type":     int(d.get("damage_type", 3)),
+		"damage_type_name": str(d.get("damage_type_name", "Force")),
+		"is_healing":      bool(d.get("is_healing", false)),
+		"duration_rounds": int(d.get("duration_rounds", 0)),
+		"max_targets":     int(d.get("max_targets", 1)),
+		"area_type":       int(d.get("area_type", 0)),
+		"conditions_csv":  str(d.get("conditions_csv", "")),
+		"is_teleport":     bool(d.get("is_teleport", false)),
+		"tp_range":        int(d.get("tp_range", 0)),
+		"is_combustion":   bool(d.get("is_combustion", false)),
+	}

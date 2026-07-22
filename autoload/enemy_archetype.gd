@@ -168,3 +168,107 @@ func feats_for(archetype: String, level: int) -> Dictionary:
 	for i in range(unlock_count):
 		out[str(feats[i])] = feat_tier
 	return out
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  NPC CLASSES — GMG pp.103-110 "Examples of NPC builds"
+#  Each class = a stat/skill archetype (drives the L1/5/10/15/20 tables above)
+#  + an ordered feat list taken from the GMG's "Example Feats continued" table.
+#  Feat names are normalized to the exact engine registry keys; where the GMG
+#  lists a crafting tool that has no registry entry (Glassblower's/Cobbler's/
+#  Carpenter's/Cartographer's Tools, Brewer's Supplies) the closest existing
+#  craft feat substitutes, marked with a comment.
+# ══════════════════════════════════════════════════════════════════════════════
+const CLASS_DEFS: Dictionary = {
+	"Divine Champion": {   # stalwart defender, heavy armor + divine barriers
+		"archetype": "Fighter",
+		"feats": ["Unyielding Defender", "Turn the Blade", "Deflective Stance",
+			"Safeguard", "Tower Shield", "Titanic Bastion", "Wall of the Battered",
+			"Grasp of the Forgotten", "Mind Over Challenge", "Smith's Tools",
+			"Arcane Wellspring"],
+	},
+	"Arcane Weaver": {     # master of Spark Point manipulation
+		"archetype": "Mage",
+		"feats": ["Arcane Wellspring", "Spell Shaper", "Arcane Seal",
+			"Magic Expertise", "Effect Shaper", "Create Demiplane", "Spark Leech",
+			"Alchemist's Supplies", "Calligrapher's Supplies"],
+	},
+	"Shadowblade": {       # stealth, speed, and illusion
+		"archetype": "Rogue",
+		"feats": ["Illusion & Deception", "Stealth & Subterfuge",
+			"Mirrorsteel Glint", "Echoed Steps", "Assassin's Execution",
+			"Veyra's Veil", "Tinker's Tools", "Poisoner's Kit", "Arcane Wellspring"],
+	},
+	"Elementalist": {      # raw forces of nature
+		"archetype": "Mage",
+		"feats": ["Elemental Ward", "Chaos's Flow", "Weatherwise Tailoring",
+			"Bender", "Magic Expertise", "Planar Graze",
+			"Artisan's Tools",     # GMG: Glassblower's Tools (no registry entry)
+			"Navigator's Tools",   # GMG: Cartographer's Tools (no registry entry)
+			"Arcane Wellspring"],
+	},
+	"Vitalist": {          # vitality, endurance, rapid recovery
+		"archetype": "Fighter",
+		"feats": ["Iron Vitality", "Healing & Restoration", "Mind Over Challenge",
+			"Rest & Recovery", "Unity's Ebb",
+			"Alchemist's Supplies", # GMG: Brewer's Supplies (no registry entry)
+			"Culinary Virtuoso", "Herbalism Kit"],
+	},
+	"Swiftblade": {        # agility and quick reflexes
+		"archetype": "Monk",
+		"feats": ["Swift Striker", "Duelist's Path", "Temporal Touch",
+			"Turn the Blade", "Agile Explorer", "Linebreaker's Aim",
+			"Artisan's Tools",     # GMG: Cobbler's Tools (no registry entry)
+			"Tinker's Tools"],     # GMG: Carpenter's Tools (no registry entry)
+	},
+	"Societal Paragon": {  # influence, resources, standing
+		"archetype": "Rogue",
+		"feats": ["Master of Ceremonies", "Precise Tactician", "Smith's Tools",
+			"Tinker's Tools", "Unity's Ebb", "Jeweler's Tools",
+			"Navigator's Tools",   # GMG: Cartographer's Tools (no registry entry)
+			"Calligrapher's Supplies"],
+	},
+	"Spellblade": {        # weapons and magic in tandem
+		"archetype": "Monk",
+		"feats": ["Martial Prowess", "Weapon Mastery", "Turn the Blade",
+			"Crimson Edge", "Arcane Seal", "Fury's Call", "Smith's Tools",
+			"Artisan's Tools",     # GMG: Carpenter's Tools (no registry entry)
+			"Arcane Wellspring"],
+	},
+	"Storyteller": {       # narrative-driven power
+		"archetype": "Monk",
+		"feats": ["Blade Scripture", "Flare of Defiance", "Planar Graze",
+			"Grasp of the Forgotten", "Spark Leech", "Veyra's Veil",
+			"Culinary Virtuoso",
+			"Artisan's Tools",     # GMG: Glassblower's Tools (no registry entry)
+			"Arcane Wellspring"],
+	},
+}
+
+## All class names, GMG order.
+func class_names() -> Array:
+	return CLASS_DEFS.keys()
+
+## The stat/skill archetype a class builds on ("Fighter" fallback).
+func class_archetype(cls: String) -> String:
+	return str(CLASS_DEFS.get(cls, {}).get("archetype", "Fighter"))
+
+## Stats [STR, SPD, INT, VIT, DIV] for a class at a level (GMG tables).
+func class_stats_for(cls: String, level: int) -> Array:
+	return stats_for(class_archetype(cls), level)
+
+## Skill ranks map for a class at a level (GMG tables).
+func class_skills_for(cls: String, level: int) -> Dictionary:
+	return skills_for(class_archetype(cls), level)
+
+## Feats {name: tier} for a class at a level — the class's OWN feat list,
+## unlocked at the same pacing as archetype feats.
+func class_feats_for(cls: String, level: int) -> Dictionary:
+	if not CLASS_DEFS.has(cls):
+		return feats_for("Fighter", level)
+	var feats: Array = CLASS_DEFS[cls]["feats"]
+	var unlock_count: int = clampi(int(ceil(float(level) / 3.0)), 1, feats.size())
+	var feat_tier: int = clampi(1 + level / 4, 1, 5)
+	var out: Dictionary = {}
+	for i in range(unlock_count):
+		out[str(feats[i])] = feat_tier
+	return out

@@ -243,4 +243,32 @@ func on_enemy_killed() -> void:
 	unlock("first_blood")
 
 
-func on_vehic
+func on_vehicle_acquired() -> void:
+	unlock("motor_pool")
+
+
+func on_mythic_equipped() -> void:
+	unlock("mythic_collector")
+
+
+func on_story_badge_earned(badge_count: int) -> void:
+	if badge_count >= 1:
+		unlock("badge_first")
+	if badge_count >= 9:
+		unlock("badge_nine")
+
+
+func on_revive_from_cemetery() -> void:
+	unlock("cemetery_visit")
+
+
+## Call after a feat purchase with the party-wide total feat count.
+func on_feat_unlocked(total_party_feats: int) -> void:
+	if total_party_feats >= 10:
+		unlock("feat_master")
+
+
+## Call when a codex detail entry is opened, with the running unique count.
+func on_codex_viewed(unique_entries_viewed: int) -> void:
+	if unique_entries_viewed >= 50:
+		unlock("loremaster")

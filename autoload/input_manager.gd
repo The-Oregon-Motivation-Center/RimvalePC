@@ -142,4 +142,9 @@ func _add_joy_axis(action: String, axis: int, value: float) -> void:
 	for ev in InputMap.action_get_events(action):
 		if ev is InputEventJoypadMotion:
 			var m := ev as InputEventJoypadMotion
-			if m.axis == axis and signf(
+			if m.axis == axis and signf(m.axis_value) == signf(value):
+				return
+	var m := InputEventJoypadMotion.new()
+	m.axis = axis
+	m.axis_value = value
+	InputMap.action_add_event(action, m)

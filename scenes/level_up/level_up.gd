@@ -2594,4 +2594,142 @@ func _build_lineage(parent: VBoxContainer) -> void:
 
 
 ## Collapsible wrapper. Adds a header-button to `parent` that toggles a
-## body VBoxCont
+## body VBoxContainer's visibility. Returns the body so callers can fill
+## it. Default state: collapsed (body hidden, header shows ▶).
+func _build_collapsible(parent: VBoxContainer, title: String) -> VBoxContainer:
+	var wrapper := VBoxContainer.new()
+	wrapper.add_theme_constant_override("separation", 4)
+	parent.add_child(wrapper)
+
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	body.visible = false
+
+	var header := Button.new()
+	header.text = "▶  " + title
+	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	header.add_theme_font_size_override("font_size", 13)
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var captured_title: String = title
+	header.pressed.connect(func():
+		body.visible = not body.visible
+		header.text = ("▼  " if body.visible else "▶  ") + captured_title
+	)
+	wrapper.add_child(header)
+	wrapper.add_child(body)
+	return body
+
+
+## Toast helper for the level-up screen.
+## Transfer dialog — pick another agent in the collection to receive the
+## item. Mirrors the same dialog in inventory.gd so the two screens have
+## the same feature set.
+func _show_transfer_dialog(item_name: String) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Transfer " + item_name
+	dialog.get_ok_button().text = "Cancel"
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+	vbox.add_child(RimvaleUtils.label(
+		"Select an agent to receive this item:",
+		13, RimvaleColors.TEXT_GRAY))
+
+	for h in GameState.collection:
+		if h == _handle:
+			continue
+		var target_name: String = str(_e.get_character_name(h))
+		var lin: String = str(_e.get_character_lineage_name(h))
+		var lv: int = _e.get_character_level(h)
+
+		var h_cap: int = h
+		var in_cap: String = item_name
+		var row_btn := RimvaleUtils.button(
+			"%s  (%s Lv %d)" % [target_name, lin, lv],
+			RimvaleColors.TEXT_WHITE, 44, 13)
+		row_btn.pressed.connect(func():
+			_e.remove_item_from_inventory(_handle, in_cap)
+			_e.add_item_to_inventory(h_cap, in_cap)
+			_render_section()
+			dialog.hide()
+			dialog.queue_free()
+		)
+		vbox.add_child(row_btn)
+
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2(340, 320))
+
+func _show_notice(message: String) -> void:
+	var toast := Label.new()
+	toast.text = message
+	toast.add_theme_color_override("font_color", RimvaleColors.GOLD)
+	toast.add_theme_font_size_override("font_size", 13)
+	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	toast.offset_top = 60
+	toast.offset_bottom = 90
+	toast.z_index = 100
+	add_child(toast)
+	var tween := create_tween()
+	tween.tween_interval(2.0)
+	tween.tween_property(toast, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(func():
+		if is_instance_valid(toast):
+			toast.queue_free()
+	)
+
+## Apex tier picker — shows a dialog letting the player choose tiers 1-5
+## for the apex item. Falls back to a +1 tier bump if the engine has the
+## minimal apex_set_tier API available.
+func _show_apex_tier_picker(item_name: String) -> void:
+	if _e == null or not _e.has_method("apex_set_tier"):
+		_show_notice("Apex attunement requires engine support.")
+		return
+	var overlay := Control.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.z_index = 90
+	add_child(overlay)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.78)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var panel := PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.offset_left = -200; panel.offset_right = 200
+	panel.offset_top = -160; panel.offset_bottom = 160
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.10, 0.08, 0.16, 1.0)
+	bg.border_color = RimvaleColors.SP_PURPLE
+	bg.set_border_width_all(2); bg.set_corner_radius_all(8)
+	bg.set_content_margin_all(20)
+	panel.add_theme_stylebox_override("panel", bg)
+	overlay.add_child(panel)
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(vbox)
+	vbox.add_child(RimvaleUtils.label(
+		"Attune Tier — %s" % item_name, 14, RimvaleColors.SP_PURPLE))
+	var cur_tier: int = int(_e.apex_get_tier(_handle, item_name))
+	vbox.add_child(RimvaleUtils.label(
+		"Current: Tier %d/5" % cur_tier, 11, RimvaleColors.TEXT_GRAY))
+	for t in range(0, 6):
+		var tn: int = t
+		var btn := RimvaleUtils.button(
+			"Tier %d" % tn,
+			RimvaleColors.SP_PURPLE if tn != cur_tier else RimvaleColors.GOLD,
+			36, 12)
+		btn.pressed.connect(func():
+			var err: String = _e.apex_set_tier(_handle, item_name, tn)
+			if err != "":
+				_show_notice(err)
+			else:
+				_show_notice("Set %s to Tier %d." % [item_name, tn])
+			overlay.queue_free()
+			_render_section()
+		)
+		vbox.add_child(btn)
+	var cancel := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 32, 11)
+	cancel.pressed.connect(func(): overlay.queue_free())
+	vbox.add_child(cancel)

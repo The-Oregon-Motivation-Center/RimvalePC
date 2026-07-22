@@ -1004,4 +1004,41 @@ func _devtools_row(label_txt: String, col: Color,
 		btn.text = btn_label
 		btn.custom_minimum_size = Vector2(80, 36)
 		btn.add_theme_font_size_override("font_size", 13)
-		#
+		# Normal style
+		var ns := StyleBoxFlat.new()
+		ns.bg_color = Color(col, 0.18)
+		ns.border_color = Color(col, 0.55)
+		ns.set_border_width_all(1)
+		ns.set_corner_radius_all(5)
+		ns.content_margin_left   = 6
+		ns.content_margin_right  = 6
+		ns.content_margin_top    = 4
+		ns.content_margin_bottom = 4
+		btn.add_theme_stylebox_override("normal", ns)
+		# Hover
+		var hs := ns.duplicate() as StyleBoxFlat
+		hs.bg_color = Color(col, 0.32)
+		btn.add_theme_stylebox_override("hover", hs)
+		# Pressed
+		var ps := ns.duplicate() as StyleBoxFlat
+		ps.bg_color = Color(col, 0.45)
+		btn.add_theme_stylebox_override("pressed", ps)
+		btn.add_theme_color_override("font_color", col)
+		btn.pressed.connect(func(): callback.call(btn_amount))
+		row.add_child(btn)
+
+	return row
+
+## Update the resource display labels after a cheat is applied.
+
+func _update_name_display() -> void:
+	if _player_name_lbl:
+		_player_name_lbl.text = GameState.player_name
+
+func _close_rename_dialog(dialog: Control) -> void:
+	dialog.queue_free()
+	rename_dialog_open = false
+
+func _close_wipe_dialog(dialog: Control) -> void:
+	dialog.queue_free()
+	wipe_confirm_dialog_open = false

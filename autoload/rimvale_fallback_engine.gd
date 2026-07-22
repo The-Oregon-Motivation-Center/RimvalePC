@@ -3763,6 +3763,7 @@ func _ensure_lineage_regions() -> void:
 		"Wilds of Endero": [
 			"Cervin","Beetlefolk","Tetrasimian","Warden","Canidar",
 			"Ursari","Taurin","Quillari",
+			"Pangol","Venari",
 		],
 		"House of Arachana": [
 			"Bloodsilk Human","Serpentine","Shadewretch","Whisperspawn",
@@ -3776,6 +3777,7 @@ func _ensure_lineage_regions() -> void:
 		],
 		"Upper Forty": [
 			"Regal Human","Gilded Human","Voxilite","Starborn","Lightbound",
+			"Crimson Veil",
 		],
 		"Lower Forty": [
 			"Scavenger Human","Gremlin","Gremlidian","Groblodyte","Gutterborn",
@@ -3788,10 +3790,12 @@ func _ensure_lineage_regions() -> void:
 		"Corrupted Marshes": [
 			"Blackroot","Mirevenom","Mireling","Mireborn Human","Bloatfen Whisperer",
 			"Bogtender","Duckslings","Bilecrawler",
+			"Corrupted Wyrmblood","Rotborn Herald",
 		],
 		"Crypt at End of Valley": [
 			"Cryptkin Human","Hollowborn Human","Skulkin","Gravetouched","Gravemantle",
 			"Tombwalker","Myrrhkin",
+			"Blood Spawn","Carrionari","Graveleaps",
 		],
 		"Spindle York's Schism": [
 			"Hexkin","Hexshell","Hagborn Crone","Marionox","Chronogears",
@@ -3800,13 +3804,16 @@ func _ensure_lineage_regions() -> void:
 		"Peaks of Isolation": [
 			"Cragborn Human","Gravari","Lithari","Boreal Human","Windswept",
 			"Ursari",
+			"Frostborn","Glaceari",
 		],
 		"Pharaoh's Den": [
 			"Sandstrider Human","Serpentine","Gravari","Goldscale","Sunforged",
+			"Dustborn","Jackal Human",
 		],
 		"The Darkness": [
 			"Sable","Nightborne Human","Umbrawyrm","Duskling","Shadewretch",
 			"Gloomling",
+			"Disjointed Hounds",
 		],
 		"Arcane Collapse": [
 			"Arcanite Human","Madness-Touched Human","Hexkin","Parallax Watchers",
@@ -3814,6 +3821,7 @@ func _ensure_lineage_regions() -> void:
 		],
 		"Argent Hall": [
 			"Silverblood","Lightbound","Luminar Human","Auroran","Panoplian",
+			"Grimshell","Runeborn Human",
 		],
 		"Glass Passage": [
 			"Glassborn","Prismari","Shardkin","Shardwraith","Porcelari",
@@ -3825,6 +3833,7 @@ func _ensure_lineage_regions() -> void:
 		"Infernal Machine": [
 			"Hellforged","Cindervolk","Kettlekyn","Ferrusk","Ironjaw",
 			"Kindlekin","Emberkin",
+			"Scourling Human",
 		],
 		"Titan's Lament": [
 			"Ursari","Taurin","Gravari","Stormclad","Sunderborn Human",
@@ -3836,10 +3845,12 @@ func _ensure_lineage_regions() -> void:
 		"Vulcan Valley": [
 			"Cindervolk","Emberkin","Volcant","Hellforged","Kettlekyn",
 			"Sunforged",
+			"Ashenborn","Ashrot Human","Obsidian",
 		],
 		"The Isles": [
 			"Tiderunner Human","Tidewoven","Kelpheart Human","Fathomari",
 			"Hydrakari","Trenchborn","Saurian",
+			"Driftwood Woken",
 		],
 		"Depths of Denorim": [
 			"Fathomari","Trenchborn","Hydrakari","Drakari","Kelpheart Human",
@@ -3849,9 +3860,11 @@ func _ensure_lineage_regions() -> void:
 		],
 		"Gloamfen Hollow": [
 			"Mireling","Bogtender","Bloatfen Whisperer","Mossling","Hollowroot",
+			"Mistborn Human","Moonkin",
 		],
 		"Astral Tear": [
 			"Starborn","Starweaver","Parallax Watchers","Cloudling","Skysworn",
+			"Aetherian","Lost",
 		],
 		"L.I.T.O.": [
 			"Voxshell","Voxilite","Marionox","Chronogears","Echoform Warden",
@@ -3864,9 +3877,12 @@ func _ensure_lineage_regions() -> void:
 		],
 		"Terminus Volarus": [
 			"Skysworn","Zephyrkin","Zephyrite","Cloudling","Nimbari",
+			"Watchling",
+			"Galesworn Human",
 		],
 		"City of Eternal Light": [
 			"Luminar Human","Lightbound","Auroran","Lanternborn","Candlites",
+			"Glimmerfolk",
 		],
 		"Hallowed Sacrament": [
 			"Lightbound","Obsidian Seraph","Convergents","Pulsebound Hierophant",
@@ -3875,6 +3891,7 @@ func _ensure_lineage_regions() -> void:
 		"Land of Tomorrow": [
 			"Chronogears","Dreamer","Echo-Touched","Parallax Watchers",
 			"Lifeborne",
+			"Sparkforged Human",
 		],
 		"Sublimini Dominus": [
 			"Abyssari","Nullborn","Nullborn Ascetic","Oblivari Human","Nihilian",
@@ -8714,6 +8731,33 @@ var MAP_SIZE: int = 25
 const MAP_SIZE_STANDARD: int = 25
 const MAP_SIZE_CRAWL: int    = 50
 
+## Occupancy grid — maps tile key (y * MAP_SIZE + x) to the entity dict
+## standing there, or absent if clear. Rebuilt by _rebuild_occ_grid().
+## Battle mode's sim step calls this every tick; dungeon mode rebuilds
+## less often. _dung_entity_at_fast / _dung_occupied_fast use this for
+## O(1) lookups instead of the O(n) scans in the original functions.
+var _occ_grid: Dictionary = {}
+var _occ_grid_dirty: bool = true
+
+func _rebuild_occ_grid() -> void:
+	_occ_grid.clear()
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_dead", false)):
+			continue
+		var key: int = int(ent.get("y", 0)) * MAP_SIZE + int(ent.get("x", 0))
+		_occ_grid[key] = ent
+	_occ_grid_dirty = false
+
+func _dung_entity_at_fast(x: int, y: int):
+	if _occ_grid_dirty:
+		_rebuild_occ_grid()
+	return _occ_grid.get(y * MAP_SIZE + x)
+
+func _dung_occupied_fast(x: int, y: int) -> bool:
+	if _occ_grid_dirty:
+		_rebuild_occ_grid()
+	return _occ_grid.has(y * MAP_SIZE + x)
+
 ## Dungeon-Crawl specific — true while a crawl is active. Combat code can
 ## branch on this for spawn density, alert state, etc.
 var _crawl_active: bool = false
@@ -9594,18 +9638,35 @@ func _crawl_pathfind_internal(fx: int, fy: int, tx: int, ty: int,
 		party_flying: bool, allow_breakable: bool) -> Array:
 	if not _crawl_tile_walkable(tx, ty, party_flying, allow_breakable):
 		return []
+	# Ensure the occupancy grid is current.
+	if _occ_grid_dirty:
+		_rebuild_occ_grid()
+	# A* with Manhattan heuristic — explores far fewer tiles than BFS on
+	# large maps (150×150 battle fields). Uses a simple sorted-insert
+	# priority queue (Array); fast enough for the PATH_BUDGET of 4-8 per tick.
 	var came_from: Dictionary = {}
-	var visited: Dictionary = {}
-	var queue: Array = []
-	var start_key: Vector2i = Vector2i(fx, fy)
-	queue.append(start_key)
-	visited[start_key] = true
+	var g_score: Dictionary = {}
+	var start_key := Vector2i(fx, fy)
+	var goal_key := Vector2i(tx, ty)
+	g_score[start_key] = 0
+	# Open set: Array of [f_score, Vector2i]. Kept sorted by f_score (lowest first).
+	var open: Array = [[absi(tx - fx) + absi(ty - fy), start_key]]
+	var closed: Dictionary = {}
 	var found: bool = false
-	while not queue.is_empty():
-		var cur: Vector2i = queue.pop_front()
-		if cur.x == tx and cur.y == ty:
+	# Safety cap: never explore more than 4000 tiles per path — prevents
+	# frame stalls on unreachable goals deep inside walled-off regions.
+	var explored: int = 0
+	while not open.is_empty() and explored < 4000:
+		var best: Array = open.pop_front()
+		var cur: Vector2i = best[1]
+		if cur == goal_key:
 			found = true
 			break
+		if closed.has(cur):
+			continue
+		closed[cur] = true
+		explored += 1
+		var cur_g: int = int(g_score.get(cur, 99999))
 		var neighbours: Array = [
 			Vector2i(cur.x + 1, cur.y),
 			Vector2i(cur.x - 1, cur.y),
@@ -9613,9 +9674,12 @@ func _crawl_pathfind_internal(fx: int, fy: int, tx: int, ty: int,
 			Vector2i(cur.x, cur.y - 1),
 		]
 		for n in neighbours:
-			if visited.has(n): continue
-			if not _crawl_tile_walkable(n.x, n.y, party_flying, allow_breakable): continue
-			var blocker = _dung_entity_at(n.x, n.y)
+			if closed.has(n):
+				continue
+			if not _crawl_tile_walkable(n.x, n.y, party_flying, allow_breakable):
+				continue
+			# O(1) occupancy check via the grid.
+			var blocker = _occ_grid.get(n.y * MAP_SIZE + n.x)
 			if blocker != null:
 				if blocker.get("is_chest", false) and not (n.x == tx and n.y == ty):
 					continue
@@ -9623,13 +9687,25 @@ func _crawl_pathfind_internal(fx: int, fy: int, tx: int, ty: int,
 						and not blocker.get("is_friendly", false) \
 						and not blocker.get("is_dead", false):
 					continue
-			visited[n] = true
-			came_from[n] = cur
-			queue.append(n)
+			var new_g: int = cur_g + 1
+			if new_g < int(g_score.get(n, 99999)):
+				g_score[n] = new_g
+				came_from[n] = cur
+				var f: int = new_g + absi(tx - n.x) + absi(ty - n.y)
+				# Binary-insert into the sorted open list.
+				var lo: int = 0
+				var hi: int = open.size()
+				while lo < hi:
+					var mid: int = (lo + hi) >> 1
+					if int(open[mid][0]) < f:
+						lo = mid + 1
+					else:
+						hi = mid
+				open.insert(lo, [f, n])
 	if not found:
 		return []
 	var path: Array = []
-	var node: Vector2i = Vector2i(tx, ty)
+	var node: Vector2i = goal_key
 	while node != start_key:
 		path.append(node)
 		node = came_from[node]
@@ -15978,4 +16054,895 @@ const APEX_STATS: Array = [
 	["Zorin Blackscale",             "the Draconic Sovereign",       190, 17, 16, 8, 6, 11, "Black Talon"],
 	["Thalia Darksong",              "the Mournful Aria",            145, 13, 14, 12,5,  9, "Dirge Lute"],
 	["Gorrim Ironfist",              "the Mountain's Wrath",         175, 18, 12, 0, 4, 10, "Runic Warhammer"],
-	["Seraphina Windwalker",         "the Skybound Saint",           135, 14, 
+	["Seraphina Windwalker",         "the Skybound Saint",           135, 14, 16, 6, 8,  7, "Solar Lance"],
+	["Rurik Stormbringer",           "the Thunder-Crowned",          150, 15, 14, 4, 6,  8, "Storm Maul"],
+	["Lyra Moonshadow",              "the Hunter Beneath the Pines", 125, 14, 16, 4, 8,  7, "Twin Daggers"],
+	["Ilyra",                        "the Glasswright",              115, 14, 14, 10,6,  6, "Crystal Spear"],
+	["Kael",                         "the Ashwalker",                130, 15, 14, 2, 7,  8, "Cinder Spear"],
+	["Morthis the Binder",           "Warden of Forsaken Souls",     160, 16, 12, 8, 5, 10, "Soul Chain"],
+	["Kaelen the Hollow",            "the Unmade",                   165, 16, 14, 6, 5, 10, "Void Edge"],
+	["Nirael of the Glass Veil",     "the Shrouded Seer",            150, 14, 14, 10,6,  9, "Mirror Staff"],
+]
+
+## Militia group configs: [name, size, level, ac, weapon, ability]
+const MILITIA_STATS: Array = [
+	["Ironroot Guard",    10, 5, 19, "Spear",      "Shield Wall"],
+	["Emberveil Recon",    5, 4, 14, "Shortbow",   "Ambush Tactics"],
+	["Crimson Crusaders", 10, 6, 18, "Longsword",  "Battle Chant"],
+	["Shadow Blades",      5, 5, 16, "Dagger",     "Vanish"],
+	["Bone Wardens",       8, 4, 15, "Axe",        "Undead Frenzy"],
+	["Void Warband",      10, 6, 14, "Void Blade", "Void-Touched Frenzy"],
+	["Storm Riders",      10, 5, 14, "Lance",      "Skirmisher"],
+	["Sacred Vigil",      10, 5, 18, "Mace",       "Divine Zeal"],
+]
+
+func start_kaiju_dungeon(player_handles, kaiju_idx: int, terrain_style: int) -> void:
+	# Starts like a standard dungeon but then replaces enemies with multi-part kaiju
+	start_dungeon(player_handles, 1, -1, terrain_style)
+	_dungeon_type = 1
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	var idx: int = clamp(kaiju_idx, 0, KAIJU_STATS.size() - 1)
+	var ks: Array = KAIJU_STATS[idx]
+	var boss_hp: int = int(ks[1])
+	_dungeon_encounter_name = "Kaiju Hunt: %s" % str(ks[0])
+	_dungeon_enemy_level    = int(ks[5])
+
+	# Create multi-part kaiju entity with hit zones: Body, Head, Left Limb, Right Limb.
+	# All four parts live inside a 4×4 tile footprint (Colossal size per the spec).
+	# Footprint origin (top-left): (19, 19). Footprint covers tiles (19..22, 19..22).
+	# The renderer reads `footprint_w` / `footprint_h` / `footprint_origin_x` /
+	# `footprint_origin_y` on the Body entity to draw a 4-tile-wide trunk dome.
+	var kaiju_name: String = str(ks[0])
+	var hp_per_zone: int = boss_hp / 4
+
+	var KAIJU_FOOTPRINT_W: int = 4
+	var KAIJU_FOOTPRINT_H: int = 4
+	var KAIJU_FOOTPRINT_X0: int = 19
+	var KAIJU_FOOTPRINT_Y0: int = 19
+
+	# Body (main) — anchor carries footprint metadata so the renderer draws a
+	# 4×4 trunk. Sits at tile (20, 21) = center-bottom of the footprint.
+	_dungeon_entities.append({
+		"id":             "kaiju_body",
+		"name":           kaiju_name + " (Body)",
+		"handle":         -1,
+		"lineage_name":   kaiju_name,
+		"x": 20, "y": 21, "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"is_kaiju":    true,
+		"kaiju_part":  "Body",
+		"is_kaiju_trunk":      true,  # render a 4×4 trunk dome on top
+		"footprint_w":         KAIJU_FOOTPRINT_W,
+		"footprint_h":         KAIJU_FOOTPRINT_H,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
+		"size_id":     "colossal",
+		"size_tile_count": KAIJU_FOOTPRINT_W * KAIJU_FOOTPRINT_H,
+		"reach_ft":    20,
+		"hp":    hp_per_zone * 2, "max_hp": hp_per_zone * 2,
+		"ap":    int(ks[3]),  "max_ap": int(ks[3]),
+		"sp":    0,           "max_sp": 0,
+		"ac":    int(ks[2]),
+		"speed": int(ks[4]),
+		"ap_spent":  0, "move_used": 0,
+		"equipped_weapon": str(ks[6]),
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   _generate_creature_loot(_dungeon_enemy_level + 4),
+		"looted":      false,
+		"is_boss":     true,
+		"boss_desc":   str(ks[7]),
+	})
+
+	# Head — top-center of the 4×4 footprint.
+	_dungeon_entities.append({
+		"id":             "kaiju_head",
+		"name":           kaiju_name + " (Head)",
+		"handle":         -1,
+		"lineage_name":   kaiju_name,
+		"x": 21, "y": 19, "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"is_kaiju":    true,
+		"kaiju_part":  "Head",
+		"is_kaiju_part":       true,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
+		"hp":    hp_per_zone, "max_hp": hp_per_zone,
+		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
+		"sp":    0,           "max_sp": 0,
+		"ac":    int(ks[2]) + 1,
+		"speed": 0,
+		"ap_spent":  0, "move_used": 0,
+		"equipped_weapon": "None",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   [],
+		"looted":      false,
+		"is_boss":     true,
+	})
+
+	# Left Limb — left edge of the 4×4 footprint.
+	_dungeon_entities.append({
+		"id":             "kaiju_left",
+		"name":           kaiju_name + " (Left Limb)",
+		"handle":         -1,
+		"lineage_name":   kaiju_name,
+		"x": 19, "y": 22, "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"is_kaiju":    true,
+		"kaiju_part":  "Left Limb",
+		"is_kaiju_part":       true,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
+		"hp":    hp_per_zone, "max_hp": hp_per_zone,
+		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
+		"sp":    0,           "max_sp": 0,
+		"ac":    int(ks[2]),
+		"speed": 2,
+		"ap_spent":  0, "move_used": 0,
+		"equipped_weapon": "Kaiju Claw",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   [],
+		"looted":      false,
+		"is_boss":     true,
+	})
+
+	# Right Limb — right edge of the 4×4 footprint.
+	_dungeon_entities.append({
+		"id":             "kaiju_right",
+		"name":           kaiju_name + " (Right Limb)",
+		"handle":         -1,
+		"lineage_name":   kaiju_name,
+		"x": 22, "y": 22, "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"is_kaiju":    true,
+		"kaiju_part":  "Right Limb",
+		"is_kaiju_part":       true,
+		"footprint_origin_x":  KAIJU_FOOTPRINT_X0,
+		"footprint_origin_y":  KAIJU_FOOTPRINT_Y0,
+		"size":        "Colossal",
+		"hp":    hp_per_zone, "max_hp": hp_per_zone,
+		"ap":    int(ks[3]) / 2,  "max_ap": int(ks[3]) / 2,
+		"sp":    0,           "max_sp": 0,
+		"ac":    int(ks[2]),
+		"speed": 2,
+		"ap_spent":  0, "move_used": 0,
+		"equipped_weapon": "Kaiju Claw",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   [],
+		"looted":      false,
+		"is_boss":     true,
+	})
+
+	_update_fog()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DUNGEON CRAWL — extended dungeon mode (50×50, detection AI, chests)
+# ─────────────────────────────────────────────────────────────────────────────
+##
+## Dungeon Crawl differs from a standard dungeon in three ways:
+##   1. Map is 2× the linear size (50×50 vs 25×25 — so 4× the area).
+##   2. Enemies start with `is_alerted = false` and only act once they have
+##      detected a player via line-of-sight + perception range. Once one
+##      member of a group is alerted, allies within an "alert radius" of
+##      that enemy are pulled into combat too.
+##   3. Treasure chests are scattered through the map and contain pre-rolled
+##      loot from `_generate_creature_loot`. Chests trip when a player walks
+##      onto their tile (existing entity step-on path picks them up).
+##
+## Internally this delegates to `start_dungeon()` for the heavy lifting,
+## then post-processes the entity list to add the alert state and chests.
+## Possible objective items for search-and-find dungeons.
+## Random one is picked per dungeon and placed in the goal chest.
+const SEARCH_GOAL_ITEMS: Array = [
+	"The Lost Artifact",
+	"Sealed Tome of Riftcraft",
+	"Crown of the Forgotten King",
+	"Heartstone of the Mire",
+	"The Whispering Idol",
+	"Phial of First Light",
+	"Sigil of the Vanishing Order",
+	"The Pilgrim's Locket",
+	"Charter of the Hollow Pact",
+	"Ash-Etched Map",
+]
+
+## Search-and-find dungeon — same generation as Dungeon Crawl, but with a
+## single GOAL CHEST containing the objective item placed at a far-away
+## tile. Victory triggers the moment the party loots that chest, even if
+## enemies remain. Optional `goal_item_override` lets a quest pin a name.
+func start_dungeon_search_and_find(player_handles, enemy_level: int,
+		terrain_style: int, extra_enemies: int = 5,
+		goal_item_override: String = "") -> void:
+	# Spin up a normal crawl first.
+	start_dungeon_crawl(player_handles, enemy_level, terrain_style, extra_enemies)
+	# Layer the search-and-find state on top.
+	_dungeon_search_active     = true
+	_dungeon_search_goal_found = false
+	if goal_item_override != "":
+		_dungeon_search_goal_item = goal_item_override
+	else:
+		_dungeon_search_goal_item = SEARCH_GOAL_ITEMS[randi() % SEARCH_GOAL_ITEMS.size()]
+	_dungeon_encounter_name = "Search & Find: %s" % _dungeon_search_goal_item
+	_spawn_search_goal_chest()
+
+
+## Place a uniquely-tagged chest on a far floor tile. Falls back to any
+## floor tile if no distant one is available. Used by search-and-find.
+func _spawn_search_goal_chest() -> void:
+	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)):
+			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
+			break
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var best: Vector2i = Vector2i(-1, -1)
+	var best_dist: int = -1
+	for attempt in range(400):
+		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+		var idx: int = ty * MAP_SIZE + tx
+		if idx < 0 or idx >= _dungeon_map.size(): continue
+		if _dungeon_map[idx] != TILE_FLOOR: continue
+		if _dung_occupied(tx, ty): continue
+		var d: int = absi(tx - anchor.x) + absi(ty - anchor.y)
+		if d > best_dist:
+			best_dist = d
+			best = Vector2i(tx, ty)
+	if best.x < 0: return
+	_dungeon_entities.append({
+		"id":         "goal_chest",
+		"name":       "Lost Treasure",
+		"handle":     -1,
+		"is_player":  false,
+		"is_friendly": false,
+		"is_dead":    false,
+		"is_flying":  false,
+		"is_chest":   true,
+		"is_goal_chest": true,
+		"goal_item":  _dungeon_search_goal_item,
+		"x": best.x, "y": best.y, "z": 0,
+		"hp":   1, "max_hp": 1,
+		"ap":   0, "max_ap": 0,
+		"sp":   0, "max_sp": 0,
+		"ac":   0,
+		"speed": 0,
+		"ap_spent": 0, "move_used": 0,
+		"equipped_weapon": "None",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":  [_dungeon_search_goal_item],
+		"looted":     false,
+	})
+
+
+func start_dungeon_crawl(player_handles, enemy_level: int, terrain_style: int,
+		extra_enemies: int = 5) -> void:
+	# Reset search-and-find state — pure crawl mode doesn't use it.
+	_dungeon_search_active     = false
+	_dungeon_search_goal_found = false
+	_dungeon_search_goal_item  = ""
+
+	# Arm crawl mode — start_dungeon consumes the flag and switches
+	# MAP_SIZE / _crawl_active itself (one-shot, so later classic dungeons
+	# reset cleanly instead of inheriting crawl state).
+	_crawl_arm = true
+
+	start_dungeon(player_handles, enemy_level, -1, terrain_style)
+
+	_dungeon_type = 3   # 0=standard, 1=kaiju, 2=apex, 3=crawl
+	_dungeon_encounter_name = "Dungeon Crawl: %s" % _dungeon_terrain_name
+
+	# Tag every enemy with detection state. Players + allies are unaffected.
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) or bool(ent.get("is_friendly", false)):
+			continue
+		if bool(ent.get("is_dead", false)):
+			continue
+		# Default perception: 12 + DIV-ish stat. Fall back to 12 if missing.
+		var perc_div: int = int(ent.get("div", 0))
+		if perc_div == 0:
+			perc_div = int(ent.get("perception", 0))
+		ent["is_alerted"]      = false
+		ent["alert_radius"]    = 6     # tiles — allies within this radius alert too
+		ent["perception_range"] = 12 + maxi(0, perc_div)
+		ent["last_seen_x"]     = -1
+		ent["last_seen_y"]     = -1
+
+	# CRITICAL: start_dungeon spawned the base encounter assuming a 25×25
+	# arena, so all those enemies are clustered next to the player spawn.
+	# Re-scatter every enemy to the outer ring of the 50×50 map BEFORE the
+	# player can see them. This is what makes Crawl feel like exploration
+	# instead of a 25-mob ambush at the doorway.
+	# 95% of enemies must be at least 25 tiles away; 5% can ambush closer.
+	_redistribute_crawl_enemies(25, 0.05, 8)
+
+	# Spawn additional crawl enemies — the larger map needs more density.
+	# Pull encounters from the same builder used by start_dungeon, just tag
+	# them as un-alerted and place them in outer rings.
+	if extra_enemies > 0:
+		_spawn_crawl_extra_enemies(enemy_level, extra_enemies)
+
+	# Spawn 5–8 chests. Count scales with map area, not enemy budget.
+	_spawn_crawl_chests(maxi(5, enemy_level / 2 + 4))
+
+	_update_fog()
+
+## Walks every non-player, non-friendly, non-chest entity and teleports them
+## to a random walkable tile whose Manhattan distance from EVERY player is
+## at least `min_dist`. A small `ambush_chance` (per enemy) instead uses the
+## smaller `ambush_min_dist` — those become the rare close-up ambushes.
+##
+## Called once at the end of start_dungeon_crawl so the standard-encounter
+## spawn (which clusters near the player anchor) ends up dispersed across
+## the 50×50 map. Without this, opening a crawl drops you straight into a
+## point-blank ambush.
+func _redistribute_crawl_enemies(min_dist: int,
+		ambush_chance: float = 0.0, ambush_min_dist: int = 8) -> void:
+	# Snapshot player positions.
+	var player_positions: Array = []
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)) and not bool(ent.get("is_dead", false)):
+			player_positions.append(Vector2i(int(ent["x"]), int(ent["y"])))
+	if player_positions.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+
+	for ent in _dungeon_entities:
+		# Skip players, allies, dead bodies, and chests.
+		if bool(ent.get("is_player", false)):     continue
+		if bool(ent.get("is_friendly", false)):   continue
+		if bool(ent.get("is_dead", false)):       continue
+		if bool(ent.get("is_chest", false)):      continue
+		if bool(ent.get("is_kaiju", false)):      continue   # bosses keep their pos
+
+		# Roll per-enemy: most enemies use the strict min_dist; a small
+		# percentage become "ambush" enemies allowed in closer.
+		var this_min: int = min_dist
+		if ambush_chance > 0.0 and rng.randf() < ambush_chance:
+			this_min = ambush_min_dist
+
+		var placed: bool = false
+		for attempt in range(200):
+			var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+			var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+			# Walkability
+			var idx: int = ty * MAP_SIZE + tx
+			if idx < 0 or idx >= _dungeon_map.size():
+				continue
+			if _dungeon_map[idx] != TILE_FLOOR:
+				continue
+			if _dung_occupied(tx, ty):
+				continue
+			# Min-distance from every player
+			var ok: bool = true
+			for pp in player_positions:
+				if absi(tx - pp.x) + absi(ty - pp.y) < this_min:
+					ok = false
+					break
+			if not ok:
+				continue
+			ent["x"] = tx
+			ent["y"] = ty
+			placed = true
+			break
+		# If no spot was found in 200 attempts (very dense walls), leave
+		# the entity in place — they'll just be a closer encounter.
+
+## Spawn a few extra enemies on the outer ring of the crawl map, all
+## un-alerted. Re-uses the existing build_encounter / spawn helpers.
+func _spawn_crawl_extra_enemies(enemy_level: int, n: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	# Find player anchor for distance checks.
+	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)):
+			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
+			break
+
+	var spawned: int = 0
+	var attempts: int = 0
+	while spawned < n and attempts < 200:
+		attempts += 1
+		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+		# Distance gate: 95% require at least 25 tiles from the player anchor;
+		# 5% become "ambush" spawns allowed as close as 8 tiles.
+		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
+		var ambush: bool = (rng.randf() < 0.05)
+		var min_dist: int = 8 if ambush else 25
+		if dist < min_dist:
+			continue
+		# Walkable check
+		var idx: int = ty * MAP_SIZE + tx
+		if idx < 0 or idx >= _dungeon_map.size():
+			continue
+		if _dungeon_map[idx] != TILE_FLOOR:
+			continue
+		if _dung_occupied(tx, ty):
+			continue
+
+		# Build a single creature using a real creature name from the pools
+		# so the sprite-portrait lookup matches files like wolf.png /
+		# boar.png / etc. Three category pools (animal, villager, monster)
+		# are chosen at random per spawn to give the crawl variety.
+		var c_lv: int = enemy_level
+		var pools: Array = [
+			CREATURE_NAMES_ANIMAL,
+			CREATURE_NAMES_VILLAGER,
+			CREATURE_NAMES_MONSTER,
+		]
+		var pool: Array = pools[rng.randi() % pools.size()]
+		var creature_name: String = str(pool[rng.randi() % pool.size()])
+		# Pick a weapon from the matching weapon pool.
+		var weapon: String
+		if pool == CREATURE_NAMES_ANIMAL:
+			weapon = CREATURE_WEAPONS_ANIMAL[rng.randi() % CREATURE_WEAPONS_ANIMAL.size()]
+		elif pool == CREATURE_NAMES_VILLAGER:
+			weapon = CREATURE_WEAPONS_VILLAGER[rng.randi() % CREATURE_WEAPONS_VILLAGER.size()]
+		else:
+			weapon = CREATURE_WEAPONS_MONSTER[rng.randi() % CREATURE_WEAPONS_MONSTER.size()]
+		var c_max_hp: int = 10 + 4 * c_lv + rng.randi_range(0, c_lv * 2)
+		var ac: int = 10 + (c_lv / 2) + rng.randi_range(0, 2)
+		_dungeon_entities.append({
+			"id":             "crawl_enemy_%d" % spawned,
+			"name":           creature_name,
+			"handle":         -1,
+			"lineage_name":   creature_name,   # ← drives wolf.png / boar.png / etc.
+			"x": tx, "y": ty, "z": 1,
+			"is_player":   false,
+			"is_friendly": false,
+			"is_dead":     false,
+			"is_flying":   false,
+			"hp":          c_max_hp, "max_hp": c_max_hp,
+			"ap":          10 + c_lv,    "max_ap": 10 + c_lv,
+			"sp":          5,             "max_sp": 5,
+			"ac":          ac,
+			"speed":       3,
+			"ap_spent":    0, "move_used": 0,
+			"equipped_weapon": weapon,
+			"equipped_armor":  "Leather Armor",
+			"equipped_shield": "None",
+			"equipped_light":  "None",
+			"conditions":  [],
+			"inventory":   _generate_creature_loot(c_lv),
+			"looted":      false,
+			"div":         2,
+			# Crawl-specific detection state
+			"is_alerted":       false,
+			"alert_radius":     6,
+			"perception_range": 14,
+			"last_seen_x":     -1,
+			"last_seen_y":     -1,
+		})
+		spawned += 1
+
+## Spawn `n` treasure chests on walkable tiles, biased toward the middle
+## ring (not too close to spawn, not too far from any explored area).
+func _spawn_crawl_chests(n: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var anchor: Vector2i = Vector2i(MAP_SIZE / 2, MAP_SIZE / 2)
+	for ent in _dungeon_entities:
+		if bool(ent.get("is_player", false)):
+			anchor = Vector2i(int(ent["x"]), int(ent["y"]))
+			break
+
+	var spawned: int = 0
+	var attempts: int = 0
+	while spawned < n and attempts < 300:
+		attempts += 1
+		var tx: int = rng.randi_range(2, MAP_SIZE - 3)
+		var ty: int = rng.randi_range(2, MAP_SIZE - 3)
+		var dist: int = absi(tx - anchor.x) + absi(ty - anchor.y)
+		if dist < 6 or dist > 38:
+			continue
+		var idx: int = ty * MAP_SIZE + tx
+		if idx < 0 or idx >= _dungeon_map.size():
+			continue
+		if _dungeon_map[idx] != TILE_FLOOR:
+			continue
+		if _dung_occupied(tx, ty):
+			continue
+
+		# Loot quality scales with distance from spawn — deeper chests
+		# carry better loot. Use the existing creature-loot generator at a
+		# scaled-up level.
+		var loot_level: int = _dungeon_enemy_level + (dist / 8)
+		_dungeon_entities.append({
+			"id":             "crawl_chest_%d" % spawned,
+			"name":           "Treasure Chest",
+			"handle":         -1,
+			"lineage_name":   "",
+			"x": tx, "y": ty, "z": 1,
+			"is_player":   false,
+			"is_friendly": false,
+			"is_dead":     false,
+			"is_flying":   false,
+			"is_chest":    true,    # ← marks this entity as a chest
+			"hp":          1, "max_hp": 1,
+			"ap":          0, "max_ap": 0,
+			"sp":          0, "max_sp": 0,
+			"ac":          10,
+			"speed":       0,
+			"conditions":  [],
+			"inventory":   _generate_creature_loot(loot_level),
+			"looted":      false,
+		})
+		spawned += 1
+
+func start_apex_dungeon(player_handles, apex_idx: int, terrain_style: int) -> void:
+	start_dungeon(player_handles, 1, -1, terrain_style)
+	_dungeon_type = 2
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	var idx: int = clamp(apex_idx, 0, APEX_STATS.size() - 1)
+	var as_: Array = APEX_STATS[idx]
+	var boss_hp: int = int(as_[2])
+	_dungeon_encounter_name = "Apex: %s %s" % [str(as_[0]), str(as_[1])]
+	_dungeon_enemy_level    = int(as_[7])
+	_dungeon_entities.append({
+		"id":             "enemy_0",
+		"name":           "%s %s" % [str(as_[0]), str(as_[1])],
+		"handle":         -1,
+		"lineage_name":   "Apex",
+		"x": 21, "y": 21, "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"hp":    boss_hp,    "max_hp": boss_hp,
+		"ap":    int(as_[4]),  "max_ap": int(as_[4]),
+		"sp":    int(as_[5]),  "max_sp": int(as_[5]),
+		"ac":    int(as_[3]),
+		"speed": int(as_[6]),
+		"ap_spent":  0, "move_used": 0,
+		"equipped_weapon": str(as_[8]),
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   _generate_creature_loot(_dungeon_enemy_level + 2),
+		"looted":      false,
+		"is_boss":     true,
+	})
+	_update_fog()
+
+func start_militia_dungeon(player_handles, militia_idx: int, terrain_style: int) -> void:
+	start_dungeon(player_handles, 1, -1, terrain_style)
+	_dungeon_type = 3
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	var idx: int = clamp(militia_idx, 0, MILITIA_STATS.size() - 1)
+	var ms: Array = MILITIA_STATS[idx]
+	var squad_size: int = int(ms[1])
+	var mlv: int        = int(ms[2])
+	var mac: int        = int(ms[3])
+	# Apply adversary leveling
+	var party_levels: Array = []
+	for h in player_handles:
+		if _chars.has(h):
+			party_levels.append(int(_chars[h].get("level", 1)))
+	if not party_levels.is_empty():
+		mlv = _WS.calc_adversary_level(party_levels, _dungeon_encounters_survived)
+	_dungeon_encounter_name = "Militia: %s" % str(ms[0])
+	_dungeon_enemy_level    = mlv
+
+	var e_spawns: Array = [
+		[20,20],[21,20],[20,21],[19,20],[20,19],[22,21],
+		[21,19],[19,21],[22,20],[20,22],[18,20],[20,18]
+	]
+	var ehp: int = 6 + mlv * 3
+	for i in range(mini(squad_size, e_spawns.size())):
+		var pos: Array = e_spawns[i]
+		_dungeon_entities.append({
+			"id":             "enemy_%d" % i,
+			"name":           "%s #%d" % [str(ms[0]), i + 1],
+			"handle":         -1,
+			"lineage_name":   "Militia",
+			"x": pos[0], "y": pos[1], "z": 0,
+			"is_player":   false,
+			"is_friendly": false,
+			"is_dead":     false,
+			"is_flying":   false,
+			"hp":    ehp,  "max_hp": ehp,
+			"ap":    10,   "max_ap": 10,
+			"sp":    0,    "max_sp": 0,
+			"ac":    mac,
+			"speed": 5,
+			"ap_spent":  0, "move_used": 0,
+			"equipped_weapon": str(ms[4]),
+			"equipped_armor":  "None",
+			"equipped_shield": "None",
+			"equipped_light":  "None",
+			"conditions":  [],
+			"inventory":   _generate_creature_loot(mlv),
+			"looted":      false,
+		})
+	_update_fog()
+
+func start_mob_dungeon(player_handles, mob_count: int, mob_level: int, terrain_style: int) -> void:
+	start_dungeon(player_handles, 1, -1, terrain_style)
+	_dungeon_type = 4
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	# Apply adversary leveling
+	var adjusted_mob_level: int = maxi(1, mob_level)
+	var party_levels_mob: Array = []
+	for h in player_handles:
+		if _chars.has(h):
+			party_levels_mob.append(int(_chars[h].get("level", 1)))
+	if not party_levels_mob.is_empty():
+		adjusted_mob_level = _WS.calc_adversary_level(party_levels_mob, _dungeon_encounters_survived)
+
+	_dungeon_encounter_name = "Mob Encounter (%d)" % mob_count
+	_dungeon_enemy_level    = adjusted_mob_level
+
+	var mob_names: Array = ["Kobold", "Goblin", "Skeleton", "Zombie", "Cultist",
+		"Bandit", "Imp", "Ghoul", "Ratfolk", "Cave Troll"]
+	var mob_name: String = mob_names[adjusted_mob_level % mob_names.size()]
+
+	# Scatter up to min(mob_count, 24) across the map (avoid spawn room)
+	var available_tiles: Array = []
+	for x in range(10, 24):
+		for y in range(10, 24):
+			var tidx: int = x * MAP_SIZE + y
+			if tidx < _dungeon_map.size() and _dungeon_map[tidx] == TILE_FLOOR:
+				available_tiles.append([x, y])
+	available_tiles.shuffle()
+
+	var actual_count: int = mini(mob_count, available_tiles.size())
+	var ehp: int = 3 + adjusted_mob_level * 2
+	for i in range(actual_count):
+		var pos: Array = available_tiles[i]
+		_dungeon_entities.append({
+			"id":             "enemy_%d" % i,
+			"name":           mob_name,
+			"handle":         -1,
+			"lineage_name":   "Enemy",
+			"x": pos[0], "y": pos[1], "z": 0,
+			"is_player":   false,
+			"is_friendly": false,
+			"is_dead":     false,
+			"is_flying":   false,
+			"hp":    ehp,  "max_hp": ehp,
+			"ap":    6,    "max_ap": 6,
+			"sp":    0,    "max_sp": 0,
+			"ac":    8 + adjusted_mob_level,
+			"speed": 4,
+			"ap_spent":  0, "move_used": 0,
+			"equipped_weapon": "Rusty Dagger",
+			"equipped_armor":  "None",
+			"equipped_shield": "None",
+			"equipped_light":  "None",
+			"conditions":  [],
+			"inventory":   _generate_creature_loot(adjusted_mob_level),
+			"looted":      false,
+		})
+	_update_fog()
+
+func start_custom_monster_dungeon(player_handles, custom_monster: Dictionary, terrain_style: int) -> void:
+	start_dungeon(player_handles, 1, -1, terrain_style)
+	_dungeon_type = 5  # Custom Monster
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	var level: int = int(custom_monster.get("level", 1))
+	var is_apex: bool = bool(custom_monster.get("apex", false))
+	var name_str: String = str(custom_monster.get("name", "Custom Monster"))
+	var stats: Dictionary = custom_monster.get("stats", {"STR": 1, "SPD": 1, "INT": 1, "VIT": 1, "DIV": 1})
+
+	# Calculate derived stats based on monster creation rules
+	var str_val: int = int(stats.get("STR", 1))
+	var spd_val: int = int(stats.get("SPD", 1))
+	var int_val: int = int(stats.get("INT", 1))
+	var vit_val: int = int(stats.get("VIT", 1))
+	var div_val: int = int(stats.get("DIV", 1))
+
+	var hp: int
+	var ap: int
+	var sp: int
+	var ac: int = 10
+
+	if is_apex:
+		hp = 5 * level + vit_val
+		ap = 10 + str_val
+		sp = 10 + level + div_val
+	else:
+		hp = 3 * level + vit_val
+		ap = 3 + str_val
+		sp = 3 + level + div_val
+
+	_dungeon_encounter_name = "Custom Monster: %s" % name_str
+	_dungeon_enemy_level = level
+
+	# Find a valid floor tile far from players
+	var occupied: Dictionary = {}
+	for e in _dungeon_entities:
+		occupied[Vector2i(int(e["x"]), int(e["y"]))] = true
+	var best_pos: Array = [12, 12]
+	var best_dist: int = 0
+	for fy in range(MAP_SIZE):
+		for fx in range(MAP_SIZE):
+			if _dungeon_map[fy * MAP_SIZE + fx] == 0:  # floor
+				if occupied.has(Vector2i(fx, fy)):
+					continue
+				var min_pd: int = 999
+				for e in _dungeon_entities:
+					var dx: int = abs(fx - int(e["x"]))
+					var dy: int = abs(fy - int(e["y"]))
+					min_pd = mini(min_pd, maxi(dx, dy))
+				if min_pd > best_dist:
+					best_dist = min_pd
+					best_pos = [fx, fy]
+
+	_dungeon_entities.append({
+		"id":             "enemy_0",
+		"name":           name_str,
+		"handle":         -1,
+		"lineage_name":   "Custom",
+		"x": best_pos[0], "y": best_pos[1], "z": 0,
+		"is_player":   false,
+		"is_friendly": false,
+		"is_dead":     false,
+		"is_flying":   false,
+		"hp":    hp,    "max_hp": hp,
+		"ap":    ap,    "max_ap": ap,
+		"sp":    sp,    "max_sp": sp,
+		"ac":    ac,
+		"speed": 5 + spd_val,
+		"ap_spent":  0, "actions_taken": 0, "move_used": 0,
+		"equipped_weapon": "Claw",
+		"equipped_armor":  "None",
+		"equipped_shield": "None",
+		"equipped_light":  "None",
+		"conditions":  [],
+		"inventory":   _generate_creature_loot(level),
+		"looted":      false,
+		"is_boss":     is_apex,
+	})
+	_update_fog()
+
+## Siege Warfare Mode — Players must destroy a wall defended by waves of enemies
+func start_siege_dungeon(player_handles, tier: int, terrain_style: int = 0) -> void:
+	# Initialize base dungeon
+	start_dungeon(player_handles, 1, -1, clampi(terrain_style, 0, 7))
+	_dungeon_type = 6  # Siege mode
+	# Remove default enemies and clear for siege setup
+	_dungeon_entities = _dungeon_entities.filter(func(e): return bool(e["is_player"]))
+
+	var siege_data: Dictionary = _WS.SIEGE_TIERS[clampi(tier - 1, 0, 4)]
+	_dungeon_encounter_name = "Siege: %s" % siege_data.get("name", "Unknown")
+	_dungeon_enemy_level = tier
+
+	# ── Place the wall in the center-right area ──────────────────────────────────
+	var wall_hp: int = int(siege_data.get("wall_hp", 50))
+	var occupied: Dictionary = {}
+	for e in _dungeon_entities:
+		occupied[Vector2i(int(e["x"]), int(e["y"]))] = true
+
+	_dungeon_entities.append({
+		"id": "wall_0",
+		"name": siege_data.get("name", "Fortress Wall"),
+		"handle": -1,
+		"is_player": false,
+		"is_friendly": false,
+		"is_dead": false,
+		"is_wall": true,
+		"hp": wall_hp,
+		"max_hp": wall_hp,
+		"ac": 10 + tier * 2,
+		"speed": 0,
+		"x": MAP_SIZE / 2,
+		"y": 1,
+		"z": 0,
+		"ap": 0,
+		"max_ap": 0,
+		"ap_spent": 0,
+		"actions_taken": 0,
+		"move_used": 0,
+		"conditions": [],
+		"inventory": [],
+		"looted": false,
+		"equipped_weapon": "None",
+		"equipped_armor": "None",
+		"equipped_shield": "None",
+		"equipped_light": "None",
+	})
+
+	# ── Spawn defender waves based on tier ───────────────────────────────────────
+	var defender_type: String = str(siege_data.get("defenders", "militia"))
+	var defender_count: int = 2 + tier  # 3-7 defenders based on tier
+	var spawned: int = 0
+
+	# Use floor tiles for spawning defenders
+	var floor_tiles: Array = []
+	for fy in range(MAP_SIZE):
+		for fx in range(MAP_SIZE):
+			if _dungeon_map[fy * MAP_SIZE + fx] == 0:  # floor
+				floor_tiles.append([fx, fy])
+
+	# Spawn defenders near the wall
+	for i in range(defender_count):
+		if floor_tiles.is_empty():
+			break
+		var pick_idx: int = randi() % floor_tiles.size()
+		var pos: Array = floor_tiles[pick_idx]
+		pos = _find_nearest_floor(pos[0], pos[1], occupied)
+		occupied[Vector2i(pos[0], pos[1])] = true
+
+		# Create defender based on tier
+		var def_level: int = tier + randi_range(-1, 1)
+		def_level = clampi(def_level, 1, 20)
+		var def_name: String = ["Guard", "Sergeant", "Captain", "Commander", "Elite Guard"][mini(tier - 1, 4)]
+
+		var def_hp: int = 10 + def_level * 3
+		var def_ap_max: int = 5 + def_level / 2
+		var def_speed: int = 4 + tier
+		var def_ac: int = 11 + tier
+
+		_dungeon_entities.append({
+			"id": "defender_%d" % i,
+			"name": "%s (Lv.%d)" % [def_name, def_level],
+			"handle": -1,
+			"lineage_name": "Guard",
+			"x": pos[0],
+			"y": pos[1],
+			"z": 0,
+			"is_player": false,
+			"is_friendly": false,
+			"is_dead": false,
+			"is_flying": false,
+			"hp": def_hp,
+			"max_hp": def_hp,
+			"ap": def_ap_max,
+			"max_ap": def_ap_max,
+			"sp": 3 + tier,
+			"max_sp": 3 + tier,
+			"ac": def_ac,
+			"speed": def_speed,
+			"ap_spent": 0,
+			"actions_taken": 0,
+			"move_used": 0,
+			"equipped_weapon": "Sword",
+			"equipped_armor": "Chain",
+			"equipped_shield": "Shield",
+			"equipped_light": "None",
+			"conditions": [],
+			"inventory": _generate_creature_loot(def_level),
+			"looted": false,
+		})
+		spawned += 1
+
+	_update_fog()

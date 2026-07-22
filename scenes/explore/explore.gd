@@ -7715,4 +7715,482 @@ func _build_3d_bases() -> void:
 		var by: int = int(b.get("y", 0))
 		var holder := Node3D.new()
 		holder.name = "Base_%s_%d_%d" % [bt, bx, by]
-		holder.
+		holder.position = Vector3(float(bx) + 0.5, 0.0, float(by) + 0.5)
+		var mesh_inst := MeshInstance3D.new()
+		var box := BoxMesh.new()
+		# Central building is bigger so it reads as the anchor.
+		var is_anchor: bool = bool(def.get("anchor", false))
+		var size: Vector3 = Vector3(0.8, 1.4, 0.8) if is_anchor else Vector3(0.7, 1.0, 0.7)
+		box.size = size
+		mesh_inst.mesh = box
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = def.get("color", Color(0.5, 0.5, 0.5))
+		mat.metallic = 0.1
+		mat.roughness = 0.7
+		mesh_inst.material_override = mat
+		mesh_inst.position = Vector3(0, size.y * 0.5, 0)
+		holder.add_child(mesh_inst)
+		# Label3D above the building
+		var lbl := Label3D.new()
+		lbl.text = str(def.get("name", bt.capitalize()))
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.font_size = 18
+		lbl.outline_size = 4
+		lbl.modulate = Color(1.0, 0.95, 0.7)
+		lbl.position = Vector3(0, size.y + 0.4, 0)
+		holder.add_child(lbl)
+		_base_root.add_child(holder)
+
+## Validate a placement attempt. Returns "" if OK, error message otherwise.
+func _validate_base_placement(x: int, y: int, building_type: String) -> String:
+	if x < 0 or x >= GRID_W or y < 0 or y >= GRID_H:
+		return "Tile out of bounds."
+	# Tile must be in OUTSKIRTS — i.e. NOT inside the central city block.
+	var in_city: bool = (
+		x >= CITY_OFFSET_X and x < CITY_OFFSET_X + CITY_W
+		and y >= CITY_OFFSET_Y and y < CITY_OFFSET_Y + CITY_H
+	)
+	if in_city:
+		return "Bases can only be built in the outskirts (outside the city)."
+	if not _is_walkable(x, y):
+		return "Tile is not walkable (wall or water)."
+	# No POI / cache / NPC on this tile
+	var v := Vector2i(x, y)
+	if _poi_map.has(v):
+		return "A point of interest occupies this tile."
+	if _hidden_cache_map.has(v):
+		return "Something is buried under this tile — clear it first."
+	if _npc_positions.has(v):
+		return "An NPC is standing on this tile."
+	# No existing building on this tile in any region
+	for b in GameState.get_base_buildings(_subregion):
+		if int(b.get("x", -99)) == x and int(b.get("y", -99)) == y:
+			return "A building already occupies this tile."
+	# Anchor / range checks
+	var def: Dictionary = GameState.BASE_BUILDINGS.get(building_type, {})
+	var is_anchor: bool = bool(def.get("anchor", false))
+	var has_anchor: bool = GameState.has_central_building(_subregion)
+	if is_anchor and has_anchor:
+		return "This region already has a Command Center."
+	if not is_anchor and not has_anchor:
+		return "Build a Command Center first."
+	if not is_anchor:
+		var ct: Vector2i = GameState.get_central_tile(_subregion)
+		var dist: int = absi(x - ct.x) + absi(y - ct.y)
+		if dist > GameState.BASE_BUILD_RADIUS:
+			return "Too far from Command Center (max %d tiles)." % GameState.BASE_BUILD_RADIUS
+	return ""
+
+## Top-level entry button — opens the building picker panel in the info pane.
+func _show_base_build_panel() -> void:
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label(
+		"🛠  Base Building", 16, RimvaleColors.GOLD))
+	var desc := RimvaleUtils.label(
+		"Build structures on the outskirts. The Command Center must be " +
+		"placed first; subsequent buildings must be within %d tiles of it." %
+		GameState.BASE_BUILD_RADIUS, 11, RimvaleColors.TEXT_GRAY)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(desc)
+	_info_vbox.add_child(RimvaleUtils.label(
+		"Gold: %d" % GameState.gold, 12, RimvaleColors.GOLD))
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	# Show existing buildings with Remove buttons
+	var existing: Array = GameState.get_base_buildings(_subregion)
+	if existing.size() > 0:
+		_info_vbox.add_child(RimvaleUtils.label(
+			"Current base: %d building%s" % [existing.size(),
+				"s" if existing.size() != 1 else ""],
+			12, RimvaleColors.ACCENT))
+		for ei in range(existing.size()):
+			var eb: Dictionary = existing[ei]
+			var ebt: String = str(eb.get("type", ""))
+			if not GameState.BASE_BUILDINGS.has(ebt): continue
+			var edef: Dictionary = GameState.BASE_BUILDINGS[ebt]
+			var ename: String = str(edef.get("name", ebt.capitalize()))
+			var ex: int = int(eb.get("x", 0))
+			var ey: int = int(eb.get("y", 0))
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			row.add_child(RimvaleUtils.label(
+				"  • %s @ (%d, %d)" % [ename, ex, ey], 11,
+				edef.get("color", RimvaleColors.TEXT_WHITE)))
+			var rspc := Control.new(); rspc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(rspc)
+			var rm_btn := RimvaleUtils.button(
+				"Demolish", Color(0.85, 0.35, 0.30), 26, 10)
+			var captured_idx: int = ei
+			var captured_is_anchor: bool = bool(edef.get("anchor", false))
+			var captured_name: String = ename
+			rm_btn.pressed.connect(func():
+				if captured_is_anchor:
+					_show_message(
+						"Demolishing the Command Center will remove the entire base. " +
+						"Click Demolish again to confirm.", RimvaleColors.DANGER,
+						_show_base_build_panel)
+					# Set a confirm flag — the second click on the same demolish
+					# button will execute. Use ent metadata for state.
+					if rm_btn.get_meta("confirming", false):
+						_remove_base_building_at(captured_idx, captured_name)
+					else:
+						rm_btn.set_meta("confirming", true)
+				else:
+					_remove_base_building_at(captured_idx, captured_name)
+			)
+			row.add_child(rm_btn)
+			_info_vbox.add_child(row)
+		_info_vbox.add_child(RimvaleUtils.separator())
+		_info_vbox.add_child(RimvaleUtils.spacer(2))
+
+	var has_anchor: bool = GameState.has_central_building(_subregion)
+	for type_key in GameState.BASE_BUILDINGS.keys():
+		var bdef: Dictionary = GameState.BASE_BUILDINGS[type_key]
+		var bname: String = str(bdef.get("name", type_key))
+		var cost: int = int(bdef.get("cost", 0))
+		var bdesc: String = str(bdef.get("desc", ""))
+		var is_anchor: bool = bool(bdef.get("anchor", false))
+		var disabled: bool = false
+		var hint: String = ""
+		if is_anchor and has_anchor:
+			disabled = true
+			hint = "  (already built)"
+		elif not is_anchor and not has_anchor:
+			disabled = true
+			hint = "  (need Command Center first)"
+		elif GameState.gold < cost:
+			disabled = true
+			hint = "  (need %d more gold)" % (cost - GameState.gold)
+		var card := RimvaleUtils.card(RimvaleColors.BG_CARD, RimvaleColors.DIVIDER, 6, 8)
+		var cv := VBoxContainer.new()
+		cv.add_theme_constant_override("separation", 2)
+		card.add_child(cv)
+		cv.add_child(RimvaleUtils.label(
+			"%s — %d gold%s" % [bname, cost, hint], 13,
+			RimvaleColors.GOLD if not disabled else RimvaleColors.TEXT_DIM))
+		var d_lbl := RimvaleUtils.label(bdesc, 10, RimvaleColors.TEXT_GRAY)
+		d_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		cv.add_child(d_lbl)
+		if not disabled:
+			var place_btn := RimvaleUtils.button(
+				"Place…", RimvaleColors.ACCENT, 30, 11)
+			var captured_type: String = type_key
+			var captured_name: String = bname
+			place_btn.pressed.connect(func():
+				_enter_base_build_placement(captured_type, captured_name)
+			)
+			cv.add_child(place_btn)
+		_info_vbox.add_child(card)
+
+	_info_vbox.add_child(RimvaleUtils.separator())
+	var back_btn := RimvaleUtils.button("← Back", RimvaleColors.TEXT_GRAY, 32, 11)
+	back_btn.pressed.connect(_show_location_info)
+	_info_vbox.add_child(back_btn)
+
+## Enter placement mode: subsequent map clicks attempt to place this type.
+func _enter_base_build_placement(building_type: String, display_name: String) -> void:
+	_base_build_mode = true
+	_base_build_type = building_type
+	_clear_info()
+	_info_vbox.add_child(RimvaleUtils.label(
+		"📐  Placing: " + display_name, 14, RimvaleColors.GOLD))
+	var instr := RimvaleUtils.label(
+		"Click an outskirt tile (outside the central city) to place. " +
+		"Non-Command buildings must be within %d tiles of the Command Center." %
+		GameState.BASE_BUILD_RADIUS, 11, RimvaleColors.TEXT_GRAY)
+	instr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(instr)
+	_info_vbox.add_child(RimvaleUtils.spacer(8))
+	var cancel := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 32, 11)
+	cancel.pressed.connect(_cancel_base_build_placement)
+	_info_vbox.add_child(cancel)
+
+func _cancel_base_build_placement() -> void:
+	_base_build_mode = false
+	_base_build_type = ""
+	_show_base_build_panel()
+
+## Click-to-place handler. Validates, charges gold, persists, re-renders.
+func _try_place_base_building(x: int, y: int) -> void:
+	var err: String = _validate_base_placement(x, y, _base_build_type)
+	if err != "":
+		_show_message(err, RimvaleColors.DANGER, _show_base_build_panel)
+		_base_build_mode = false
+		_base_build_type = ""
+		return
+	var place_err: String = GameState.add_base_building(
+		_subregion, _base_build_type, x, y)
+	if place_err != "":
+		_show_message(place_err, RimvaleColors.DANGER, _show_base_build_panel)
+	else:
+		_build_3d_bases()
+		_show_message(
+			"Building placed at (%d, %d)." % [x, y],
+			RimvaleColors.SUCCESS, _show_base_build_panel)
+	_base_build_mode = false
+	_base_build_type = ""
+
+
+## Per-frame: while in base-build mode, draw a coloured square on the
+## tile under the mouse cursor. Green = valid placement, red = invalid.
+## Hidden / freed when build mode is off.
+func _update_base_build_highlight() -> void:
+	if not _base_build_mode or _base_build_type == "":
+		if _base_build_highlight != null and is_instance_valid(_base_build_highlight):
+			_base_build_highlight.visible = false
+		return
+	if _cam3d == null:
+		return
+	# Raycast mouse cursor to ground plane (Y = 0) — same math as _on_3d_click.
+	var screen_pos: Vector2 = _viewport_3d.get_mouse_position()
+	var from: Vector3 = _cam3d.project_ray_origin(screen_pos)
+	var dir: Vector3 = _cam3d.project_ray_normal(screen_pos)
+	if absf(dir.y) < 0.001:
+		return
+	var t: float = -from.y / dir.y
+	if t < 0:
+		return
+	var hit: Vector3 = from + dir * t
+	var tx: int = int(floor(hit.x))
+	var ty: int = int(floor(hit.z))
+	# Out of bounds — hide rather than warp.
+	if tx < 0 or tx >= GRID_W or ty < 0 or ty >= GRID_H:
+		if _base_build_highlight != null and is_instance_valid(_base_build_highlight):
+			_base_build_highlight.visible = false
+		return
+	# Lazy-init the highlight mesh on first use.
+	if _base_build_highlight == null or not is_instance_valid(_base_build_highlight):
+		_base_build_highlight = MeshInstance3D.new()
+		_base_build_highlight.name = "BaseBuildHighlight"
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(0.95, 0.95)
+		_base_build_highlight.mesh = pm
+		_base_build_highlight_mat = StandardMaterial3D.new()
+		_base_build_highlight_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_base_build_highlight_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		_base_build_highlight_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_base_build_highlight.material_override = _base_build_highlight_mat
+		_world3d_root.add_child(_base_build_highlight)
+	_base_build_highlight.visible = true
+	# Sit slightly above the playable tile tops so it doesn't z-fight.
+	_base_build_highlight.position = Vector3(float(tx) + 0.5, 0.06, float(ty) + 0.5)
+	# Validate and tint accordingly.
+	var err: String = _validate_base_placement(tx, ty, _base_build_type)
+	if err == "":
+		# Valid — translucent green
+		_base_build_highlight_mat.albedo_color = Color(0.30, 0.95, 0.30, 0.55)
+	else:
+		# Invalid — translucent red
+		_base_build_highlight_mat.albedo_color = Color(0.95, 0.30, 0.30, 0.55)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BASE BUILDING — stepping on a building, removing buildings, feature panels
+# ══════════════════════════════════════════════════════════════════════════════
+
+## Returns the building dict at this tile (in the current subregion), or {}.
+func _base_building_at(x: int, y: int) -> Dictionary:
+	for b in GameState.get_base_buildings(_subregion):
+		if int(b.get("x", -99)) == x and int(b.get("y", -99)) == y:
+			return b
+	return {}
+
+## Remove a building by index. Refunds nothing. Demolishing the central wipes
+## the whole base.
+func _remove_base_building_at(idx: int, display_name: String) -> void:
+	var err: String = GameState.remove_base_building(_subregion, idx)
+	if err != "":
+		_show_message(err, RimvaleColors.DANGER, _show_base_build_panel)
+		return
+	_build_3d_bases()
+	_show_message("%s demolished." % display_name,
+		RimvaleColors.SUCCESS, _show_base_build_panel)
+
+## Show the contextual features panel for a building when the team stands
+## on its tile. Each building type exposes a small set of actions.
+func _show_building_features_panel(building: Dictionary) -> void:
+	_clear_info()
+	var bt: String = str(building.get("type", ""))
+	if not GameState.BASE_BUILDINGS.has(bt):
+		_show_location_info()
+		return
+	var def: Dictionary = GameState.BASE_BUILDINGS[bt]
+	var bname: String = str(def.get("name", bt.capitalize()))
+	var icon: String = "🏛"
+	match bt:
+		"central":    icon = "🏛"
+		"barracks":   icon = "🛏"
+		"armory":     icon = "⚙"
+		"infirmary":  icon = "✚"
+		"watchtower": icon = "🗼"
+		"granary":    icon = "🌾"
+		"smithy":     icon = "⚒"
+	_info_vbox.add_child(RimvaleUtils.label("%s  %s" % [icon, bname], 16,
+		def.get("color", RimvaleColors.GOLD)))
+	var desc := RimvaleUtils.label(
+		str(def.get("desc", "")), 11, RimvaleColors.TEXT_GRAY)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_vbox.add_child(desc)
+	_info_vbox.add_child(RimvaleUtils.separator())
+
+	match bt:
+		"central":
+			# Quick access to the build/manage panel.
+			var manage_btn := RimvaleUtils.button(
+				"🛠 Manage Base…", RimvaleColors.GOLD, 36, 12)
+			manage_btn.pressed.connect(_show_base_build_panel)
+			_info_vbox.add_child(manage_btn)
+		"barracks":
+			var rest_btn := RimvaleUtils.button(
+				"💤 Long Rest (full team heal, advances 1 day)",
+				RimvaleColors.HP_GREEN, 36, 12)
+			rest_btn.pressed.connect(func():
+				for h in GameState.get_active_handles():
+					RimvaleAPI.engine.long_rest(h)
+				GameState.advance_days(1)
+				GameState.save_game()
+				_show_message("The team rests at the barracks. HP/SP restored.",
+					RimvaleColors.HP_GREEN, _show_location_info)
+			)
+			_info_vbox.add_child(rest_btn)
+		"armory":
+			var repair_btn := RimvaleUtils.button(
+				"🛠 Repair All Equipment (50g per item)",
+				RimvaleColors.GOLD, 36, 12)
+			repair_btn.pressed.connect(func():
+				var slots := ["weapon", "armor", "shield"]
+				var total_cost: int = 0
+				var fixed: int = 0
+				for h in GameState.get_active_handles():
+					for s in slots:
+						if RimvaleAPI.engine.has_method("repair_equipment"):
+							var err: String = RimvaleAPI.engine.repair_equipment(h, s)
+							if err == "":
+								fixed += 1
+								total_cost += 50
+				if fixed == 0:
+					_show_message("No equipment in need of repair.",
+						RimvaleColors.TEXT_GRAY, _show_location_info)
+				else:
+					_show_message("Repaired %d item%s for %d gold." % [
+						fixed, "s" if fixed != 1 else "", total_cost],
+						RimvaleColors.GOLD, _show_location_info)
+			)
+			_info_vbox.add_child(repair_btn)
+			# Vehicle repair (5g/HP) — only show if any are damaged.
+			var armory_dmg: int = _count_damaged_vehicles()
+			if armory_dmg > 0:
+				var arm_vbtn := RimvaleUtils.button(
+					"🔧 Repair Vehicles (%d damaged · 5g per HP)" % armory_dmg,
+					RimvaleColors.CYAN, 36, 12)
+				arm_vbtn.pressed.connect(func():
+					var r: Dictionary = _repair_all_vehicles(5)
+					if int(r.get("hp", 0)) == 0:
+						_show_message("No vehicles in need of repair.",
+							RimvaleColors.TEXT_GRAY, _show_location_info)
+					else:
+						_show_message(
+							"Repaired %d HP across %d vehicle%s for %d gold." % [
+								int(r.hp), int(r.count),
+								"s" if int(r.count) != 1 else "",
+								int(r.cost)],
+							RimvaleColors.CYAN, _show_location_info)
+				)
+				_info_vbox.add_child(arm_vbtn)
+		"infirmary":
+			var heal_btn := RimvaleUtils.button(
+				"✚ Tend Injuries (200g per agent)",
+				RimvaleColors.SUCCESS, 36, 12)
+			heal_btn.pressed.connect(func():
+				var handles: Array = GameState.get_active_handles()
+				var cost: int = 200 * handles.size()
+				if GameState.gold < cost:
+					_show_message("Not enough gold (need %d)." % cost,
+						RimvaleColors.DANGER, _show_location_info)
+					return
+				GameState.gold -= cost
+				for h in handles:
+					var c: Dictionary = RimvaleAPI.engine.get_char_dict(h)
+					if c == null: continue
+					c["injuries"] = []
+					c["hp"] = int(c.get("max_hp", c.get("hp", 1)))
+				GameState.save_game()
+				_show_message("All injuries cleared. Team patched up.",
+					RimvaleColors.SUCCESS, _show_location_info)
+			)
+			_info_vbox.add_child(heal_btn)
+		"watchtower":
+			var intel_btn := RimvaleUtils.button(
+				"🔍 Survey Region (free)", RimvaleColors.CYAN, 36, 12)
+			intel_btn.pressed.connect(func():
+				_show_message(
+					"Surveying the area… encounter chance reduced for the next " +
+					"few moves.", RimvaleColors.CYAN, _show_location_info)
+				_steps_since_encounter = -10  # postpone next encounter check
+			)
+			_info_vbox.add_child(intel_btn)
+		"granary":
+			var stock_btn := RimvaleUtils.button(
+				"🌾 Stock Up Supplies (100g)", RimvaleColors.GOLD, 36, 12)
+			stock_btn.pressed.connect(func():
+				if GameState.gold < 100:
+					_show_message("Not enough gold (need 100).",
+						RimvaleColors.DANGER, _show_location_info)
+					return
+				GameState.gold -= 100
+				GameState.base_supplies += 25
+				GameState.save_game()
+				_show_message("Supplies stocked. +25 supplies.",
+					RimvaleColors.GOLD, _show_location_info)
+			)
+			_info_vbox.add_child(stock_btn)
+		"smithy":
+			var smith_btn := RimvaleUtils.button(
+				"⚒ Discount Repair (25g per item)",
+				RimvaleColors.ACCENT, 36, 12)
+			smith_btn.pressed.connect(func():
+				var slots := ["weapon", "armor", "shield"]
+				var fixed: int = 0
+				var total_cost: int = 0
+				for h in GameState.get_active_handles():
+					for s in slots:
+						if RimvaleAPI.engine.has_method("repair_equipment"):
+							var err: String = RimvaleAPI.engine.repair_equipment(h, s)
+							if err == "":
+								fixed += 1
+								total_cost += 25
+				if fixed == 0:
+					_show_message("No equipment in need of repair.",
+						RimvaleColors.TEXT_GRAY, _show_location_info)
+				else:
+					_show_message("Smith repaired %d item%s for %d gold." % [
+						fixed, "s" if fixed != 1 else "", total_cost],
+						RimvaleColors.ACCENT, _show_location_info)
+			)
+			_info_vbox.add_child(smith_btn)
+			# Discount vehicle repair (3g/HP) — only show if damaged.
+			var smithy_dmg: int = _count_damaged_vehicles()
+			if smithy_dmg > 0:
+				var sm_vbtn := RimvaleUtils.button(
+					"🔧 Discount Vehicle Repair (%d damaged · 3g per HP)" % smithy_dmg,
+					RimvaleColors.ACCENT, 36, 12)
+				sm_vbtn.pressed.connect(func():
+					var r: Dictionary = _repair_all_vehicles(3)
+					if int(r.get("hp", 0)) == 0:
+						_show_message("No vehicles in need of repair.",
+							RimvaleColors.TEXT_GRAY, _show_location_info)
+					else:
+						_show_message(
+							"Smith repaired %d HP across %d vehicle%s for %d gold." % [
+								int(r.hp), int(r.count),
+								"s" if int(r.count) != 1 else "",
+								int(r.cost)],
+							RimvaleColors.ACCENT, _show_location_info)
+				)
+				_info_vbox.add_child(sm_vbtn)
+
+	_info_vbox.add_child(RimvaleUtils.separator())
+	var back_btn := RimvaleUtils.button(
+		"← Step Off / Back", RimvaleColors.TEXT_GRAY, 32, 11)
+	back_btn.pressed.connect(_show_location_info)
+	_info_vbox.add_child(back_btn)

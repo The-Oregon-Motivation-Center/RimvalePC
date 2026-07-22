@@ -578,4 +578,11 @@ func _leave_region() -> void:
 	else:
 		# Never load world.tscn standalone — that strands the player without
 		# the nav shell. Rebuild the shell instead.
-		get_tree().change_s
+		get_tree().change_scene_to_file("res://scenes/main/main.tscn")
+
+## Walk up the tree to the main shell (the node exposing push/pop_screen).
+func _find_main_shell() -> Node:
+	var n: Node = get_parent()
+	while n != null and not n.has_method("pop_screen"):
+		n = n.get_parent()
+	return n

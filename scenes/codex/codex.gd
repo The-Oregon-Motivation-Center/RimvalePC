@@ -671,4 +671,8 @@ func _on_spell_selected(spell: Array) -> void:
 	if desc != "":
 		var desc_lbl := Label.new()
 		desc_lbl.text = desc
-		desc_lbl.add_theme_font
+		desc_lbl.add_theme_font_size_override("font_size", 12)
+		desc_lbl.add_theme_color_override("font_color", RimvaleColors.TEXT_WHITE)
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_spell_detail_panel.add_child(desc_lbl)

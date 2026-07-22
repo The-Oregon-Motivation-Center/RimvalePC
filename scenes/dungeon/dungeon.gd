@@ -428,11 +428,16 @@ func _ready() -> void:
 	# retriggers the rebuild — small step keeps the chunk centered on the
 	# party as they walk, so edges don't visibly pop in.
 	if MAP_SIZE > 30:
+		# Scale render radius with map size — bigger maps need larger visible
+		# chunks so the player can see enough of the field (esp. in Battle Mode
+		# at 150×150). Base values are for crawl-size (50); multiply up for
+		# anything larger while keeping a floor at the crawl values.
+		var size_mult: float = maxf(1.0, float(MAP_SIZE) / 50.0)
 		match _quality:
-			"low":  _render_radius = 6     # 13×13 visible chunk
-			"high": _render_radius = 10    # 21×21
-			_:      _render_radius = 8     # 17×17
-		_render_chunk_step = 2
+			"low":  _render_radius = maxi(6, int(6.0 * size_mult))     # 13×13 → 19×19 at 150
+			"high": _render_radius = maxi(10, int(10.0 * size_mult))   # 21×21 → 61×61 at 150
+			_:      _render_radius = maxi(8, int(8.0 * size_mult))     # 17×17 → 49×49 at 150
+		_render_chunk_step = maxi(2, int(2.0 * size_mult))
 	else:
 		_render_radius = 0     # 0 disables culling entirely
 		_render_chunk_step = 0
@@ -8179,4 +8184,652 @@ func _open_spell_crafter() -> void:
 	_sc_cost_lbl = RimvaleUtils.label("Total SP Cost: —", 18, Color(0.74, 0.40, 1.0))
 	cv.add_child(_sc_cost_lbl)
 	_sc_breakdown_lbl = RimvaleUtils.label("", 10, RimvaleColors.TEXT_DIM)
-	cv.
+	cv.add_child(_sc_breakdown_lbl)
+	cv.add_child(RimvaleUtils.label("Description:", 12, RimvaleColors.TEXT_WHITE))
+	_sc_desc_lbl = RimvaleUtils.label("", 11, Color(0.70, 0.75, 0.85))
+	_sc_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cv.add_child(_sc_desc_lbl)
+	_sc_update_preview()
+
+	cv.add_child(RimvaleUtils.spacer(6))
+
+	# Register button
+	var reg_btn = RimvaleUtils.button("Register Custom Spell", Color(0.35, 0.28, 0.65), 44, 14)
+	reg_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reg_btn.pressed.connect(_sc_register_spell)
+	cv.add_child(reg_btn)
+
+func _rebuild_spell_crafter() -> void:
+	if is_instance_valid(_sc_overlay):
+		_sc_overlay.queue_free(); _sc_overlay = null
+	_open_spell_crafter()
+
+func _sc_register_spell() -> void:
+	var sname: String = _sc_name.strip_edges()
+	if sname.is_empty():
+		_add_log("[color=red]Enter a spell name first.[/color]")
+		return
+	var cost: int = _sc_calc_cost()
+	var is_summon: bool = _sc_is_summon_effect()
+	var is_construct: bool = _sc_is_construct_effect()
+	var is_special: bool = is_summon or is_construct
+	var die_sides: int = 0 if is_special else [4,6,8,10,12][_sc_die_idx]
+	var die_count: int = 0 if is_special else _sc_die_count
+	var dur_rounds: int = SC_DURATION_ROUNDS[_sc_duration_idx]
+	var cond_csv: String = "" if is_special else ",".join(_sc_conditions)
+	var targets: int = 1 if is_special else _sc_targets
+	var area: int = 0 if is_special else _sc_area_idx
+	# Register spell and teach only the selected unit
+	var sc_handle: int = -2
+	if _selected_id != "":
+		var ent = _get_entity(_selected_id)
+		sc_handle = int(ent.get("handle", -2))
+	var sc_tp_range_val: int = _sc_tp_range if _sc_is_teleport else 0
+	_e.add_custom_spell(
+		sname, _sc_domain, cost, _sc_description(),
+		_sc_range_idx, (not _sc_is_saving_throw) and (not _sc_is_healing),
+		die_count, die_sides, _sc_damage_type,
+		_sc_is_healing, dur_rounds, targets,
+		area, cond_csv, _sc_is_teleport,
+		false, sc_handle, sc_tp_range_val, is_summon, is_construct
+	)
+	var display_cost: int = 0 if _sc_is_teleport else cost
+	_add_log("[color=#bd66ff]%s registered and learned: %s (%d SP)[/color]" % [sname, _sc_description().left(60), display_cost])
+	_sc_name = ""
+	if is_instance_valid(_sc_overlay): _sc_overlay.queue_free(); _sc_overlay = null
+	_populate_action_columns()
+
+func _sc_row(label_text: String, ctrl: Control) -> HBoxContainer:
+	var row = HBoxContainer.new(); row.add_theme_constant_override("separation", 8)
+	var lbl = RimvaleUtils.label(label_text, 12, RimvaleColors.TEXT_GRAY)
+	lbl.custom_minimum_size = Vector2(100, 0)
+	row.add_child(lbl)
+	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(ctrl)
+	return row
+
+# ── Shapeshift Form Selection Dialog ─────────────────────────────────────────
+
+func _open_shapeshift_dialog(action: Dictionary) -> void:
+	if _ss_overlay != null and is_instance_valid(_ss_overlay):
+		_ss_overlay.queue_free(); _ss_overlay = null
+	_ss_pending_action = action.duplicate()
+
+	var ent: Dictionary = _get_entity(_selected_id)
+	if ent.is_empty(): return
+	var ch: int = int(ent.get("handle", -1))
+	if ch < 0: return
+	var char_data: Dictionary = _e._chars.get(ch, {})
+	var ss_tier: int = int(char_data.get("feats", {}).get("Shapeshifter's Path", 0))
+	var forms: PackedStringArray = _e._shapeshift_available_forms(ss_tier)
+	var sp_avail: int = int(ent.get("sp", 0))
+	var char_level: int = int(char_data.get("level", 1))
+
+	# Full-screen overlay
+	_ss_overlay = Panel.new()
+	_ss_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg_style := StyleBoxFlat.new()
+	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
+	_ss_overlay.add_theme_stylebox_override("panel", bg_style)
+	add_child(_ss_overlay)
+
+	var mgn := MarginContainer.new()
+	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
+	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ss_overlay.add_child(mgn)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mgn.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
+
+	# Header
+	var hdr := HBoxContainer.new()
+	vbox.add_child(hdr)
+	hdr.add_child(RimvaleUtils.label("Shapeshift — Choose Form", 18, RimvaleColors.TEXT_WHITE))
+	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+	var close_btn := Button.new(); close_btn.text = "X"; close_btn.flat = true
+	close_btn.add_theme_font_size_override("font_size", 18)
+	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
+	close_btn.pressed.connect(func():
+		if is_instance_valid(_ss_overlay): _ss_overlay.queue_free(); _ss_overlay = null
+	)
+	hdr.add_child(close_btn)
+
+	# Tier info
+	var tier_lbl := RimvaleUtils.label(
+		"Tier %d — SP available: %d — Char level: %d" % [ss_tier, sp_avail, char_level],
+		12, Color(0.65, 0.80, 0.65))
+	vbox.add_child(tier_lbl)
+
+	# SP investment slider
+	var sp_row := HBoxContainer.new()
+	sp_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(sp_row)
+	sp_row.add_child(RimvaleUtils.label("Invest SP:", 12, RimvaleColors.TEXT_GRAY))
+	var sp_slider := HSlider.new()
+	sp_slider.min_value = 0
+	sp_slider.max_value = mini(sp_avail, char_level)
+	sp_slider.value = 0
+	sp_slider.step = 1
+	sp_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sp_slider.custom_minimum_size = Vector2(120, 0)
+	sp_row.add_child(sp_slider)
+	var sp_val_lbl := RimvaleUtils.label("0", 12, Color(0.40, 0.85, 1.0))
+	var sp_info_lbl := RimvaleUtils.label("Creature level: 0 (stats = 0, min 1 HP)", 11, Color(0.55, 0.55, 0.50))
+	vbox.add_child(sp_info_lbl)
+
+	sp_slider.value_changed.connect(func(val: float):
+		sp_val_lbl.text = str(int(val))
+		var cre_lvl: int = int(val)
+		if cre_lvl == 0:
+			sp_info_lbl.text = "Creature level: 0 (stats = 0, min 1 HP)"
+		else:
+			var ratio: float = float(cre_lvl) / float(maxi(1, char_level))
+			sp_info_lbl.text = "Creature level: %d (%.0f%% of form stats)" % [cre_lvl, ratio * 100]
+	)
+
+	# Separator
+	var sep := HSeparator.new()
+	sep.add_theme_constant_override("separation", 8)
+	vbox.add_child(sep)
+
+	# Form list
+	vbox.add_child(RimvaleUtils.label("Available Forms:", 14, RimvaleColors.TEXT_WHITE))
+
+	for form_name in forms:
+		var form: Dictionary = _e.ANIMAL_FORMS[form_name]
+		var size_str: String = str(form["size"])
+		var weapon_str: String = str(form["weapon"])
+		var dice_arr: Array = form.get("dice", [1,6])
+		var special_str: String = str(form.get("special", ""))
+
+		var form_row := HBoxContainer.new()
+		form_row.add_theme_constant_override("separation", 8)
+		vbox.add_child(form_row)
+
+		var select_btn := Button.new()
+		select_btn.text = form_name
+		select_btn.custom_minimum_size = Vector2(100, 32)
+		select_btn.add_theme_font_size_override("font_size", 13)
+
+		# Color code by size
+		var btn_color: Color = Color(0.60, 0.80, 0.60)  # green = small/med
+		if size_str == "Large": btn_color = Color(0.85, 0.70, 0.30)
+		elif size_str == "Huge": btn_color = Color(0.90, 0.40, 0.40)
+		select_btn.add_theme_color_override("font_color", btn_color)
+
+		var captured_form: String = form_name
+		var captured_slider: HSlider = sp_slider
+		select_btn.pressed.connect(func():
+			_confirm_shapeshift(captured_form, int(captured_slider.value))
+		)
+		form_row.add_child(select_btn)
+
+		var stat_str: String = "%s | STR %d SPD %d VIT %d | %dd%d %s" % [
+			size_str, form["str"], form["spd"], form["vit"],
+			dice_arr[0], dice_arr[1], weapon_str]
+		if special_str != "":
+			stat_str += " [%s]" % special_str
+		var info := RimvaleUtils.label(stat_str, 11, Color(0.55, 0.55, 0.50))
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		form_row.add_child(info)
+
+func _confirm_shapeshift(form_name: String, sp_invest: int) -> void:
+	if _ss_overlay != null and is_instance_valid(_ss_overlay):
+		_ss_overlay.queue_free(); _ss_overlay = null
+
+	# Inject form choice + SP into the pending action and execute
+	var action: Dictionary = _ss_pending_action.duplicate()
+	action["_shapeshift_form"] = form_name
+	action["_shapeshift_sp"]   = sp_invest
+	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
+	_handle_action_result(result)
+	_ss_pending_action = {}
+
+# ── Summon Creature Builder Dialog ───────────────────────────────────────────
+
+func _open_summon_builder_dialog(action: Dictionary) -> void:
+	if _sb_overlay != null and is_instance_valid(_sb_overlay):
+		_sb_overlay.queue_free(); _sb_overlay = null
+	_sb_pending_action = action.duplicate()
+	_sb_stats = [0, 0, 0, 0, 0]
+	_sb_feats = {}
+	_sb_abilities = []
+	_sb_name = "Construct"
+
+	var ent: Dictionary = _get_entity(_selected_id)
+	if ent.is_empty(): return
+	var ch: int = int(ent.get("handle", -1))
+	if ch < 0: return
+	var char_data: Dictionary = _e._chars.get(ch, {})
+	var sp_avail: int = int(ent.get("sp", 0))
+	var caster_feats: Dictionary = char_data.get("feats", {})
+	var caster_max_tier: int = 1
+	for fn in caster_feats:
+		caster_max_tier = maxi(caster_max_tier, int(caster_feats[fn]))
+	var spell_nm: String = str(action.get("matrix_id", ""))
+	var spell_entry: Dictionary = _e._SPELL_DB.get(spell_nm, {})
+	var base_cost: int = int(spell_entry.get("sc", 2))
+	if spell_nm == "Animate Undead" and base_cost < 3: base_cost = 3
+
+	# Full-screen overlay
+	_sb_overlay = Panel.new()
+	_sb_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg_style := StyleBoxFlat.new()
+	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
+	_sb_overlay.add_theme_stylebox_override("panel", bg_style)
+	add_child(_sb_overlay)
+
+	var mgn := MarginContainer.new()
+	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
+	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_sb_overlay.add_child(mgn)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mgn.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
+
+	# Header
+	var hdr := HBoxContainer.new()
+	vbox.add_child(hdr)
+	var title_str: String = "Summon Creature Builder" if base_cost == 2 else "Animate Undead Builder"
+	hdr.add_child(RimvaleUtils.label(title_str, 18, RimvaleColors.TEXT_WHITE))
+	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+	var close_btn := Button.new(); close_btn.text = "X"; close_btn.flat = true
+	close_btn.add_theme_font_size_override("font_size", 18)
+	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
+	close_btn.pressed.connect(func():
+		if is_instance_valid(_sb_overlay): _sb_overlay.queue_free(); _sb_overlay = null
+	)
+	hdr.add_child(close_btn)
+
+	# SP available + cost display
+	_sb_cost_lbl = RimvaleUtils.label(
+		"SP available: %d | Base cost: %d | Total: %d" % [sp_avail, base_cost, base_cost],
+		12, Color(0.65, 0.80, 0.65))
+	vbox.add_child(_sb_cost_lbl)
+
+	# Creature name
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Creature Name"
+	name_edit.text = _sb_name
+	name_edit.custom_minimum_size = Vector2(0, 30)
+	name_edit.add_theme_font_size_override("font_size", 13)
+	name_edit.text_changed.connect(func(t: String): _sb_name = t)
+	vbox.add_child(name_edit)
+
+	# ── Stats (all start at 0, 1 SP per point) ──
+	vbox.add_child(RimvaleUtils.label("Stats (1 SP per point, all start at 0):", 14, RimvaleColors.TEXT_WHITE))
+	var stat_names: Array = ["STR", "SPD", "INT", "VIT", "DIV"]
+	var stat_lbls: Array = []
+	for i in range(5):
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		vbox.add_child(row)
+		row.add_child(RimvaleUtils.label(stat_names[i] + ":", 12, RimvaleColors.TEXT_GRAY))
+		var val_lbl := RimvaleUtils.label("0", 13, Color(0.40, 0.85, 1.0))
+		val_lbl.custom_minimum_size = Vector2(30, 0)
+		stat_lbls.append(val_lbl)
+		var minus_btn := Button.new(); minus_btn.text = "-"; minus_btn.flat = true
+		minus_btn.custom_minimum_size = Vector2(28, 28)
+		minus_btn.add_theme_font_size_override("font_size", 14)
+		var plus_btn := Button.new(); plus_btn.text = "+"; plus_btn.flat = true
+		plus_btn.custom_minimum_size = Vector2(28, 28)
+		plus_btn.add_theme_font_size_override("font_size", 14)
+		var ci: int = i
+		var captured_lbl: Label = val_lbl
+		var captured_sp: int = sp_avail
+		var captured_base: int = base_cost
+		minus_btn.pressed.connect(func():
+			if _sb_stats[ci] > 0:
+				_sb_stats[ci] -= 1
+				captured_lbl.text = str(_sb_stats[ci])
+				_sb_update_cost(captured_sp, captured_base)
+		)
+		plus_btn.pressed.connect(func():
+			_sb_stats[ci] += 1
+			captured_lbl.text = str(_sb_stats[ci])
+			_sb_update_cost(captured_sp, captured_base)
+		)
+		row.add_child(minus_btn)
+		row.add_child(val_lbl)
+		row.add_child(plus_btn)
+
+	# ── Separator ──
+	var sep := HSeparator.new()
+	vbox.add_child(sep)
+
+	# ── Abilities from monster table ──
+	vbox.add_child(RimvaleUtils.label("Abilities (cost = AP + SP of ability):", 14, RimvaleColors.TEXT_WHITE))
+	var catalog: Array = _e.get_summon_ability_catalog()
+	for ab in catalog:
+		if int(ab.get("_tier", 1)) > caster_max_tier: continue
+		var ab_name: String = str(ab.get("name", "?"))
+		var ab_cost: int = int(ab.get("_sp_cost", 1))
+		var ab_tier: int = int(ab.get("_tier", 1))
+		var dice: Array = ab.get("dice", [1,6])
+		var ab_row := HBoxContainer.new()
+		ab_row.add_theme_constant_override("separation", 6)
+		vbox.add_child(ab_row)
+		var ab_check := CheckBox.new()
+		ab_check.text = "%s (T%d, %d SP) — %dd%d" % [ab_name, ab_tier, ab_cost, int(dice[0]), int(dice[1])]
+		ab_check.add_theme_font_size_override("font_size", 11)
+		var captured_ab: String = ab_name
+		var cap_sp: int = sp_avail
+		var cap_base: int = base_cost
+		ab_check.toggled.connect(func(on: bool):
+			if on and captured_ab not in _sb_abilities:
+				_sb_abilities.append(captured_ab)
+			elif not on and captured_ab in _sb_abilities:
+				_sb_abilities.erase(captured_ab)
+			_sb_update_cost(cap_sp, cap_base)
+		)
+		ab_row.add_child(ab_check)
+
+	# ── Separator ──
+	vbox.add_child(HSeparator.new())
+
+	# ── Summon button ──
+	var summon_btn := Button.new()
+	summon_btn.text = "✦ SUMMON"
+	summon_btn.custom_minimum_size = Vector2(0, 40)
+	summon_btn.add_theme_font_size_override("font_size", 16)
+	summon_btn.add_theme_color_override("font_color", Color(0.30, 1.0, 0.40))
+	summon_btn.pressed.connect(_confirm_summon_build)
+	vbox.add_child(summon_btn)
+
+func _sb_update_cost(sp_avail: int, base_cost: int) -> void:
+	var stat_total: int = 0
+	for st in _sb_stats: stat_total += st
+	var ability_cost: int = 0
+	for ab_name in _sb_abilities:
+		ability_cost += _e._summon_ability_sp_cost(ab_name)
+	var total: int = base_cost + stat_total + ability_cost
+	var color: Color = Color(0.65, 0.80, 0.65) if total <= sp_avail else Color(1.0, 0.40, 0.30)
+	if _sb_cost_lbl != null and is_instance_valid(_sb_cost_lbl):
+		_sb_cost_lbl.text = "SP available: %d | Base: %d + Stats: %d + Abilities: %d = Total: %d SP" % [
+			sp_avail, base_cost, stat_total, ability_cost, total]
+		_sb_cost_lbl.add_theme_color_override("font_color", color)
+
+func _confirm_summon_build() -> void:
+	if _sb_overlay != null and is_instance_valid(_sb_overlay):
+		_sb_overlay.queue_free(); _sb_overlay = null
+
+	var action: Dictionary = _sb_pending_action.duplicate()
+	action["_summon_build"] = {
+		"stats": _sb_stats.duplicate(),
+		"feats": _sb_feats.duplicate(),
+		"abilities": _sb_abilities.duplicate(),
+		"creature_name": _sb_name,
+	}
+	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
+	_handle_action_result(result)
+	_sb_pending_action = {}
+
+# ── Create Construct Builder Dialog ──────────────────────────────────────────
+
+## Construct cost constants
+const CB_WEAPON_LABELS: PackedStringArray = ["None", "Light Weapon (2 SP)", "Martial Weapon (3 SP)", "Heavy Weapon (4 SP)"]
+const CB_WEAPON_COSTS: PackedInt32Array   = [0, 2, 3, 4]
+const CB_WEAPON_NAMES: PackedStringArray  = ["", "Construct Light Weapon", "Construct Martial Weapon", "Construct Heavy Weapon"]
+const CB_ARMOR_LABELS: PackedStringArray  = ["None", "Light Armor (2 SP)", "Medium Armor (3 SP)", "Heavy Armor (4 SP)"]
+const CB_ARMOR_COSTS: PackedInt32Array    = [0, 2, 3, 4]
+const CB_ARMOR_NAMES: PackedStringArray   = ["", "Construct Light Armor", "Construct Medium Armor", "Construct Heavy Armor"]
+const CB_SHIELD_LABELS: PackedStringArray = ["None", "Shield (1 SP)", "Tower Shield (2 SP)"]
+const CB_SHIELD_COSTS: PackedInt32Array   = [0, 1, 2]
+const CB_SHIELD_NAMES: PackedStringArray  = ["", "Construct Shield", "Construct Tower Shield"]
+
+func _cb_calc_cost(base_cost: int) -> Dictionary:
+	if _cb_mode == 1:  # Structure
+		var struct_sp: int = int(pow(2.0, float(_cb_struct_tier)))  # tier1=2, tier2=4, tier3=8, tier4=16
+		return {"total": base_cost + struct_sp, "struct": struct_sp, "equip": 0, "trr": 0, "discount": 0, "item_count": 0}
+	# Equipment mode
+	var w_cost: int = CB_WEAPON_COSTS[_cb_weapon_idx]
+	var a_cost: int = CB_ARMOR_COSTS[_cb_armor_idx]
+	var s_cost: int = CB_SHIELD_COSTS[_cb_shield_idx]
+	var trr_cost: int = _cb_trr
+	var equip_raw: int = w_cost + a_cost + s_cost + trr_cost
+	# Count items in set (weapons, armor, shields — TRR doesn't count as separate item)
+	var item_count: int = 0
+	if _cb_weapon_idx > 0: item_count += 1
+	if _cb_armor_idx > 0: item_count += 1
+	if _cb_shield_idx > 0: item_count += 1
+	# Set discount: -1 per item, up to -3 (only if multiple items)
+	var discount: int = 0
+	if item_count >= 2: discount = mini(item_count, 3)
+	var equip_final: int = maxi(1, equip_raw - discount)
+	return {"total": base_cost + equip_final, "struct": 0, "equip": equip_raw, "trr": trr_cost, "discount": discount, "item_count": item_count}
+
+func _open_construct_builder_dialog(action: Dictionary) -> void:
+	if _cb_overlay != null and is_instance_valid(_cb_overlay):
+		_cb_overlay.queue_free(); _cb_overlay = null
+	_cb_pending_action = action.duplicate()
+	_cb_mode = 0; _cb_weapon_idx = 0; _cb_armor_idx = 0
+	_cb_shield_idx = 0; _cb_trr = 0; _cb_struct_tier = 1
+
+	var ent: Dictionary = _get_entity(_selected_id)
+	if ent.is_empty(): return
+	var sp_avail: int = int(ent.get("sp", 0))
+	var spell_nm: String = str(action.get("matrix_id", ""))
+	var spell_entry: Dictionary = _e._SPELL_DB.get(spell_nm, {})
+	var base_cost: int = int(spell_entry.get("sc", 2))
+
+	# Full-screen overlay
+	_cb_overlay = Panel.new()
+	_cb_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg_style := StyleBoxFlat.new()
+	bg_style.bg_color = Color(0.06, 0.05, 0.10, 0.96)
+	_cb_overlay.add_theme_stylebox_override("panel", bg_style)
+	add_child(_cb_overlay)
+
+	var mgn := MarginContainer.new()
+	for s in ["left","right","top","bottom"]: mgn.add_theme_constant_override("margin_" + s, 20)
+	mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_cb_overlay.add_child(mgn)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mgn.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
+
+	# Header
+	var hdr := HBoxContainer.new()
+	vbox.add_child(hdr)
+	hdr.add_child(RimvaleUtils.label("Create Construct", 18, RimvaleColors.TEXT_WHITE))
+	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+	var close_btn := Button.new(); close_btn.text = "X"; close_btn.flat = true
+	close_btn.add_theme_font_size_override("font_size", 18)
+	close_btn.add_theme_color_override("font_color", RimvaleColors.DANGER)
+	close_btn.pressed.connect(func():
+		if is_instance_valid(_cb_overlay): _cb_overlay.queue_free(); _cb_overlay = null
+	)
+	hdr.add_child(close_btn)
+
+	# SP + cost display
+	_cb_cost_lbl = RimvaleUtils.label("", 12, Color(0.65, 0.80, 0.65))
+	vbox.add_child(_cb_cost_lbl)
+
+	# Stats preview (HP / AC / DT)
+	_cb_stats_lbl = RimvaleUtils.label("", 11, Color(0.55, 0.70, 0.85))
+	vbox.add_child(_cb_stats_lbl)
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Mode selector: Equipment vs Structure ──
+	vbox.add_child(RimvaleUtils.label("Construct Type", 14, RimvaleColors.TEXT_WHITE))
+	var mode_opt := OptionButton.new()
+	mode_opt.add_item("Equipment Set (weapons, armor, shields, clothing)")
+	mode_opt.add_item("Structure (walls, barriers, platforms)")
+	mode_opt.selected = _cb_mode
+	mode_opt.add_theme_font_size_override("font_size", 12)
+	var cap_sp: int = sp_avail
+	var cap_base: int = base_cost
+	mode_opt.item_selected.connect(func(i: int): _cb_mode = i; _rebuild_construct_builder())
+	vbox.add_child(mode_opt)
+
+	vbox.add_child(HSeparator.new())
+
+	if _cb_mode == 0:
+		# ── Equipment mode ──
+		vbox.add_child(RimvaleUtils.label("Equipment", 14, Color(0.50, 0.70, 1.0)))
+
+		# Weapon
+		var w_opt := OptionButton.new()
+		for wl in CB_WEAPON_LABELS: w_opt.add_item(wl)
+		w_opt.selected = _cb_weapon_idx
+		w_opt.add_theme_font_size_override("font_size", 12)
+		w_opt.item_selected.connect(func(i: int): _cb_weapon_idx = i; _cb_update_cost(cap_sp, cap_base))
+		vbox.add_child(_cb_row("Weapon", w_opt))
+
+		# Armor
+		var a_opt := OptionButton.new()
+		for al in CB_ARMOR_LABELS: a_opt.add_item(al)
+		a_opt.selected = _cb_armor_idx
+		a_opt.add_theme_font_size_override("font_size", 12)
+		a_opt.item_selected.connect(func(i: int): _cb_armor_idx = i; _cb_update_cost(cap_sp, cap_base))
+		vbox.add_child(_cb_row("Armor", a_opt))
+
+		# Shield
+		var s_opt := OptionButton.new()
+		for sl in CB_SHIELD_LABELS: s_opt.add_item(sl)
+		s_opt.selected = _cb_shield_idx
+		s_opt.add_theme_font_size_override("font_size", 12)
+		s_opt.item_selected.connect(func(i: int): _cb_shield_idx = i; _cb_update_cost(cap_sp, cap_base))
+		vbox.add_child(_cb_row("Shield", s_opt))
+
+		vbox.add_child(HSeparator.new())
+
+		# TRR clothing
+		vbox.add_child(RimvaleUtils.label("TRR Clothing / Armor Coating (1 SP per rating)", 12, Color(0.55, 0.70, 0.60)))
+		var trr_lbl := RimvaleUtils.label("TRR: +%d" % _cb_trr, 13, Color(0.40, 0.85, 1.0))
+		var trr_row := HBoxContainer.new()
+		trr_row.add_theme_constant_override("separation", 6)
+		vbox.add_child(trr_row)
+		var trr_minus := Button.new(); trr_minus.text = "-"; trr_minus.flat = true
+		trr_minus.custom_minimum_size = Vector2(28, 28)
+		trr_minus.add_theme_font_size_override("font_size", 14)
+		var trr_plus := Button.new(); trr_plus.text = "+"; trr_plus.flat = true
+		trr_plus.custom_minimum_size = Vector2(28, 28)
+		trr_plus.add_theme_font_size_override("font_size", 14)
+		var cap_trr_lbl: Label = trr_lbl
+		trr_minus.pressed.connect(func():
+			if _cb_trr > 0: _cb_trr -= 1; cap_trr_lbl.text = "TRR: +%d" % _cb_trr; _cb_update_cost(cap_sp, cap_base))
+		trr_plus.pressed.connect(func():
+			_cb_trr += 1; cap_trr_lbl.text = "TRR: +%d" % _cb_trr; _cb_update_cost(cap_sp, cap_base))
+		trr_row.add_child(trr_minus)
+		trr_row.add_child(trr_lbl)
+		trr_row.add_child(trr_plus)
+
+		# Set discount info
+		vbox.add_child(RimvaleUtils.label("Set Discount: -1 SP per item in set (up to -3)", 10, Color(0.50, 0.55, 0.45)))
+
+	else:
+		# ── Structure mode ──
+		vbox.add_child(RimvaleUtils.label("Structure Size", 14, Color(0.50, 0.70, 1.0)))
+
+		var tier_labels: Array = [
+			"5x5x5 ft (1 tile) — 2 SP",
+			"10x10x10 ft (2 tiles) — 4 SP",
+			"15x15x15 ft (3 tiles) — 8 SP",
+			"20x20x20 ft (4 tiles) — 16 SP",
+			"25x25x25 ft (5 tiles) — 32 SP",
+		]
+		var tier_opt := OptionButton.new()
+		for tl in tier_labels: tier_opt.add_item(tl)
+		tier_opt.selected = _cb_struct_tier - 1
+		tier_opt.add_theme_font_size_override("font_size", 12)
+		tier_opt.item_selected.connect(func(i: int): _cb_struct_tier = i + 1; _cb_update_cost(cap_sp, cap_base))
+		vbox.add_child(tier_opt)
+
+		vbox.add_child(RimvaleUtils.label(
+			"Not all sides must be max length. Shape it however you want within the size limit. "
+			+ "The construct is semi-transparent with a glowing outline. It can be attacked and destroyed.",
+			10, Color(0.50, 0.55, 0.45)))
+
+	vbox.add_child(HSeparator.new())
+
+	# ── Create button ──
+	var create_btn := Button.new()
+	create_btn.text = "CREATE CONSTRUCT"
+	create_btn.custom_minimum_size = Vector2(0, 40)
+	create_btn.add_theme_font_size_override("font_size", 16)
+	create_btn.add_theme_color_override("font_color", Color(0.40, 0.70, 1.0))
+	create_btn.pressed.connect(_confirm_construct_build)
+	vbox.add_child(create_btn)
+
+	_cb_update_cost(sp_avail, base_cost)
+
+func _cb_row(label_text: String, ctrl: Control) -> HBoxContainer:
+	var row := HBoxContainer.new(); row.add_theme_constant_override("separation", 8)
+	var lbl := RimvaleUtils.label(label_text, 12, RimvaleColors.TEXT_GRAY)
+	lbl.custom_minimum_size = Vector2(80, 0)
+	row.add_child(lbl)
+	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(ctrl)
+	return row
+
+func _cb_update_cost(sp_avail: int, base_cost: int) -> void:
+	var info: Dictionary = _cb_calc_cost(base_cost)
+	var total: int = int(info["total"])
+	var color: Color = Color(0.65, 0.80, 0.65) if total <= sp_avail else Color(1.0, 0.40, 0.30)
+	if _cb_cost_lbl != null and is_instance_valid(_cb_cost_lbl):
+		if _cb_mode == 0:
+			var disc_str: String = ""
+			if int(info["discount"]) > 0: disc_str = " - Set Discount: %d" % int(info["discount"])
+			_cb_cost_lbl.text = "SP available: %d | Equipment: %d + TRR: %d%s = Total: %d SP" % [
+				sp_avail, int(info["equip"]) - int(info["trr"]), int(info["trr"]), disc_str, total]
+		else:
+			_cb_cost_lbl.text = "SP available: %d | Structure: %d = Total: %d SP" % [sp_avail, int(info["struct"]), total]
+		_cb_cost_lbl.add_theme_color_override("font_color", color)
+	if _cb_stats_lbl != null and is_instance_valid(_cb_stats_lbl):
+		var construct_sp: int = total - base_cost
+		var hp: int = construct_sp * 3
+		var ac: int = 10 + mini(construct_sp, 10)
+		var dt: int = mini(construct_sp, 10)
+		_cb_stats_lbl.text = "Construct Stats — HP: %d | AC: %d | Damage Threshold: %d" % [hp, ac, dt]
+
+func _rebuild_construct_builder() -> void:
+	if is_instance_valid(_cb_overlay):
+		_cb_overlay.queue_free(); _cb_overlay = null
+	_open_construct_builder_dialog(_cb_pending_action)
+
+func _confirm_construct_build() -> void:
+	if _cb_overlay != null and is_instance_valid(_cb_overlay):
+		_cb_overlay.queue_free(); _cb_overlay = null
+
+	var build: Dictionary = {
+		"mode": "equipment" if _cb_mode == 0 else "structure",
+	}
+	if _cb_mode == 0:
+		build["weapon_idx"] = _cb_weapon_idx
+		build["armor_idx"] = _cb_armor_idx
+		build["shield_idx"] = _cb_shield_idx
+		build["trr"] = _cb_trr
+	else:
+		build["struct_tier"] = _cb_struct_tier
+
+	var action: Dictionary = _cb_pending_action.duplicate()
+	action["_construct_build"] = build
+	var result: Dictionary = _e.dungeon_perform_action(_selected_id, action, "", 0, 0)
+	_handle_action_result(result)
+	_cb_pending_action = {}

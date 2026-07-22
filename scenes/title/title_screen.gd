@@ -18,6 +18,17 @@ var _settings_btn: Button
 var _quit_btn: Button
 var _version_lbl: Label
 
+# Two-level menu: the root picks a game (RPG / Battle / TCG); submenus hold
+# each game's own options. Arrays drive visibility in _show_menu_level().
+var _menu_level: String = "root"
+var _root_btns: Array = []        # the three game buttons
+var _rpg_btns: Array = []         # Continue / Load / New / Back
+var _battle_btns: Array = []      # Battle Mode / Conquest / Back
+var _rpg_menu_btn: Button
+var _back_btn: Button             # shared submenu → root button
+var _continue_ok: bool = false    # save-dependent visibility, checked at build
+var _load_ok: bool = false
+
 # Settings overlay
 var _settings_overlay: Control
 
@@ -96,20 +107,39 @@ func _ready() -> void:
 	var has_save: bool = GameState.list_save_slots().size() > 0 \
 		or FileAccess.file_exists(SAVE_PATH)
 
-	# Quick-resume: jump straight into the most recently played slot.
-	# Only visible when there is at least one save on disk.
+	# ── Root level: pick a game ──────────────────────────────────────────
+	_rpg_menu_btn = _make_menu_btn("⚔ Rimvale — The RPG", RimvaleColors.GOLD, 18)
+	_rpg_menu_btn.pressed.connect(func(): _show_menu_level("rpg"))
+	_menu_vbox.add_child(_rpg_menu_btn)
+	_root_btns.append(_rpg_menu_btn)
+
+	var battle_menu_btn := _make_menu_btn("🏰 Rimvale Battle", RimvaleColors.ORANGE, 18)
+	battle_menu_btn.pressed.connect(func(): _show_menu_level("battle"))
+	_menu_vbox.add_child(battle_menu_btn)
+	_root_btns.append(battle_menu_btn)
+
+	var tcg_btn := _make_menu_btn("🃏 Rimvale TCG", RimvaleColors.ACCENT, 18)
+	tcg_btn.pressed.connect(func():
+		get_tree().change_scene_to_file("res://scenes/cards/card_setup.tscn")
+	)
+	_menu_vbox.add_child(tcg_btn)
+	_root_btns.append(tcg_btn)
+
+	# ── RPG submenu: Continue / Load / New ───────────────────────────────
 	var resume_meta: Dictionary = _find_most_recent_slot_meta()
+	_continue_ok = has_save and not resume_meta.is_empty()
+	_load_ok = has_save
+
 	_continue_btn = _make_menu_btn("Continue", RimvaleColors.GOLD, 18)
-	_continue_btn.visible = has_save and not resume_meta.is_empty()
 	_continue_btn.pressed.connect(_on_continue)
 	_menu_vbox.add_child(_continue_btn)
+	_rpg_btns.append(_continue_btn)
 
 	# Subtitle showing which save will be resumed
 	_continue_sub_lbl = Label.new()
 	_continue_sub_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_continue_sub_lbl.add_theme_font_size_override("font_size", 11)
 	_continue_sub_lbl.add_theme_color_override("font_color", RimvaleColors.TEXT_GRAY)
-	_continue_sub_lbl.visible = _continue_btn.visible
 	if not resume_meta.is_empty():
 		var nm: String = str(resume_meta.get("display_name", resume_meta.get("slot_id", "")))
 		var lp: String = str(resume_meta.get("last_played", ""))
@@ -118,28 +148,36 @@ func _ready() -> void:
 
 	# Load Game (slot picker) — visible whenever any save exists
 	_load_game_btn = _make_menu_btn("Load Game", RimvaleColors.ACCENT, 18)
-	_load_game_btn.visible = has_save
 	_load_game_btn.pressed.connect(_on_load_game)
 	_menu_vbox.add_child(_load_game_btn)
+	_rpg_btns.append(_load_game_btn)
 
 	# New Game
 	_new_game_btn = _make_menu_btn("New Game", RimvaleColors.CYAN, 18)
 	_new_game_btn.pressed.connect(_on_new_game)
 	_menu_vbox.add_child(_new_game_btn)
+	_rpg_btns.append(_new_game_btn)
 
-	# Battle Mode — RTS-style skirmish branch (separate from story saves)
-	var battle_btn = _make_menu_btn("⚔ Battle Mode", RimvaleColors.ORANGE, 18)
+	# ── Battle submenu: skirmish + conquest ──────────────────────────────
+	var battle_btn := _make_menu_btn("⚔ Battle Mode", RimvaleColors.ORANGE, 18)
 	battle_btn.pressed.connect(func():
 		get_tree().change_scene_to_file("res://scenes/battle/battle_setup.tscn")
 	)
 	_menu_vbox.add_child(battle_btn)
+	_battle_btns.append(battle_btn)
 
 	# Region Conquest — the Battle Mode meta-campaign (own save, separate too)
-	var conquest_btn = _make_menu_btn("🗺 Conquest", RimvaleColors.GOLD, 18)
+	var conquest_btn := _make_menu_btn("🗺 Conquest", RimvaleColors.GOLD, 18)
 	conquest_btn.pressed.connect(func():
 		get_tree().change_scene_to_file("res://scenes/battle/conquest_map.tscn")
 	)
 	_menu_vbox.add_child(conquest_btn)
+	_battle_btns.append(conquest_btn)
+
+	# ── Shared "back to game pick" button for both submenus ──────────────
+	_back_btn = _make_menu_btn("◂ Back", RimvaleColors.TEXT_GRAY, 16)
+	_back_btn.pressed.connect(func(): _show_menu_level("root"))
+	_menu_vbox.add_child(_back_btn)
 
 	# Settings
 	_settings_btn = _make_menu_btn("Settings", RimvaleColors.TEXT_LIGHT, 16)
@@ -155,6 +193,14 @@ func _ready() -> void:
 	_quit_btn = _make_menu_btn("Quit", RimvaleColors.TEXT_GRAY, 16)
 	_quit_btn.pressed.connect(_on_quit)
 	_menu_vbox.add_child(_quit_btn)
+
+	# Settings / Credits / Quit live on the root level only.
+	_root_btns.append(_settings_btn)
+	_root_btns.append(credits_btn)
+	_root_btns.append(_quit_btn)
+
+	# Open on the game-pick level.
+	_show_menu_level("root")
 
 	# Version label bottom-right
 	_version_lbl = Label.new()
@@ -184,12 +230,37 @@ func _ready() -> void:
 
 
 func _grab_initial_focus() -> void:
-	if _continue_btn != null and _continue_btn.visible:
-		_continue_btn.grab_focus()
-	elif _load_game_btn != null and _load_game_btn.visible:
-		_load_game_btn.grab_focus()
-	elif _new_game_btn != null:
-		_new_game_btn.grab_focus()
+	if _rpg_menu_btn != null:
+		_rpg_menu_btn.grab_focus()
+
+
+## Toggle menu buttons between the root game-pick and one game's submenu.
+## Levels: "root" (RPG / Battle / TCG), "rpg", "battle".
+func _show_menu_level(level: String) -> void:
+	_menu_level = level
+	for b in _root_btns:
+		(b as Button).visible = level == "root"
+	for b in _rpg_btns:
+		(b as Button).visible = level == "rpg"
+	for b in _battle_btns:
+		(b as Button).visible = level == "battle"
+	_back_btn.visible = level != "root"
+	# Save-dependent RPG entries only show when a save actually exists.
+	_continue_btn.visible = level == "rpg" and _continue_ok
+	_continue_sub_lbl.visible = _continue_btn.visible
+	_load_game_btn.visible = level == "rpg" and _load_ok
+	# Keep gamepad focus somewhere sensible after the switch.
+	match level:
+		"root":
+			_rpg_menu_btn.grab_focus()
+		"rpg":
+			if _continue_btn.visible:
+				_continue_btn.grab_focus()
+			else:
+				_new_game_btn.grab_focus()
+		"battle":
+			if not _battle_btns.is_empty():
+				(_battle_btns[0] as Button).grab_focus()
 
 func _process(delta: float) -> void:
 	if _fading_in:
@@ -773,4 +844,90 @@ func _make_setting_row(label_text: String, on_change: Callable, initial: float) 
 	row.add_theme_constant_override("separation", 12)
 
 	var lbl := Label.new()
-	lbl.text = label
+	lbl.text = label_text
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.add_theme_font_size_override("font_size", 14)
+	lbl.add_theme_color_override("font_color", RimvaleColors.TEXT_LIGHT)
+	row.add_child(lbl)
+
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 1.0
+	slider.step = 0.05
+	slider.value = clampf(initial, 0.0, 1.0)
+	slider.custom_minimum_size = Vector2(160, 0)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.value_changed.connect(on_change)
+	row.add_child(slider)
+
+	return row
+
+# ── Credits & Legal ──────────────────────────────────────────────────────────
+## Shows game credits including the REQUIRED SRD 5.2.1 CC-BY 4.0 attribution
+## (see LEGAL_ATTRIBUTION.md — do not remove the SRD paragraph).
+func _show_credits() -> void:
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.75)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(dim)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.custom_minimum_size = Vector2(720, 560)
+	panel.position = Vector2(-360, -280)
+	dim.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "Rimvale — Credits & Legal"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	vbox.add_child(title)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(680, 430)
+	vbox.add_child(scroll)
+
+	var body := RichTextLabel.new()
+	body.bbcode_enabled = true
+	body.fit_content = true
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.text = """[b]Rimvale[/b]
+A game by Spark Point Studios
+Based on the Rimvale tabletop roleplaying game.
+
+[b]Design, Writing & Development[/b]
+Spark Point Studios
+
+[b]Art & Audio[/b]
+3D model kits by Kenney (kenney.nl) — CC0.
+Additional audio credits: see the license files in the game's audio folder.
+
+[b]Engine[/b]
+Made with Godot Engine — godotengine.org/license
+
+[b]System Reference Document Attribution[/b]
+Rimvale includes material (weapon tables and weapon mastery properties) adapted from the System Reference Document 5.2.1 ("SRD 5.2.1") by Wizards of the Coast LLC, available at https://www.dndbeyond.com/srd. The SRD 5.2.1 is licensed under the Creative Commons Attribution 4.0 International License, available at https://creativecommons.org/licenses/by/4.0/legalcode.
+
+This work is unofficial and is not endorsed by or affiliated with Wizards of the Coast LLC.
+
+[b]Thank you for playing.[/b]"""
+	scroll.add_child(body)
+
+	var close_btn := Button.new()
+	close_btn.text = "Close"
+	close_btn.custom_minimum_size = Vector2(160, 40)
+	close_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	close_btn.pressed.connect(func(): dim.queue_free())
+	vbox.add_child(close_btn)
+	close_btn.grab_focus()
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+func _spacer(h: int) -> Control:
+	var s := Control.new()
+	s.custom_minimum_size = Vector2(0, h)
+	return s

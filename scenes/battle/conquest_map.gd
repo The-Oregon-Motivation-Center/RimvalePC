@@ -173,4 +173,4 @@ func _scaffold() -> VBoxContainer:
 	vbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	vbox.add_theme_constant_override("separation", 14)
 	outer.add_child(vbox)
-	return v
+	return vbox

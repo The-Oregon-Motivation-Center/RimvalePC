@@ -1439,4 +1439,218 @@ func _show_director_shop() -> void:
 			if h >= 0:
 				var cd = _e.get_char_dict(h)
 				if cd != null:
-					cd[
+					cd["level"]   = int(cfg_ref[2])
+					cd["hp"]      = int(cfg_ref[3])
+					cd["max_hp"]  = int(cfg_ref[3])
+					cd["ac"]      = int(cfg_ref[4])
+					cd["speed"]   = int(cfg_ref[5])
+				_e.equip_item(h, str(cfg_ref[6]))
+				_e.equip_item(h, str(cfg_ref[7]))
+				GameState.add_to_collection(h)
+			GameState.save_game()
+			overlay.queue_free()
+			_refresh_collection()
+			_update_director()
+			_show_notice("Recruited %s (%s)!" % [rname, cfg_ref[0]])
+		)
+		row.add_child(buy_btn)
+		vbox.add_child(row)
+
+	vbox.add_child(RimvaleUtils.separator())
+	var close_btn := RimvaleUtils.button("Close", RimvaleColors.TEXT_GRAY, 40, 13)
+	close_btn.pressed.connect(func(): overlay.queue_free())
+	vbox.add_child(close_btn)
+
+	add_child(overlay)
+
+# ── Director refresh ──────────────────────────────────────────────────────────
+
+func _update_director() -> void:
+	_director_tokens_lbl.text = str(GameState.tokens)
+	_director_rf_lbl.text     = str(GameState.remnant_fragments) + " RF"
+
+# ── Stash ─────────────────────────────────────────────────────────────────────
+
+func _refresh_stash() -> void:
+	for c in _stash_list.get_children():
+		c.queue_free()
+
+	if GameState.stash.is_empty():
+		_stash_list.add_child(RimvaleUtils.label(
+			"Stash is empty. Visit the Market or unassign items from units.", 13, RimvaleColors.TEXT_GRAY))
+		return
+
+	var active_handles: Array = GameState.get_active_handles()
+
+	var any_shown: bool = false
+	for item_name in GameState.stash:
+		var iname: String = item_name
+
+		# Search filter
+		if _stash_search_text != "" and _stash_search_text not in iname.to_lower():
+			continue
+
+		any_shown = true
+
+		var row_bg = ColorRect.new()
+		row_bg.color = RimvaleColors.BG_CARD
+		row_bg.custom_minimum_size = Vector2(0, 52)
+		_stash_list.add_child(row_bg)
+
+		var mgn = MarginContainer.new()
+		mgn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		for s in ["left","right","top","bottom"]:
+			mgn.add_theme_constant_override("margin_" + s, 8)
+		row_bg.add_child(mgn)
+
+		var row = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		mgn.add_child(row)
+
+		# item name + type label
+		var info = VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(info)
+
+		info.add_child(RimvaleUtils.label(iname, 14, RimvaleColors.TEXT_WHITE))
+
+		var details: PackedStringArray = _e.get_registry_item_details(iname)
+		var type_str: String = details[4] if details.size() > 4 else "Item"
+		info.add_child(RimvaleUtils.label(type_str, 11, RimvaleColors.TEXT_DIM))
+
+		# Equip button — shows unit picker so any unit can equip
+		var equip_btn = RimvaleUtils.button("Equip", RimvaleColors.ACCENT, 38, 12)
+		equip_btn.disabled = active_handles.is_empty()
+		equip_btn.pressed.connect(func():
+			if active_handles.is_empty():
+				_show_notice("No active team member to equip.")
+				return
+			if active_handles.size() == 1:
+				# Only one unit — equip directly
+				var h: int = active_handles[0]
+				GameState.remove_from_stash(iname)
+				_e.add_item_to_inventory(h, iname)
+				_e.equip_item(h, iname)
+				_refresh_stash()
+				_show_notice("Equipped %s on %s." % [iname, _e.get_character_name(h)])
+			else:
+				# Multiple units — show picker dialog
+				_show_equip_picker(iname, active_handles)
+		)
+		row.add_child(equip_btn)
+
+		# Give button — add to unit inventory without equipping
+		var give_btn = RimvaleUtils.button("Give", RimvaleColors.SUCCESS, 38, 12)
+		give_btn.disabled = active_handles.is_empty()
+		give_btn.pressed.connect(func():
+			if active_handles.is_empty():
+				_show_notice("No active team member.")
+				return
+			if active_handles.size() == 1:
+				var h: int = active_handles[0]
+				GameState.remove_from_stash(iname)
+				_e.add_item_to_inventory(h, iname)
+				_refresh_stash()
+				_show_notice("Gave %s to %s." % [iname, _e.get_character_name(h)])
+			else:
+				_show_give_picker(iname, active_handles)
+		)
+		row.add_child(give_btn)
+
+		# Drop button — permanently remove from stash
+		var drop_btn = RimvaleUtils.button("Drop", RimvaleColors.TEXT_GRAY, 38, 12)
+		drop_btn.pressed.connect(func():
+			GameState.remove_from_stash(iname)
+			_refresh_stash()
+			_show_notice("Dropped: %s" % iname)
+		)
+		row.add_child(drop_btn)
+
+	if not any_shown and not GameState.stash.is_empty():
+		_stash_list.add_child(RimvaleUtils.label(
+			"No items match your search.", 13, RimvaleColors.TEXT_DIM))
+
+# ── Toast ─────────────────────────────────────────────────────────────────────
+
+func _show_equip_picker(item_name: String, handles: Array) -> void:
+	var dialog = AcceptDialog.new()
+	dialog.title = "Equip " + item_name + " on..."
+	dialog.get_ok_button().text = "Cancel"
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+	for h in handles:
+		var h_cap: int = h
+		var in_cap: String = item_name
+		var cname: String = str(_e.get_character_name(h))
+		var lin: String = str(_e.get_character_lineage_name(h))
+		var lv: int = _e.get_character_level(h)
+		var btn = RimvaleUtils.button("%s  (%s Lv %d)" % [cname, lin, lv],
+			RimvaleColors.TEXT_WHITE, 44, 13)
+		btn.pressed.connect(func():
+			GameState.remove_from_stash(in_cap)
+			_e.add_item_to_inventory(h_cap, in_cap)
+			_e.equip_item(h_cap, in_cap)
+			_refresh_stash()
+			_show_notice("Equipped %s on %s." % [in_cap, _e.get_character_name(h_cap)])
+			dialog.hide()
+			dialog.queue_free()
+		)
+		vbox.add_child(btn)
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2(340, 280))
+
+func _show_give_picker(item_name: String, handles: Array) -> void:
+	var dialog = AcceptDialog.new()
+	dialog.title = "Give " + item_name + " to..."
+	dialog.get_ok_button().text = "Cancel"
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	dialog.add_child(vbox)
+	for h in handles:
+		var h_cap: int = h
+		var in_cap: String = item_name
+		var cname: String = str(_e.get_character_name(h))
+		var lin: String = str(_e.get_character_lineage_name(h))
+		var lv: int = _e.get_character_level(h)
+		var btn = RimvaleUtils.button("%s  (%s Lv %d)" % [cname, lin, lv],
+			RimvaleColors.TEXT_WHITE, 44, 13)
+		btn.pressed.connect(func():
+			GameState.remove_from_stash(in_cap)
+			_e.add_item_to_inventory(h_cap, in_cap)
+			_refresh_stash()
+			_show_notice("Gave %s to %s." % [in_cap, _e.get_character_name(h_cap)])
+			dialog.hide()
+			dialog.queue_free()
+		)
+		vbox.add_child(btn)
+	dialog.canceled.connect(func(): dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered(Vector2(340, 280))
+
+func _show_notice(msg: String) -> void:
+	var lbl = Label.new()
+	lbl.text = msg
+	lbl.add_theme_font_size_override("font_size", 14)
+	lbl.add_theme_color_override("font_color", Color.WHITE)
+
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.08, 0.08, 0.90)
+	style.set_corner_radius_all(6)
+	style.set_content_margin_all(8)
+	lbl.add_theme_stylebox_override("normal", style)
+
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	lbl.offset_top  = -72
+	lbl.offset_bottom = -16
+	lbl.offset_left  = 30
+	lbl.offset_right = -30
+	add_child(lbl)
+
+	var tween = create_tween()
+	tween.tween_interval(2.0)
+	tween.tween_property(lbl, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(lbl.queue_free)
+# (sync touch)

@@ -12,7 +12,7 @@
 ##   A + LMB      attack-move (Escape cancels)
 ##   Ctrl+1..4    assign squad          1..4  select squad (2x = center)
 ##   WASD/arrows  pan   ·  wheel zoom   ·  edge-of-screen pan
-##   Space pause  ·  F speed x2  ·  Home jump to base  ·  Escape clear
+##   Space pause  ·  F speed 1×/2×/3×  ·  Home jump to base  ·  Escape clear
 
 extends Node3D
 
@@ -22,7 +22,7 @@ const CONQUEST_MAP_SCENE := "res://scenes/battle/conquest_map.tscn"
 const EDGE_MARGIN := 12        # px — edge-of-screen pan band
 const DRAG_THRESHOLD := 8.0    # px before a click becomes a box drag
 const ZOOM_MIN := 8.0
-const ZOOM_MAX := 40.0
+const ZOOM_MAX := 160.0   # far enough to see a whole 300×300 battlefield
 const SQUAD_DOUBLE_MS := 400   # double-tap window for squad-centering
 
 ## Region id → pleasant terrain palette {floor, wall, bush}.
@@ -98,6 +98,8 @@ var _pending_attack_move := false
 var _pending_strike := false       # superweapon targeting mode
 var _pending_patrol := false       # stance: next click sets the far leg
 var _pending_wall := false         # wall placement (stays armed for chains)
+var _pending_build_kind := ""      # structure placement mode ("barracks", etc.)
+var _pending_debug_build := ""     # debug free-placement mode (same click flow)
 var _press_pos := Vector2.ZERO
 var _press_active := false
 var _dragging := false
@@ -122,6 +124,15 @@ var _queue_sig := ""              # queue composition fingerprint — rebuild ro
 var _queue_pbs: Array = []        # live ProgressBars for in-place queue updates
 var _spell_popup: PanelContainer = null
 var _spell_checks: Array = []
+var _spell_builder: PanelContainer = null
+var _sb_name: LineEdit = null
+var _sb_kind: String = "damage"
+var _sb_dc: int = 1
+var _sb_ds: int = 6
+var _sb_area: int = 2
+var _sb_cost_lbl: Label = null
+var _sb_cond_box: VBoxContainer = null
+var _sb_cond_checks: Array = []
 var _minimap: TextureRect
 var _minimap_tex: ImageTexture = null
 var _minimap_img: Image = null     # reused buffer — no per-rebuild allocation
@@ -207,13 +218,13 @@ func _ready() -> void:
 	add_child(hud_timer)
 	hud_timer.timeout.connect(_on_hud_tick)
 	var mm_timer := Timer.new()
-	mm_timer.wait_time = 0.5
+	mm_timer.wait_time = 1.0
 	mm_timer.autostart = true
 	add_child(mm_timer)
 	mm_timer.timeout.connect(_update_minimap)
 	if _fog_on:
 		var fog_timer := Timer.new()
-		fog_timer.wait_time = 0.4
+		fog_timer.wait_time = 1.0
 		fog_timer.autostart = true
 		add_child(fog_timer)
 		fog_timer.timeout.connect(_update_fog)
@@ -584,19 +595,25 @@ func _update_fog() -> void:
 			var row: int = vy * _ms
 			for vx in range(x0, x1 + 1):
 				_vision[row + vx] = 1
-	# Paint: clear where seen, dim where remembered, black where unknown.
-	for py in range(_ms):
-		var row: int = py * _ms
-		for px in range(_ms):
-			var i: int = row + px
-			if _vision[i] == 1:
-				_explored[i] = 1
-				_fog_img.set_pixel(px, py, Color(0, 0, 0, 0))
-			elif _explored[i] == 1:
-				_fog_img.set_pixel(px, py, Color(0.01, 0.01, 0.03, 0.5))
-			else:
-				_fog_img.set_pixel(px, py, Color(0.02, 0.02, 0.04, 1.0))
-	_fog_tex.update(_fog_img)
+	# Paint into a raw RGBA byte buffer — ~20× faster than per-pixel set_pixel.
+	var total: int = _ms * _ms
+	var buf := PackedByteArray()
+	buf.resize(total * 4)
+	var bi: int = 0
+	for i in range(total):
+		if _vision[i] == 1:
+			_explored[i] = 1
+			buf[bi] = 0; buf[bi + 1] = 0; buf[bi + 2] = 0; buf[bi + 3] = 0
+		elif _explored[i] == 1:
+			buf[bi] = 3; buf[bi + 1] = 3; buf[bi + 2] = 8; buf[bi + 3] = 128
+		else:
+			buf[bi] = 5; buf[bi + 1] = 5; buf[bi + 2] = 10; buf[bi + 3] = 255
+		bi += 4
+	_fog_img = Image.create_from_data(_ms, _ms, false, Image.FORMAT_RGBA8, buf)
+	if _fog_tex == null:
+		_fog_tex = ImageTexture.create_from_image(_fog_img)
+	else:
+		_fog_tex.update(_fog_img)
 
 ## Is this entity visible to the player under fog rules?
 func _fog_sees(ent: Dictionary) -> bool:
@@ -659,6 +676,10 @@ func _center_on_ids(ids: Array) -> void:
 ## fade for anything dead or removed. Node churn only on spawn and death.
 func _sync_entities(delta: float) -> void:
 	var seen: Dictionary = {}
+	var cam_x: float = _cam_focus.x
+	var cam_z: float = _cam_focus.z
+	var cull_r: float = _zoom * 1.5   # entities beyond this radius skip visual updates
+	var hide_bars: bool = _zoom > 50.0  # hide HP bars when very zoomed out
 	for ent_v in _e._dungeon_entities:
 		var ent: Dictionary = ent_v
 		var id := str(ent.get("id", ""))
@@ -690,6 +711,11 @@ func _sync_entities(delta: float) -> void:
 		if fvis != bool(p.get("fog_vis", true)):
 			p["fog_vis"] = fvis
 			n.visible = fvis
+		# LOD: skip expensive visual updates for entities far from camera.
+		var dx_cam: float = float(tx) - cam_x
+		var dz_cam: float = float(ty) - cam_z
+		if (dx_cam * dx_cam + dz_cam * dz_cam) > cull_r * cull_r:
+			continue
 		# Position: lerp only while unsettled; snap when close, then skip
 		# all movement work until the sim tile actually changes.
 		if tx != int(p["tx"]) or ty != int(p["ty"]):
@@ -705,6 +731,11 @@ func _sync_entities(delta: float) -> void:
 				n.position = target   # rift teleport — pop, don't streak
 			else:
 				n.position = n.position.lerp(target, minf(1.0, 10.0 * delta))
+		# Hide health bars when zoomed far out — reduces visual clutter.
+		if p.has("hp_fg") and is_instance_valid(p["hp_fg"]):
+			(p["hp_fg"] as Node3D).visible = not hide_bars
+		if p.has("hp_bg") and is_instance_valid(p["hp_bg"]):
+			(p["hp_bg"] as Node3D).visible = not hide_bars
 		_update_entity_visuals(ent, p)
 	# Entities that vanished from the roster entirely.
 	for id in _nodes.keys():
@@ -735,6 +766,15 @@ func _update_dying(delta: float) -> void:
 		var s := clampf(t, 0.02, 1.0)
 		n.scale = Vector3.ONE * s
 		n.position.y = -(1.0 - t) * 0.4
+
+
+## True when a sprite art path resolves on disk — via the resource system OR
+## the raw filesystem (mirrors RimvaleUtils._safe_load_texture, which covers
+## PNGs whose .import metadata is missing).
+func _sprite_file_exists(path: String) -> bool:
+	if ResourceLoader.exists(path):
+		return true
+	return FileAccess.file_exists(ProjectSettings.globalize_path(path))
 
 
 ## Build the persistent visual for one entity. Returns the root Node3D.
@@ -785,6 +825,10 @@ func _spawn_entity_node(ent: Dictionary, id: String) -> Node3D:
 
 	var is_struct := bool(ent.get("is_battle_base", false)) or bool(ent.get("is_battle_structure", false))
 	p["is_struct"] = is_struct
+	# Visual bulk: sim size 1 → 1.0×, size 2 → 1.7×, size 3 (kaiju) → 2.4×.
+	# int() of legacy string sizes ("Colossal") is 0, clamped back to 1.
+	var usize: int = maxi(1, int(ent.get("size", 1)))
+	var uscale: float = 1.0 + 0.7 * float(usize - 1)
 	if is_struct:
 		p["kind"] = "structure"
 		var is_base := bool(ent.get("is_battle_base", false))
@@ -792,35 +836,51 @@ func _spawn_entity_node(ent: Dictionary, id: String) -> Node3D:
 		_build_structure_visual(root, ent, team_col, is_base)
 	elif bool(ent.get("is_vehicle", false)):
 		p["kind"] = "vehicle"
-		p["hp_y"] = 1.3
+		p["hp_y"] = 1.3 * uscale
 		var vm: Node3D = CharacterModelBuilder.build_vehicle_sprite_model(
 			str(ent.get("lineage_name", ent.get("name", "Vehicle"))), 1.3)
+		vm.scale = Vector3.ONE * uscale
 		_set_no_shadows(vm)
 		root.add_child(vm)
-		_add_team_disc(root, team, team_col, 0.5)
+		_add_team_disc(root, team, team_col, 0.5 * uscale)
 	else:
+		# Art resolution order: the explicit `ent["sprite"]` path stamped by
+		# the unit builders in battle_system.gd wins; the lineage-name lookup
+		# (previous behavior) is second; the procedural placeholder inside
+		# build_sprite_model is the LAST resort. Passing the verified file's
+		# basename as the lookup key routes mob/militia/kaiju art through the
+		# same billboard pipeline (sizing, alpha cut, team rim light) that
+		# lineage troops already use.
+		var model_key: String = str(ent.get("lineage_name", ""))
+		var sprite_path: String = str(ent.get("sprite", ""))
+		if sprite_path != "" and _sprite_file_exists(sprite_path):
+			model_key = sprite_path.get_file().get_basename()
 		var model: Node3D = CharacterModelBuilder.build_sprite_model(
-			str(ent.get("lineage_name", "")),
+			model_key,
 			str(ent.get("equipped_weapon", "None")),
 			str(ent.get("equipped_armor", "None")),
 			str(ent.get("equipped_shield", "None")),
 			0.9, team_col)
+		model.scale = Vector3.ONE * uscale
 		_set_no_shadows(model)
 		root.add_child(model)
+		p["hp_y"] = 1.35 * uscale
 		if bool(ent.get("is_hero", false)):
 			# Story heroes read as GOLD on the field (99 = synthetic cache
 			# key — real teams cap at 10, so it never collides).
 			_add_team_disc(root, 99, Color(1.0, 0.82, 0.25), 0.38)
 		else:
-			_add_team_disc(root, team, team_col, 0.38)
+			_add_team_disc(root, team, team_col, 0.38 * uscale)
 
 	# Selection ring (hidden until selected) — shared mesh + shared gold /
 	# cyan materials, swapped via material_override in _refresh_rings.
+	# Large units get a proportionally wider ring (footprint, not feet).
 	var ring := MeshInstance3D.new()
 	ring.mesh = _shared_ring_struct if is_struct else _shared_ring_unit
 	ring.material_override = _ring_mat_gold
 	ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	ring.scale = Vector3(1.0, 0.25, 1.0)
+	ring.scale = Vector3(1.0, 0.25, 1.0) if is_struct \
+			else Vector3(uscale, 0.25, uscale)
 	ring.position = Vector3(0.0, 0.04, 0.0)
 	ring.visible = false
 	root.add_child(ring)
@@ -1066,6 +1126,31 @@ func _update_entity_visuals(ent: Dictionary, p: Dictionary) -> void:
 				busy.text = "⛏"
 				busy.modulate = Color(0.25, 0.9, 0.85, 0.95)
 
+	# Invincibility glow — bright golden shield on god-mode units.
+	var is_god: bool = "invulnerable" in ent.get("conditions", [])
+	var god_state: bool = bool(p.get("god_vis", false))
+	if is_god != god_state:
+		p["god_vis"] = is_god
+		var eid: String = str(ent.get("id", ""))
+		var node: Node3D = _nodes.get(eid)
+		if node != null and is_instance_valid(node):
+			var god_label = p.get("god_label")
+			if god_label == null:
+				# Create the label lazily on first toggle.
+				god_label = Label3D.new()
+				god_label.text = "🛡"
+				god_label.font_size = 52
+				god_label.pixel_size = 0.006
+				god_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+				god_label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				god_label.modulate = Color(1.0, 0.85, 0.2, 0.95)
+				god_label.outline_size = 8
+				god_label.outline_modulate = Color(0.4, 0.3, 0.0, 0.8)
+				god_label.position = Vector3(-0.32, float(p.get("hp_y", 1.35)) + 0.22, 0.0)
+				node.add_child(god_label)
+				p["god_label"] = god_label
+			god_label.visible = is_god
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # Sim events (flashes + log)
@@ -1082,6 +1167,21 @@ func _play_sfx(id: String, pitch_var: float = 0.08, vol_db: float = 0.0) -> void
 
 func _on_sim_event(kind: String, data: Dictionary) -> void:
 	match kind:
+		"dot":
+			# Damage over time has no attacker — show what's killing them.
+			if int(data.get("x", -1)) >= 0:
+				var dpos := Vector3(float(int(data["x"])), 1.2, float(int(data["y"])))
+				_show_ground_marker(dpos, "-%d 🩸" % int(data.get("amount", 0)),
+					Color(0.95, 0.35, 0.15))
+			var did := str(data.get("id", ""))
+			if did != "" and _nodes.has(did):
+				_flash_node(did, Color(0.9, 0.4, 0.1))
+		"blood_cast":
+			# Casting costs HP in Battle Mode — show the price being paid.
+			if int(data.get("x", -1)) >= 0:
+				var bpos := Vector3(float(int(data["x"])), 1.4, float(int(data["y"])))
+				_show_ground_marker(bpos, "-%d ❤" % int(data.get("hp", 0)),
+					Color(0.9, 0.15, 0.2))
 		"attack":
 			var tid := str(data.get("target", data.get("target_id", "")))
 			_flash_node(tid, Color(1.0, 0.25, 0.2))
@@ -1144,6 +1244,9 @@ func _on_sim_event(kind: String, data: Dictionary) -> void:
 			if aoe > 0 and ipos.is_finite():
 				_burst_at(ipos + Vector3(float(aoe) * 0.7, 0.0, 0.4), scol)
 				_burst_at(ipos + Vector3(-0.5, 0.0, float(aoe) * -0.6), scol)
+			# AoE ground circle: shows the affected area as a translucent disc.
+			if aoe > 0 and ipos.is_finite():
+				_spawn_aoe_circle(ipos, float(aoe) + 0.5, hint == "heal" or hint == "buff")
 			var stx := str(data.get("text", ""))
 			if stx != "":
 				_add_log(stx)
@@ -1232,6 +1335,34 @@ func _flash_node(id: String, col: Color) -> void:
 	if n == null or not is_instance_valid(n):
 		return
 	_spawn_effect_light(n.position + Vector3(0.0, 0.8, 0.0), col, 2.6, 3.2, 0.35)
+
+
+## Spawn a translucent ground circle showing AoE radius.
+## Red for damage, green for healing. Fades out over ~1.5 s.
+func _spawn_aoe_circle(center: Vector3, radius: float, is_heal: bool) -> void:
+	var mesh_inst := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = radius
+	cyl.bottom_radius = radius
+	cyl.height = 0.04
+	cyl.radial_segments = 24
+	mesh_inst.mesh = cyl
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if is_heal:
+		mat.albedo_color = Color(0.15, 0.95, 0.3, 0.35)
+	else:
+		mat.albedo_color = Color(0.95, 0.15, 0.1, 0.35)
+	mesh_inst.set_surface_override_material(0, mat)
+	mesh_inst.position = center + Vector3(0.0, 0.05, 0.0)
+	mesh_inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mesh_inst)
+	# Fade out via tween.
+	var tw := create_tween()
+	tw.tween_method(func(a: float): mat.albedo_color.a = a, 0.35, 0.0, 1.5)
+	tw.tween_callback(mesh_inst.queue_free)
 
 
 ## Colored burst at a world position (ground-targeted spells). Pooled.
@@ -1467,10 +1598,10 @@ func _handle_mouse_button(ev: InputEventMouseButton) -> void:
 	match ev.button_index:
 		MOUSE_BUTTON_WHEEL_UP:
 			if ev.pressed:
-				_zoom = clampf(_zoom - 2.0, ZOOM_MIN, ZOOM_MAX)
+				_zoom = clampf(_zoom - maxf(2.0, _zoom * 0.12), ZOOM_MIN, ZOOM_MAX)
 		MOUSE_BUTTON_WHEEL_DOWN:
 			if ev.pressed:
-				_zoom = clampf(_zoom + 2.0, ZOOM_MIN, ZOOM_MAX)
+				_zoom = clampf(_zoom + maxf(2.0, _zoom * 0.12), ZOOM_MIN, ZOOM_MAX)
 		MOUSE_BUTTON_LEFT:
 			if ev.pressed:
 				# Pending strike / attack-move / patrol / wall consume clicks.
@@ -1485,6 +1616,12 @@ func _handle_mouse_button(ev: InputEventMouseButton) -> void:
 					return
 				if _pending_wall:
 					_do_place_wall(ev.position)
+					return
+				if _pending_debug_build != "":
+					_do_debug_place_structure(ev.position)
+					return
+				if _pending_build_kind != "":
+					_do_place_structure(ev.position)
 					return
 				_press_pos = ev.position
 				_press_active = true
@@ -1525,6 +1662,12 @@ func _handle_key(ev: InputEventKey) -> void:
 			elif _pending_patrol:
 				_pending_patrol = false
 				_toast_show("Patrol cancelled.")
+			elif _pending_debug_build != "":
+				_pending_debug_build = ""
+				_toast_show("Debug placement cancelled.")
+			elif _pending_build_kind != "":
+				_pending_build_kind = ""
+				_toast_show("Placement cancelled.")
 			elif _pending_wall:
 				_pending_wall = false
 				_toast_show("Wall placement done.")
@@ -1538,7 +1681,13 @@ func _handle_key(ev: InputEventKey) -> void:
 		KEY_SPACE:
 			_toggle_pause()
 		KEY_F:
-			BattleSystem.time_scale = 2.0 if BattleSystem.time_scale <= 1.0 else 1.0
+			# Cycle 1× → 2× → 3× → 1×.
+			if BattleSystem.time_scale <= 1.0:
+				BattleSystem.time_scale = 2.0
+			elif BattleSystem.time_scale <= 2.0:
+				BattleSystem.time_scale = 3.0
+			else:
+				BattleSystem.time_scale = 1.0
 			_toast_show("⏩ Speed x%.0f" % BattleSystem.time_scale)
 		KEY_HOME:
 			_center_on_base()
@@ -1840,4 +1989,1609 @@ func _prune_selection() -> void:
 
 
 ## Gold ring on the primary selection / structure, cyan on the rest.
-## Delta-only
+## Delta-only: `_ringed` caches what is currently shown (id → "gold"/"cyan")
+## so only nodes whose membership or tint changed are touched.
+func _refresh_rings() -> void:
+	var primary := str(_selection[0]) if not _selection.is_empty() else _sel_structure
+	var next: Dictionary = {}
+	for id in _selection:
+		next[str(id)] = true
+	if _sel_structure != "":
+		next[_sel_structure] = true
+	# Hide rings that dropped out of the selection.
+	for id in _ringed.keys():
+		if next.has(id):
+			continue
+		var p: Dictionary = _parts.get(id, {})
+		if not p.is_empty():
+			var ring = p["ring"]
+			if ring != null and is_instance_valid(ring):
+				ring.visible = false
+		_ringed.erase(id)
+	# Show / retint rings that joined or changed primary status.
+	for id in next.keys():
+		var want := "gold" if id == primary else "cyan"
+		if str(_ringed.get(id, "")) == want:
+			continue
+		var p: Dictionary = _parts.get(id, {})
+		if p.is_empty():
+			continue
+		var ring = p["ring"]
+		if ring == null or not is_instance_valid(ring):
+			continue
+		ring.material_override = _ring_mat_gold if want == "gold" else _ring_mat_cyan
+		ring.visible = true
+		_ringed[id] = want
+
+
+## ⚑ marker at the player's rally point while one of their structures is
+## selected.
+func _update_rally_marker() -> void:
+	if _rally_lbl == null:
+		return
+	if _sel_structure == "":
+		_rally_lbl.visible = false
+		return
+	var rp: Vector2i = BattleSystem.get_rally(BattleSystem.player_team)
+	if rp.x < 0 or rp.y < 0:
+		_rally_lbl.visible = false
+		return
+	_rally_lbl.visible = true
+	_rally_lbl.modulate = BattleSystem.get_team_color(BattleSystem.player_team)
+	_rally_lbl.position = Vector3(float(rp.x), 0.9, float(rp.y))
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# HUD
+# ═════════════════════════════════════════════════════════════════════════
+
+func _build_hud() -> void:
+	_hud = CanvasLayer.new()
+	add_child(_hud)
+
+	_build_top_bar()
+	_build_command_card()
+	_build_minimap()
+	_build_log_ticker()
+	_build_toast()
+
+	# Drag-select rectangle overlay.
+	_drag_rect = Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.2, 0.8, 1.0, 0.12)
+	sb.border_color = Color(0.3, 0.9, 1.0, 0.8)
+	sb.set_border_width_all(1)
+	_drag_rect.add_theme_stylebox_override("panel", sb)
+	_drag_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_drag_rect.visible = false
+	_hud.add_child(_drag_rect)
+
+	# Leave confirmation.
+	_leave_dialog = ConfirmationDialog.new()
+	_leave_dialog.dialog_text = "Abandon the battle and return to the title screen?"
+	_leave_dialog.ok_button_text = "Leave"
+	_leave_dialog.confirmed.connect(_leave_battle)
+	_hud.add_child(_leave_dialog)
+
+	# Paused banner — a centered, unmistakable overlay. Orders can still be
+	# issued while paused (tactical pause); only the sim clock stops.
+	_pause_overlay = Control.new()
+	_pause_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pause_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_overlay.visible = false
+	_hud.add_child(_pause_overlay)
+	var pp := PanelContainer.new()
+	pp.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	pp.position = Vector2(-170.0, 96.0)
+	pp.custom_minimum_size = Vector2(340, 0)
+	pp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = Color(0.05, 0.03, 0.10, 0.85)
+	psb.border_color = RimvaleColors.GOLD
+	psb.set_border_width_all(2)
+	psb.set_corner_radius_all(10)
+	psb.set_content_margin_all(14)
+	pp.add_theme_stylebox_override("panel", psb)
+	_pause_overlay.add_child(pp)
+	var pv := VBoxContainer.new()
+	pv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pp.add_child(pv)
+	var pl := RimvaleUtils.label("⏸ PAUSED", 26, RimvaleColors.GOLD)
+	pl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pv.add_child(pl)
+	var ps := RimvaleUtils.label(
+		"You can still select units and give orders.\nSpace or ▶ Resume to continue.",
+		12, RimvaleColors.TEXT_GRAY)
+	ps.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pv.add_child(ps)
+
+
+## Arm superweapon targeting (top-bar ☄ button).
+func _arm_strike() -> void:
+	var wait: float = BattleSystem.strike_ready_in(BattleSystem.player_team)
+	if wait > 0.0:
+		_toast_show("☄ Strike ready in %ds." % int(ceil(wait)))
+		return
+	_pending_strike = true
+	_toast_show("☄ Strike armed: left-click the target (Esc cancels)")
+
+
+## Single pause path for the Space key and the top-bar button.
+func _toggle_pause() -> void:
+	BattleSystem.paused = not BattleSystem.paused
+	_toast_show("⏸ Paused" if BattleSystem.paused else "▶ Resumed")
+	if _pause_overlay != null:
+		_pause_overlay.visible = BattleSystem.paused
+	if _pause_btn != null:
+		_pause_btn.text = "▶ Resume" if BattleSystem.paused else "⏸ Pause"
+
+
+## Mute / unmute all battle audio: gates the SFX helper and stops or restarts
+## the looping theme. Local to the battle — does not touch global settings.
+func _toggle_mute() -> void:
+	_audio_muted = not _audio_muted
+	if _audio_muted:
+		AudioManager.stop_music()
+	else:
+		AudioManager.play_music("music_combat")
+	if _mute_btn != null:
+		_mute_btn.text = "🔇" if _audio_muted else "🔊"
+	_toast_show("🔇 Audio muted" if _audio_muted else "🔊 Audio on")
+
+
+# ── Debug tools (panel gated on GameState.debug_mode at HUD-build time) ───────
+## Show/hide the debug panel, building it lazily on first open.
+func _toggle_debug_panel() -> void:
+	if _debug_panel == null:
+		_build_debug_panel()
+	_debug_panel.visible = not _debug_panel.visible
+
+func _build_debug_panel() -> void:
+	_debug_panel = PanelContainer.new()
+	_debug_panel.add_theme_stylebox_override("panel", _panel_style())
+	_debug_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	_debug_panel.offset_left = 12.0
+	_debug_panel.offset_top = 96.0
+	_debug_panel.custom_minimum_size = Vector2(230, 0)
+	_hud.add_child(_debug_panel)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	_debug_panel.add_child(box)
+
+	box.add_child(RimvaleUtils.label("🐞 DEBUG", 15, RimvaleColors.CYAN))
+
+	box.add_child(RimvaleUtils.label("Add supply", 11, RimvaleColors.TEXT_GRAY))
+	var res_row := HBoxContainer.new()
+	res_row.add_theme_constant_override("separation", 6)
+	box.add_child(res_row)
+	for amt in [100, 1000, 10000]:
+		var rb := RimvaleUtils.button("+%d" % amt, RimvaleColors.GOLD, 30, 12)
+		rb.custom_minimum_size = Vector2(66, 30)
+		rb.pressed.connect(_debug_add_supply.bind(amt))
+		res_row.add_child(rb)
+
+	box.add_child(HSeparator.new())
+
+	var reveal_btn := RimvaleUtils.button("👁 Reveal map", RimvaleColors.PRIMARY, 30, 12)
+	reveal_btn.tooltip_text = "Toggle fog of war off / on."
+	reveal_btn.pressed.connect(_debug_toggle_reveal)
+	box.add_child(reveal_btn)
+
+	var strike_btn := RimvaleUtils.button("☄ Charge strike", RimvaleColors.PRIMARY, 30, 12)
+	strike_btn.pressed.connect(_debug_charge_strike)
+	box.add_child(strike_btn)
+
+	var kaiju_btn := RimvaleUtils.button("🦖 Spawn kaiju", RimvaleColors.PRIMARY, 30, 12)
+	kaiju_btn.pressed.connect(_debug_spawn_kaiju)
+	box.add_child(kaiju_btn)
+
+	box.add_child(HSeparator.new())
+	box.add_child(RimvaleUtils.label("Spawn building (free)", 11, RimvaleColors.TEXT_GRAY))
+	var b_glyphs := {
+		"barracks": "🏠", "war_factory": "🏭", "command_post": "🏰",
+		"spire": "🔮", "turret": "🗼", "wall": "🧱",
+	}
+	var b_row1 := HBoxContainer.new()
+	b_row1.add_theme_constant_override("separation", 3)
+	box.add_child(b_row1)
+	var b_row2 := HBoxContainer.new()
+	b_row2.add_theme_constant_override("separation", 3)
+	box.add_child(b_row2)
+	var b_i: int = 0
+	for kind in BattleSystem.STRUCTURE_KINDS:
+		var kb := RimvaleUtils.button("%s %s" % [
+			str(b_glyphs.get(kind, "🏗")),
+			str(BattleSystem.STRUCTURE_KINDS[kind]["label"]).left(8)],
+			RimvaleColors.PRIMARY, 26, 10)
+		kb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var kk: String = str(kind)
+		kb.pressed.connect(func() -> void: _debug_spawn_structure(kk))
+		if b_i < 3:
+			b_row1.add_child(kb)
+		else:
+			b_row2.add_child(kb)
+		b_i += 1
+
+	box.add_child(HSeparator.new())
+
+	var wipe_btn := RimvaleUtils.button("💀 Eliminate enemy units", RimvaleColors.ORANGE, 30, 12)
+	wipe_btn.tooltip_text = "Kill all enemy units; their structures stay standing."
+	wipe_btn.pressed.connect(_debug_eliminate_units)
+	box.add_child(wipe_btn)
+
+	var win_btn := RimvaleUtils.button("🏆 Instant win", RimvaleColors.DANGER, 30, 12)
+	win_btn.pressed.connect(_debug_instant_win)
+	box.add_child(win_btn)
+
+	var god_btn := RimvaleUtils.button("🛡 God mode (selected)", RimvaleColors.PRIMARY, 30, 12)
+	god_btn.tooltip_text = "Toggle invincibility on selected units. Heals to full."
+	god_btn.pressed.connect(_debug_toggle_invincible)
+	box.add_child(god_btn)
+
+	box.add_child(HSeparator.new())
+
+	var close_btn := RimvaleUtils.button("Close", RimvaleColors.TEXT_GRAY, 28, 12)
+	close_btn.pressed.connect(func(): _debug_panel.visible = false)
+	box.add_child(close_btn)
+
+func _debug_add_supply(amount: int) -> void:
+	BattleSystem.debug_add_supply(BattleSystem.player_team, amount)
+	_toast_show("🐞 +%d⛃" % amount)
+
+func _debug_charge_strike() -> void:
+	BattleSystem.debug_charge_strike(BattleSystem.player_team)
+	_toast_show("🐞 Arcane Strike charged.")
+
+func _debug_spawn_kaiju() -> void:
+	BattleSystem.debug_spawn_kaiju()
+	_toast_show("🐞 Kaiju summoned!")
+
+## Arm free placement: the next click drops the structure on that tile.
+func _debug_spawn_structure(kind: String) -> void:
+	_pending_attack_move = false
+	_pending_strike = false
+	_pending_patrol = false
+	_pending_wall = false
+	_pending_build_kind = ""
+	_pending_debug_build = kind
+	if _debug_panel != null:
+		_debug_panel.visible = false      # get out of the way of the map
+	_toast_show("🐞 Place %s: click a tile (Esc cancels)" % str(
+		BattleSystem.STRUCTURE_KINDS[kind]["label"]))
+
+## Click handler for debug placement — free, but the tile must be buildable.
+func _do_debug_place_structure(mpos: Vector2) -> void:
+	var world := _mouse_ground(mpos)
+	if not world.is_finite():
+		return
+	var tile := _ground_tile(world)
+	var kind: String = _pending_debug_build
+	var err: String = BattleSystem.debug_spawn_structure_at(
+		BattleSystem.player_team, kind, tile.x, tile.y)
+	if err != "":
+		_toast_show(err)          # bad tile — stay armed so the next click retries
+		return
+	_show_ground_marker(world, "🏗", RimvaleColors.CYAN)
+	_pending_debug_build = ""
+	_toast_show("🐞 %s built." % str(BattleSystem.STRUCTURE_KINDS[kind]["label"]))
+
+func _debug_eliminate_units() -> void:
+	BattleSystem.debug_eliminate_enemy_units()
+	_toast_show("🐞 Enemy units eliminated.")
+
+func _debug_instant_win() -> void:
+	if _debug_panel != null:
+		_debug_panel.visible = false
+	BattleSystem.debug_player_win()
+
+func _debug_toggle_invincible() -> void:
+	if _selection.is_empty():
+		_toast_show("🐞 Select units first.")
+		return
+	var on: bool = BattleSystem.debug_toggle_invincible(_selection)
+	var count: int = _selection.size()
+	if on:
+		_toast_show("🐞 🛡 %d unit%s now INVINCIBLE." % [count, "" if count == 1 else "s"])
+	else:
+		_toast_show("🐞 Invincibility removed from %d unit%s." % [count, "" if count == 1 else "s"])
+
+## Toggle a full-map reveal. Reuses the fog engine's _fog_revealed latch: on →
+## fill vision/explored and clear the shroud; off → let the 2.5 Hz _update_fog
+## recompute normal player vision on its next tick.
+func _debug_toggle_reveal() -> void:
+	if not _fog_on or _fog_img == null:
+		_toast_show("🐞 Fog is already off.")
+		return
+	_fog_revealed = not _fog_revealed
+	if _fog_revealed:
+		_vision.fill(1)
+		_explored.fill(1)
+		_fog_img.fill(Color(0, 0, 0, 0))
+		_fog_tex.update(_fog_img)
+		_toast_show("🐞 Map revealed.")
+	else:
+		_update_fog()
+		_toast_show("🐞 Fog restored.")
+
+
+func _panel_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.05, 0.12, 0.92)
+	sb.border_color = RimvaleColors.DIVIDER
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(8)
+	return sb
+
+
+func _build_top_bar() -> void:
+	var bar := PanelContainer.new()
+	bar.add_theme_stylebox_override("panel", _panel_style())
+	bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	bar.custom_minimum_size = Vector2(0, 48)
+	_hud.add_child(bar)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 18)
+	bar.add_child(row)
+
+	for key in ["supply", "income", "miners", "teams", "clock", "state"]:
+		var col: Color = RimvaleColors.TEXT_WHITE
+		if key == "supply":
+			col = RimvaleColors.GOLD
+		elif key == "income":
+			col = RimvaleColors.SUCCESS
+		elif key == "state":
+			col = RimvaleColors.WARNING
+		var lbl := RimvaleUtils.label("", 15, col)
+		row.add_child(lbl)
+		_top_labels[key] = lbl
+		_top_cache[key] = ""
+
+	var spring := Control.new()
+	spring.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(spring)
+
+	var hint := RimvaleUtils.label("Space pause · F speed 1/2/3× · A attack-move · B alert · Ctrl+1-4 squads", 11, RimvaleColors.TEXT_DIM)
+	row.add_child(hint)
+
+	_strike_btn = RimvaleUtils.button("☄ 60s", Color(1.0, 0.55, 0.15), 32, 13)
+	_strike_btn.custom_minimum_size = Vector2(110, 32)
+	_strike_btn.tooltip_text = "Arcane Strike: 6d10 damage in a blast zone.\nHits friend and foe alike — aim carefully."
+	_strike_btn.pressed.connect(_arm_strike)
+	row.add_child(_strike_btn)
+
+	_pause_btn = RimvaleUtils.button("⏸ Pause", RimvaleColors.GOLD, 32, 13)
+	_pause_btn.custom_minimum_size = Vector2(96, 32)
+	_pause_btn.pressed.connect(_toggle_pause)
+	row.add_child(_pause_btn)
+
+	_mute_btn = RimvaleUtils.button("🔊", RimvaleColors.TEXT_LIGHT, 32, 15)
+	_mute_btn.custom_minimum_size = Vector2(44, 32)
+	_mute_btn.tooltip_text = "Mute / unmute battle audio."
+	_mute_btn.pressed.connect(_toggle_mute)
+	row.add_child(_mute_btn)
+
+	# Debug button — only when the global debug flag (profile screen) is on.
+	if bool(GameState.debug_mode):
+		var dbg := RimvaleUtils.button("🐞", RimvaleColors.CYAN, 32, 15)
+		dbg.custom_minimum_size = Vector2(44, 32)
+		dbg.tooltip_text = "Debug tools (debug mode is on)."
+		dbg.pressed.connect(_toggle_debug_panel)
+		row.add_child(dbg)
+
+	var leave := RimvaleUtils.button("✖ Leave", RimvaleColors.DANGER, 32, 13)
+	leave.custom_minimum_size = Vector2(96, 32)
+	leave.pressed.connect(func(): _leave_dialog.popup_centered())
+	row.add_child(leave)
+
+
+func _build_command_card() -> void:
+	_card = PanelContainer.new()
+	_card.add_theme_stylebox_override("panel", _panel_style())
+	_card.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	_card.offset_top = -164.0
+	_card.custom_minimum_size = Vector2(0, 160)
+	_card.visible = false
+	_hud.add_child(_card)
+
+	_card_box = HBoxContainer.new()
+	_card_box.add_theme_constant_override("separation", 14)
+	_card.add_child(_card_box)
+
+
+func _build_minimap() -> void:
+	var frame := PanelContainer.new()
+	frame.add_theme_stylebox_override("panel", _panel_style())
+	frame.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	frame.offset_left = -204.0
+	frame.offset_top = -374.0
+	frame.offset_right = -8.0
+	frame.offset_bottom = -178.0
+	_hud.add_child(frame)
+
+	_minimap = TextureRect.new()
+	_minimap.custom_minimum_size = Vector2(180, 180)
+	_minimap.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_minimap.stretch_mode = TextureRect.STRETCH_SCALE
+	_minimap.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_minimap.mouse_filter = Control.MOUSE_FILTER_STOP
+	_minimap.gui_input.connect(_on_minimap_input)
+	frame.add_child(_minimap)
+
+
+func _build_log_ticker() -> void:
+	_log_box = VBoxContainer.new()
+	_log_box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	_log_box.offset_left = 12.0
+	_log_box.offset_top = -286.0
+	_log_box.offset_right = 560.0
+	_log_box.offset_bottom = -172.0
+	_log_box.alignment = BoxContainer.ALIGNMENT_END
+	_log_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(_log_box)
+
+
+func _build_toast() -> void:
+	_toast_lbl = RimvaleUtils.label("", 15, RimvaleColors.TEXT_WHITE)
+	_toast_lbl.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_toast_lbl.offset_top = -200.0
+	_toast_lbl.offset_bottom = -176.0
+	_toast_lbl.offset_left = -300.0
+	_toast_lbl.offset_right = 300.0
+	_toast_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_toast_lbl.visible = false
+	_hud.add_child(_toast_lbl)
+
+
+func _toast_show(text: String) -> void:
+	_toast_lbl.text = text
+	_toast_lbl.modulate.a = 1.0
+	_toast_lbl.visible = true
+	_toast_t = 2.2
+
+
+func _update_toast(delta: float) -> void:
+	if not _toast_lbl.visible:
+		return
+	_toast_t -= delta
+	if _toast_t <= 0.0:
+		_toast_lbl.visible = false
+	elif _toast_t < 0.6:
+		_toast_lbl.modulate.a = _toast_t / 0.6
+
+
+# ── Log ticker ───────────────────────────────────────────────────────────
+
+func _drain_battle_log() -> void:
+	# Mass battles can generate dozens of hit lines per frame — cap the
+	# per-frame work and drop the oldest backlog (the ticker only shows the
+	# newest few lines anyway).
+	var backlog: int = BattleSystem.battle_log_extra.size()
+	if backlog > 40:
+		for _i in range(backlog - 20):
+			BattleSystem.battle_log_extra.pop_front()
+	var drained: int = 0
+	while not BattleSystem.battle_log_extra.is_empty() and drained < 6:
+		var line = BattleSystem.battle_log_extra.pop_front()
+		_add_log(str(line))
+		drained += 1
+
+
+func _add_log(text: String) -> void:
+	# Battle log lines may carry BBCode — strip tags for the plain ticker.
+	var clean := _bb_re.sub(text, "", true).strip_edges()
+	if clean == "":
+		return
+	var lbl := RimvaleUtils.label(clean, 12, RimvaleColors.TEXT_LIGHT)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_log_box.add_child(lbl)
+	_log_items.append({"lbl": lbl, "t": 7.0})
+	while _log_items.size() > 4:
+		var old: Dictionary = _log_items.pop_front()
+		if is_instance_valid(old["lbl"]):
+			old["lbl"].queue_free()
+
+
+func _update_log_fade(delta: float) -> void:
+	for i in range(_log_items.size() - 1, -1, -1):
+		var item: Dictionary = _log_items[i]
+		item["t"] = float(item["t"]) - delta
+		var lbl = item["lbl"]
+		if not is_instance_valid(lbl):
+			_log_items.remove_at(i)
+			continue
+		if float(item["t"]) <= 0.0:
+			lbl.queue_free()
+			_log_items.remove_at(i)
+		elif float(item["t"]) < 2.0:
+			lbl.modulate.a = float(item["t"]) / 2.0
+
+
+# ── Top bar + card refresh (4 Hz) ────────────────────────────────────────
+
+func _on_hud_tick() -> void:
+	if _e == null:
+		return
+	var pt: int = BattleSystem.player_team
+	var secs := int(BattleSystem.get_battle_time())
+	var state := ""
+	if BattleSystem.paused:
+		state = "⏸ PAUSED"
+	elif BattleSystem.time_scale > 1.0:
+		state = "⏩ x%.0f" % BattleSystem.time_scale
+	# Superweapon button label (change-gated: Label re-text is not free).
+	if _strike_btn != null:
+		var wait: float = BattleSystem.strike_ready_in(pt)
+		var stxt: String = "☄ STRIKE" if wait <= 0.0 else "☄ %ds" % int(ceil(wait))
+		if stxt != _strike_txt:
+			_strike_txt = stxt
+			_strike_btn.text = stxt
+	_set_top("supply", "⛃ %d" % BattleSystem.get_supply(pt))
+	_set_top("income", "+%d" % BattleSystem.get_last_income(pt))
+	_set_top("miners", "⛏ %d" % BattleSystem.get_miner_count(pt))
+	_set_top("teams", "Teams alive: %d" % BattleSystem.teams_alive_count())
+	_set_top("clock", "%02d:%02d" % [int(float(secs) / 60.0), secs % 60])
+	_set_top("state", state)
+
+	_refresh_card_dynamic()
+
+	# Belt-and-braces: catch battle end even if the "over" event fired
+	# before this scene connected.
+	if BattleSystem.finished and not _over_shown:
+		_show_over(BattleSystem.winner)
+
+
+func _set_top(key: String, text: String) -> void:
+	if str(_top_cache.get(key, "")) == text:
+		return
+	_top_cache[key] = text
+	var lbl = _top_labels.get(key, null)
+	if lbl != null:
+		lbl.text = text
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Command card (bottom panel)
+# ═════════════════════════════════════════════════════════════════════════
+
+func _rebuild_card() -> void:
+	if _card == null:
+		return
+	for c in _card_box.get_children():
+		c.queue_free()
+	_chip_labels = []
+	_chip_ids = []
+	_detail_rt = null
+	_queue_box = null
+	_prod_grid = null
+	_prod_count = -1
+	_card_sig = -1
+	_queue_sig = ""
+	_queue_pbs = []
+
+	if _sel_structure != "":
+		_build_structure_card()
+	elif not _selection.is_empty():
+		_build_unit_card()
+	_card.visible = _sel_structure != "" or not _selection.is_empty()
+
+
+## 4 Hz in-place refresh of dynamic card content (no widget churn under
+## the mouse — buttons persist, only labels / queue bars update).
+func _refresh_card_dynamic() -> void:
+	if _card == null or not _card.visible:
+		return
+	# Selection chips: cheap fingerprint (id hashes + hp values) — the whole
+	# label pass is skipped while nothing changed.
+	var sig := 0
+	for uid_v in _chip_ids:
+		var uid := str(uid_v)
+		sig += int(uid.hash() & 0xFFFFFF)
+		var ent = _e._dung_find(uid)
+		if ent != null:
+			sig += int(ent.get("hp", 0)) * 131 + int(ent.get("max_hp", 0)) * 17
+	if sig != _card_sig:
+		_card_sig = sig
+		for i in range(_chip_ids.size()):
+			if i >= _chip_labels.size():
+				break
+			var lbl = _chip_labels[i]
+			if not is_instance_valid(lbl):
+				continue
+			var txt := _chip_text(str(_chip_ids[i]))
+			if lbl.text != txt:
+				lbl.text = txt
+	# Single-unit detail (class / gear / spell cooldowns) — only reassign
+	# when the rendered string actually changed.
+	if _detail_rt != null and is_instance_valid(_detail_rt) and _selection.size() == 1:
+		var dtxt := _detail_text(str(_selection[0]))
+		if _detail_rt.text != dtxt:
+			_detail_rt.text = dtxt
+	# Structure card: queue bars + production grid growth (War Factory).
+	if _sel_structure != "":
+		if _queue_box != null and is_instance_valid(_queue_box):
+			_fill_queue_box()
+		if _prod_grid != null and is_instance_valid(_prod_grid):
+			var cat: Array = BattleSystem.get_unit_catalog(BattleSystem.player_team)
+			if cat.size() != _prod_count:
+				_fill_prod_grid(cat)
+
+
+func _chip_text(uid: String) -> String:
+	var ent = _e._dung_find(uid)
+	if ent == null:
+		return "—"
+	return "%s  %d/%d" % [str(ent.get("name", "?")), int(ent.get("hp", 0)), int(ent.get("max_hp", 0))]
+
+
+func _detail_text(uid: String) -> String:
+	var ent = _e._dung_find(uid)
+	if ent == null:
+		return ""
+	var lines: Array = []
+	var cls := str(ent.get("npc_class", ""))
+	if cls != "":
+		lines.append("[color=#ce93d8]%s[/color]" % cls)
+	lines.append("🗡 %s   🛡 %s (AC %d)" % [
+		str(ent.get("equipped_weapon", "None")),
+		str(ent.get("equipped_armor", "None")),
+		int(ent.get("ac", 10))])
+	var spells: Array = BattleSystem.get_unit_spells(uid)
+	for s_v in spells:
+		var s: Dictionary = s_v
+		var cd := int(s.get("cd_left", 0))
+		if cd > 0:
+			lines.append("[color=#8899aa]✦ %s %ds[/color]" % [str(s.get("name", "?")), cd])
+		else:
+			lines.append("[color=#66ff88]✦ %s ready[/color]" % str(s.get("name", "?")))
+	return "\n".join(lines)
+
+
+func _build_unit_card() -> void:
+	# LEFT: selection chips + single-unit detail.
+	var left := VBoxContainer.new()
+	left.custom_minimum_size = Vector2(420, 0)
+	left.add_theme_constant_override("separation", 4)
+	_card_box.add_child(left)
+
+	var head := RimvaleUtils.label("%d unit%s selected" % [_selection.size(), "" if _selection.size() == 1 else "s"], 13, RimvaleColors.ACCENT)
+	left.add_child(head)
+
+	var chips := GridContainer.new()
+	chips.columns = 2
+	chips.add_theme_constant_override("h_separation", 14)
+	left.add_child(chips)
+	var shown := mini(_selection.size(), 8)
+	for i in range(shown):
+		var uid := str(_selection[i])
+		var lbl := RimvaleUtils.label(_chip_text(uid), 12, RimvaleColors.TEXT_LIGHT)
+		chips.add_child(lbl)
+		_chip_labels.append(lbl)
+		_chip_ids.append(uid)
+	if _selection.size() > 8:
+		left.add_child(RimvaleUtils.label("… +%d more" % (_selection.size() - 8), 11, RimvaleColors.TEXT_DIM))
+
+	if _selection.size() == 1:
+		_detail_rt = RichTextLabel.new()
+		_detail_rt.bbcode_enabled = true
+		_detail_rt.fit_content = true
+		_detail_rt.scroll_active = false
+		_detail_rt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_detail_rt.add_theme_font_size_override("normal_font_size", 12)
+		_detail_rt.text = _detail_text(str(_selection[0]))
+		left.add_child(_detail_rt)
+
+	_card_box.add_child(VSeparator.new())
+
+	# RIGHT: unit actions (apply to every selected unit).
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 6)
+	_card_box.add_child(right)
+
+	right.add_child(RimvaleUtils.label("ARMORY (needs Barracks)", 11, RimvaleColors.TEXT_GRAY))
+
+	var row1 := HBoxContainer.new()
+	row1.add_theme_constant_override("separation", 6)
+	right.add_child(row1)
+	var up_w := RimvaleUtils.button("⬆ Weapon", RimvaleColors.PRIMARY, 30, 12)
+	up_w.pressed.connect(func(): _apply_upgrade("weapon"))
+	row1.add_child(up_w)
+	var up_a := RimvaleUtils.button("⬆ Armor", RimvaleColors.PRIMARY, 30, 12)
+	up_a.pressed.connect(func(): _apply_upgrade("armor"))
+	row1.add_child(up_a)
+	var up_v := RimvaleUtils.button("★ Veteran", RimvaleColors.GOLD, 30, 12)
+	up_v.pressed.connect(func(): _apply_upgrade("veteran"))
+	row1.add_child(up_v)
+
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 6)
+	right.add_child(row2)
+	var class_ob := OptionButton.new()
+	class_ob.custom_minimum_size = Vector2(170, 30)
+	class_ob.add_theme_font_size_override("font_size", 12)
+	class_ob.add_item("— class —")
+	for cls in EnemyArchetype.class_names():
+		class_ob.add_item(str(cls))
+	class_ob.item_selected.connect(func(idx: int): _apply_class(idx, class_ob))
+	row2.add_child(class_ob)
+	var sp_btn := RimvaleUtils.button("✦ Spells", RimvaleColors.SP_PURPLE, 30, 12)
+	sp_btn.pressed.connect(_open_spell_popup)
+	row2.add_child(sp_btn)
+
+	# Duty row: mining mode + stances.
+	var row_duty := HBoxContainer.new()
+	row_duty.add_theme_constant_override("separation", 6)
+	right.add_child(row_duty)
+	var mine_b := RimvaleUtils.button("⛏ Mine", Color(0.25, 0.9, 0.85), 28, 11)
+	mine_b.tooltip_text = "Mining mode: each unit finds its own nearest vein and gets to work (auto-relocates when veins run dry)."
+	mine_b.pressed.connect(func():
+		var nm: int = BattleSystem.order_group_mine_auto(_selection)
+		_toast_show("⛏ %d unit%s mining" % [nm, "s" if nm != 1 else ""] if nm > 0 else "No live veins found."))
+	row_duty.add_child(mine_b)
+	var guard_b := RimvaleUtils.button("🛡 Guard", RimvaleColors.PRIMARY, 28, 11)
+	guard_b.tooltip_text = "Hold this position: fight what comes close, never chase far, return to post after."
+	guard_b.pressed.connect(func():
+		var ng: int = BattleSystem.set_stance(_selection, "guard")
+		_toast_show("🛡 Guarding ×%d" % ng if ng > 0 else "Nothing to set."))
+	row_duty.add_child(guard_b)
+	var pat_b := RimvaleUtils.button("🔁 Patrol", RimvaleColors.PRIMARY, 28, 11)
+	pat_b.tooltip_text = "Loop between here and a point you click, engaging anything sighted."
+	pat_b.pressed.connect(func():
+		if not _selection.is_empty():
+			_pending_patrol = true
+			_toast_show("🔁 Patrol: left-click the far point (Esc cancels)"))
+	row_duty.add_child(pat_b)
+	var stop_b := RimvaleUtils.button("✋ Stop", RimvaleColors.TEXT_GRAY, 28, 11)
+	stop_b.tooltip_text = "Clear all orders, duties and stances."
+	stop_b.pressed.connect(func():
+		for uid in _selection:
+			BattleSystem.clear_orders(str(uid))
+		BattleSystem.set_stance(_selection, "off")
+		_toast_show("✋ Holding."))
+	row_duty.add_child(stop_b)
+
+	# Attack mode: how the selection fights when ordered onto an enemy.
+	var row3 := HBoxContainer.new()
+	row3.add_theme_constant_override("separation", 6)
+	right.add_child(row3)
+	row3.add_child(RimvaleUtils.label("Fight with:", 11, RimvaleColors.TEXT_GRAY))
+	for m in [["auto", "🔄 Auto", "Weapons + spells together (default)."],
+			["weapons", "⚔ Weapons", "Offensive spells sheathed — heals and blessings still cast."],
+			["magic", "✦ Magic", "Weapon sheathed; holds at spell range and fights with offensive magic (needs an offensive spell equipped)."]]:
+		var mid: String = str(m[0])
+		var mb := RimvaleUtils.button(str(m[1]), RimvaleColors.PRIMARY, 28, 11)
+		mb.tooltip_text = str(m[2])
+		mb.pressed.connect(func(): _apply_attack_mode(mid))
+		row3.add_child(mb)
+
+
+func _apply_attack_mode(mode: String) -> void:
+	var n: int = BattleSystem.set_attack_mode(_selection, mode)
+	if n > 0:
+		var label: String = {"auto": "🔄 Auto", "weapons": "⚔ Weapons only",
+			"magic": "✦ Magic only"}.get(mode, mode)
+		_toast_show("%s ×%d" % [label, n])
+	else:
+		_toast_show("No units accepted that mode.")
+
+
+func _apply_upgrade(kind: String) -> void:
+	var err := ""
+	var ok := 0
+	for uid in _selection:
+		var r: String = BattleSystem.upgrade_unit(str(uid), kind)
+		if r == "":
+			ok += 1
+		elif err == "":
+			err = r
+	if ok > 0:
+		_toast_show("⬆ %s upgraded ×%d" % [kind.capitalize(), ok])
+		_refresh_card_dynamic()
+	elif err != "":
+		_toast_show(err)
+
+
+func _apply_class(idx: int, ob: OptionButton) -> void:
+	if idx <= 0:
+		return
+	var cls := ob.get_item_text(idx)
+	var err := ""
+	var ok := 0
+	for uid in _selection:
+		var r: String = BattleSystem.set_unit_class(str(uid), cls)
+		if r == "":
+			ok += 1
+		elif err == "":
+			err = r
+	if ok > 0:
+		_toast_show("Class set: %s ×%d" % [cls, ok])
+		_refresh_card_dynamic()
+	elif err != "":
+		_toast_show(err)
+	ob.select(0)
+
+
+# ── Structure card (production) ──────────────────────────────────────────
+
+func _build_structure_card() -> void:
+	var ent = _e._dung_find(_sel_structure)
+	var is_base := ent != null and bool(ent.get("is_battle_base", false))
+	var skind := str(ent.get("structure_kind", "")) if ent != null else ""
+	# Only the Command Post / Barracks / War Factory run build queues.
+	var is_producer := is_base or skind == "barracks" or skind == "war_factory"
+
+	# LEFT: structure info + queue + hint.
+	var left := VBoxContainer.new()
+	left.custom_minimum_size = Vector2(280, 0)
+	left.add_theme_constant_override("separation", 4)
+	_card_box.add_child(left)
+
+	var title := "Structure"
+	if ent != null:
+		title = "%s  %d/%d" % [str(ent.get("name", "?")), int(ent.get("hp", 0)), int(ent.get("max_hp", 0))]
+	var t_lbl := RimvaleUtils.label(title, 13, RimvaleColors.ACCENT)
+	left.add_child(t_lbl)
+	_chip_labels.append(t_lbl)
+	_chip_ids.append(_sel_structure)
+	# Chip refresh writes plain chip text; wrap via lambda-free approach:
+	# structure title uses the same "name hp/max" format, good enough.
+
+	if is_producer:
+		left.add_child(RimvaleUtils.label("BUILD QUEUE (this structure)", 11, RimvaleColors.TEXT_GRAY))
+		_queue_box = VBoxContainer.new()
+		_queue_box.add_theme_constant_override("separation", 2)
+		left.add_child(_queue_box)
+		_fill_queue_box()
+
+	left.add_child(RimvaleUtils.label("Right-click ground to set rally ⚑", 11, RimvaleColors.TEXT_DIM))
+
+	if is_producer:
+		_card_box.add_child(VSeparator.new())
+
+		# MID: this structure's own production line.
+		var mid := VBoxContainer.new()
+		mid.add_theme_constant_override("separation", 4)
+		mid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_card_box.add_child(mid)
+		mid.add_child(RimvaleUtils.label("PRODUCTION", 11, RimvaleColors.TEXT_GRAY))
+		var scroll := ScrollContainer.new()
+		scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		mid.add_child(scroll)
+		_prod_grid = GridContainer.new()
+		_prod_grid.columns = 4
+		_prod_grid.add_theme_constant_override("h_separation", 6)
+		_prod_grid.add_theme_constant_override("v_separation", 4)
+		scroll.add_child(_prod_grid)
+		_fill_prod_grid(BattleSystem.get_unit_catalog(BattleSystem.player_team))
+
+	# RIGHT: base-only structure construction.
+	if is_base:
+		_card_box.add_child(VSeparator.new())
+		var right := VBoxContainer.new()
+		right.add_theme_constant_override("separation", 6)
+		_card_box.add_child(right)
+		right.add_child(RimvaleUtils.label("CONSTRUCT", 11, RimvaleColors.TEXT_GRAY))
+		for row in BUILD_KINDS:
+			var kind := str(row[0])
+			var icon := str(row[1])
+			var cfg: Dictionary = BattleSystem.STRUCTURE_KINDS.get(kind, {})
+			var label := str(cfg.get("label", kind.capitalize()))
+			var cost := int(cfg.get("cost", int(row[2])))
+			var b := RimvaleUtils.button("%s %s (%d⛃)" % [icon, label, cost], RimvaleColors.ORANGE, 28, 12)
+			b.tooltip_text = "Click to enter placement mode, then click a tile to build. Esc cancels."
+			b.pressed.connect(func(): _enter_build_placement(kind, icon, label))
+			right.add_child(b)
+		# Walls are placed by hand — arm placement mode instead.
+		var wall_cost := int(BattleSystem.STRUCTURE_KINDS.get("wall", {}).get("cost", 15))
+		var wall_b := RimvaleUtils.button("🧱 Wall (%d⛃)" % wall_cost, RimvaleColors.ORANGE, 28, 12)
+		wall_b.tooltip_text = "Click tiles to place wall segments; Esc to finish. Walls block movement."
+		wall_b.pressed.connect(func():
+			_pending_wall = true
+			_toast_show("🧱 Wall placement: click tiles (Esc to finish)"))
+		right.add_child(wall_b)
+
+
+## Enter placement mode — the next left-click on a tile will build the
+## structure there. Pre-checks supply so the player isn't left clicking
+## around only to learn they can't afford it.
+func _enter_build_placement(kind: String, icon: String, label: String) -> void:
+	# Quick supply gate so the player finds out NOW, not after picking a tile.
+	var cost: int = int(BattleSystem.STRUCTURE_KINDS.get(kind, {}).get("cost", 0))
+	if int(BattleSystem.supply[BattleSystem.player_team]) < cost:
+		_toast_show("Need %d supply." % cost)
+		return
+	# Cancel any other pending mode first.
+	_pending_attack_move = false
+	_pending_strike = false
+	_pending_patrol = false
+	_pending_wall = false
+	_pending_build_kind = kind
+	_toast_show("%s Place %s: click a tile (Esc cancels)" % [icon, label])
+
+
+## Click handler for structure placement — mirrors _do_place_wall().
+func _do_place_structure(mpos: Vector2) -> void:
+	var world := _mouse_ground(mpos)
+	if not world.is_finite():
+		return
+	var tile := _ground_tile(world)
+	var kind: String = _pending_build_kind
+	var err: String = BattleSystem.build_structure_at(
+		BattleSystem.player_team, kind, tile.x, tile.y)
+	if err != "":
+		_toast_show(err)
+		# Out of supply or at limit — exit placement mode.
+		if err.begins_with("Need") or err.contains("limit") or err.contains("already"):
+			_pending_build_kind = ""
+		return
+	var icon: String = ""
+	for row in BUILD_KINDS:
+		if str(row[0]) == kind:
+			icon = str(row[1])
+			break
+	_show_ground_marker(world, icon if icon != "" else "🏗", RimvaleColors.ORANGE)
+	# Single placement — exit placement mode after building.
+	_pending_build_kind = ""
+	_toast_show("🏗 %s placed!" % kind.capitalize())
+
+
+func _fill_prod_grid(cat: Array) -> void:
+	_prod_count = cat.size()
+	for c in _prod_grid.get_children():
+		c.queue_free()
+	for entry_v in cat:
+		var entry: Dictionary = entry_v
+		var key := str(entry.get("key", ""))
+		var label := str(entry.get("label", entry.get("name", key)))
+		var cost := int(entry.get("cost", 0))
+		var b := RimvaleUtils.button("%s (%d⛃)" % [label, cost], RimvaleColors.PRIMARY, 26, 11)
+		b.custom_minimum_size = Vector2(150, 26)
+		b.clip_text = true
+		b.pressed.connect(func(): _do_queue_production(key))
+		_prod_grid.add_child(b)
+
+
+func _do_queue_production(key: String) -> void:
+	# Production goes to the SELECTED structure's own queue — extra
+	# Barracks / War Factories mean parallel build lines.
+	var err: String = BattleSystem.queue_production(
+		BattleSystem.player_team, key, _sel_structure)
+	if err != "":
+		_toast_show(err)
+	else:
+		_fill_queue_box()
+
+
+func _fill_queue_box() -> void:
+	if _queue_box == null or not is_instance_valid(_queue_box):
+		return
+	var q: Array = BattleSystem.get_build_queue(BattleSystem.player_team, _sel_structure)
+	var shown := mini(q.size(), 4)
+	# Composition fingerprint: while the same items sit in the queue, only
+	# nudge the existing progress bars — no child churn at 4 Hz.
+	var sig := "%d" % q.size()
+	for i in range(shown):
+		var item: Dictionary = q[i]
+		sig += "|" + str(item.get("name", item.get("key", "?")))
+	if sig == _queue_sig and _queue_pbs.size() == shown:
+		for i in range(shown):
+			var item: Dictionary = q[i]
+			var pb = _queue_pbs[i]
+			if is_instance_valid(pb):
+				var total := maxf(0.01, float(item.get("total", 1.0)))
+				pb.value = clampf(1.0 - float(item.get("t_left", 0.0)) / total, 0.0, 1.0)
+		return
+	_queue_sig = sig
+	_queue_pbs = []
+	for c in _queue_box.get_children():
+		c.queue_free()
+	if q.is_empty():
+		_queue_box.add_child(RimvaleUtils.label("(idle)", 11, RimvaleColors.TEXT_DIM))
+		return
+	for i in range(shown):
+		var item: Dictionary = q[i]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var name_lbl := RimvaleUtils.label(str(item.get("name", item.get("key", "?"))), 11, RimvaleColors.TEXT_LIGHT)
+		name_lbl.custom_minimum_size = Vector2(120, 0)
+		name_lbl.clip_text = true
+		row.add_child(name_lbl)
+		var pb := ProgressBar.new()
+		pb.min_value = 0.0
+		pb.max_value = 1.0
+		var total := maxf(0.01, float(item.get("total", 1.0)))
+		pb.value = clampf(1.0 - float(item.get("t_left", 0.0)) / total, 0.0, 1.0)
+		pb.show_percentage = false
+		pb.custom_minimum_size = Vector2(120, 12)
+		pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(pb)
+		_queue_box.add_child(row)
+		_queue_pbs.append(pb)
+	if q.size() > shown:
+		_queue_box.add_child(RimvaleUtils.label("… +%d queued" % (q.size() - shown), 10, RimvaleColors.TEXT_DIM))
+
+
+# ── Spell loadout popup ──────────────────────────────────────────────────
+
+func _open_spell_popup() -> void:
+	if _selection.is_empty():
+		return
+	if _spell_popup != null and is_instance_valid(_spell_popup):
+		_spell_popup.queue_free()
+	_spell_popup = PanelContainer.new()
+	_spell_popup.add_theme_stylebox_override("panel", _panel_style())
+	_spell_popup.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_spell_popup.custom_minimum_size = Vector2(420, 0)
+	_hud.add_child(_spell_popup)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	_spell_popup.add_child(box)
+	box.add_child(RimvaleUtils.label("✦ BATTLE SPELLS — pick up to 2 (needs Arcane Spire)", 13, RimvaleColors.SP_PURPLE))
+
+	# Pre-check the current loadout when a single unit is selected.
+	var current: Array = []
+	if _selection.size() == 1:
+		for s in BattleSystem.get_unit_spells(str(_selection[0])):
+			if s is Dictionary:
+				current.append(str(s.get("name", "")))
+
+	_spell_checks = []
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(400, 240)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
+	for sp_v in BattleSystem.get_battle_spell_catalog():
+		var sp: Dictionary = sp_v
+		var sname := str(sp.get("name", "?"))
+		var cb := CheckBox.new()
+		# Battle casters pay in HP and then wait out a cooldown.
+		if int(sp.get("hp_cost", 0)) > 0:
+			cb.text = "%s  (🩸%d HP · ⏱%.1fs) — %s" % [sname,
+				int(sp.get("hp_cost", 0)), float(sp.get("cd", 0.0)), str(sp.get("desc", ""))]
+		else:
+			cb.text = "%s  (aura) — %s" % [sname, str(sp.get("desc", ""))]
+		cb.add_theme_font_size_override("font_size", 12)
+		cb.set_meta("spell_name", sname)
+		cb.button_pressed = current.has(sname)
+		cb.toggled.connect(func(on: bool): _on_spell_check(on, cb))
+		list.add_child(cb)
+		_spell_checks.append(cb)
+
+	box.add_child(HSeparator.new())
+	var create_btn := RimvaleUtils.button("✦ Create Custom Spell", RimvaleColors.SP_PURPLE, 32, 13)
+	create_btn.tooltip_text = "Design an always-on aura spell (requires Arcane Spire + supply)."
+	if not BattleSystem._team_has_structure(BattleSystem.player_team, "spire"):
+		create_btn.disabled = true
+		create_btn.tooltip_text = "Requires an Arcane Spire."
+	create_btn.pressed.connect(_open_spell_builder)
+	box.add_child(create_btn)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 10)
+	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_child(btn_row)
+	var apply := RimvaleUtils.button("Apply", RimvaleColors.SUCCESS, 32, 13)
+	apply.custom_minimum_size = Vector2(120, 32)
+	apply.pressed.connect(_apply_spells)
+	btn_row.add_child(apply)
+	var cancel := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 32, 13)
+	cancel.custom_minimum_size = Vector2(120, 32)
+	cancel.pressed.connect(func(): _spell_popup.visible = false)
+	btn_row.add_child(cancel)
+
+
+## Hard cap: never more than 2 boxes checked.
+func _on_spell_check(on: bool, cb: CheckBox) -> void:
+	if not on:
+		return
+	var n := 0
+	for c in _spell_checks:
+		if is_instance_valid(c) and c.button_pressed:
+			n += 1
+	if n > 2:
+		cb.set_pressed_no_signal(false)
+		_toast_show("Max 2 spells per unit.")
+
+
+func _apply_spells() -> void:
+	var names: Array = []
+	for c in _spell_checks:
+		if is_instance_valid(c) and c.button_pressed:
+			names.append(str(c.get_meta("spell_name")))
+	var err := ""
+	var ok := 0
+	for uid in _selection:
+		var r: String = BattleSystem.set_unit_spells(str(uid), names)
+		if r == "":
+			ok += 1
+		elif err == "":
+			err = r
+	if ok > 0:
+		_toast_show("✦ Spells set for %d unit%s" % [ok, "" if ok == 1 else "s"])
+	elif err != "":
+		_toast_show(err)
+	if _spell_popup != null and is_instance_valid(_spell_popup):
+		_spell_popup.visible = false
+
+
+# ── Custom spell builder ────────────────────────────────────────────────
+
+func _open_spell_builder() -> void:
+	if _spell_builder != null and is_instance_valid(_spell_builder):
+		_spell_builder.queue_free()
+	_spell_builder = PanelContainer.new()
+	_spell_builder.add_theme_stylebox_override("panel", _panel_style())
+	_spell_builder.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_spell_builder.custom_minimum_size = Vector2(420, 0)
+	_hud.add_child(_spell_builder)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	_spell_builder.add_child(box)
+
+	box.add_child(RimvaleUtils.label("✦ CUSTOM SPELL BUILDER", 16, RimvaleColors.SP_PURPLE))
+	box.add_child(RimvaleUtils.label("Design an always-on aura spell.", 11, RimvaleColors.TEXT_GRAY))
+
+	# ── Name ──
+	box.add_child(RimvaleUtils.label("Spell Name", 12, RimvaleColors.ACCENT))
+	_sb_name = LineEdit.new()
+	_sb_name.placeholder_text = "e.g. Flame Shroud"
+	_sb_name.max_length = 24
+	_sb_name.add_theme_font_size_override("font_size", 13)
+	box.add_child(_sb_name)
+
+	# ── Kind ──
+	box.add_child(RimvaleUtils.label("Aura Type", 12, RimvaleColors.ACCENT))
+	var kind_row := HBoxContainer.new()
+	kind_row.add_theme_constant_override("separation", 6)
+	box.add_child(kind_row)
+	var kinds := [["damage", "🔥 Damage"], ["heal", "💚 Heal"], ["buff", "🛡 Buff"], ["debuff", "💀 Debuff"]]
+	for k in kinds:
+		var kb := Button.new()
+		kb.text = str(k[1])
+		kb.custom_minimum_size = Vector2(95, 32)
+		kb.add_theme_font_size_override("font_size", 12)
+		kb.pressed.connect(_sb_select_kind.bind(str(k[0])))
+		kind_row.add_child(kb)
+
+	# ── Dice count ──
+	var dc_row := HBoxContainer.new()
+	dc_row.add_theme_constant_override("separation", 8)
+	box.add_child(dc_row)
+	dc_row.add_child(RimvaleUtils.label("Dice Count", 12, RimvaleColors.TEXT_WHITE))
+	var dc_lbl := Label.new()
+	dc_lbl.text = "1"
+	dc_lbl.add_theme_font_size_override("font_size", 12)
+	dc_lbl.add_theme_color_override("font_color", RimvaleColors.GOLD)
+	dc_row.add_child(dc_lbl)
+	var dc_slider := HSlider.new()
+	dc_slider.min_value = 1; dc_slider.max_value = 4; dc_slider.step = 1; dc_slider.value = 1
+	dc_slider.custom_minimum_size = Vector2(120, 0)
+	dc_slider.value_changed.connect(func(v: float):
+		_sb_dc = int(v); dc_lbl.text = str(int(v)); _sb_update_cost())
+	dc_row.add_child(dc_slider)
+
+	# ── Dice sides ──
+	var ds_row := HBoxContainer.new()
+	ds_row.add_theme_constant_override("separation", 8)
+	box.add_child(ds_row)
+	ds_row.add_child(RimvaleUtils.label("Dice Sides", 12, RimvaleColors.TEXT_WHITE))
+	var ds_lbl := Label.new()
+	ds_lbl.text = "d6"
+	ds_lbl.add_theme_font_size_override("font_size", 12)
+	ds_lbl.add_theme_color_override("font_color", RimvaleColors.GOLD)
+	ds_row.add_child(ds_lbl)
+	var ds_slider := HSlider.new()
+	ds_slider.min_value = 4; ds_slider.max_value = 12; ds_slider.step = 2; ds_slider.value = 6
+	ds_slider.custom_minimum_size = Vector2(120, 0)
+	ds_slider.value_changed.connect(func(v: float):
+		_sb_ds = int(v); ds_lbl.text = "d%d" % int(v); _sb_update_cost())
+	ds_row.add_child(ds_slider)
+
+	# ── Area radius ──
+	var area_row := HBoxContainer.new()
+	area_row.add_theme_constant_override("separation", 8)
+	box.add_child(area_row)
+	area_row.add_child(RimvaleUtils.label("Aura Radius", 12, RimvaleColors.TEXT_WHITE))
+	var area_lbl := Label.new()
+	area_lbl.text = "2 tiles"
+	area_lbl.add_theme_font_size_override("font_size", 12)
+	area_lbl.add_theme_color_override("font_color", RimvaleColors.GOLD)
+	area_row.add_child(area_lbl)
+	var area_slider := HSlider.new()
+	area_slider.min_value = 1; area_slider.max_value = 4; area_slider.step = 1; area_slider.value = 2
+	area_slider.custom_minimum_size = Vector2(120, 0)
+	area_slider.value_changed.connect(func(v: float):
+		_sb_area = int(v); area_lbl.text = "%d tiles" % int(v); _sb_update_cost())
+	area_row.add_child(area_slider)
+
+	# ── Conditions (for buff/debuff) ──
+	_sb_cond_box = VBoxContainer.new()
+	_sb_cond_box.add_theme_constant_override("separation", 2)
+	box.add_child(_sb_cond_box)
+	_sb_cond_box.add_child(RimvaleUtils.label("Conditions (buff/debuff only)", 11, RimvaleColors.TEXT_GRAY))
+	_sb_cond_checks = []
+	var buff_conds := ["dodging", "resistant", "hidden", "haste"]
+	var debuff_conds := ["bleeding", "slowed", "stunned", "frightened", "vulnerable"]
+	var all_conds := buff_conds + debuff_conds
+	var cond_grid := GridContainer.new()
+	cond_grid.columns = 3
+	cond_grid.add_theme_constant_override("h_separation", 8)
+	_sb_cond_box.add_child(cond_grid)
+	for cond in all_conds:
+		var cb := CheckBox.new()
+		cb.text = cond.capitalize()
+		cb.add_theme_font_size_override("font_size", 11)
+		cb.toggled.connect(func(_on: bool): _sb_update_cost())
+		cond_grid.add_child(cb)
+		cb.set_meta("cond_name", cond)
+		_sb_cond_checks.append(cb)
+	_sb_cond_box.visible = false   # hidden until buff/debuff selected
+
+	box.add_child(HSeparator.new())
+
+	# ── Cost preview ──
+	_sb_cost_lbl = RimvaleUtils.label("Cost: 100⛃", 14, RimvaleColors.GOLD)
+	box.add_child(_sb_cost_lbl)
+	_sb_update_cost()
+
+	# ── Buttons ──
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 10)
+	box.add_child(btn_row)
+	var create_btn := RimvaleUtils.button("✦ Create", RimvaleColors.SP_PURPLE, 34, 14)
+	create_btn.custom_minimum_size = Vector2(140, 34)
+	create_btn.pressed.connect(_sb_create)
+	btn_row.add_child(create_btn)
+	var cancel_btn := RimvaleUtils.button("Cancel", RimvaleColors.TEXT_GRAY, 34, 13)
+	cancel_btn.pressed.connect(func():
+		if _spell_builder != null and is_instance_valid(_spell_builder):
+			_spell_builder.queue_free())
+	btn_row.add_child(cancel_btn)
+
+	_sb_kind = "damage"
+	_sb_dc = 1
+	_sb_ds = 6
+	_sb_area = 2
+
+func _sb_select_kind(kind: String) -> void:
+	_sb_kind = kind
+	if _sb_cond_box != null:
+		_sb_cond_box.visible = (kind == "buff" or kind == "debuff")
+	_sb_update_cost()
+
+func _sb_update_cost() -> void:
+	var num_conds: int = 0
+	for cb in _sb_cond_checks:
+		if is_instance_valid(cb) and cb.button_pressed:
+			num_conds += 1
+	var cost: int = BattleSystem.custom_spell_cost(_sb_dc, _sb_ds, _sb_area, num_conds)
+	if _sb_cost_lbl != null and is_instance_valid(_sb_cost_lbl):
+		_sb_cost_lbl.text = "Cost: %d⛃   |   %dd%d  •  radius %d" % [cost, _sb_dc, _sb_ds, _sb_area]
+
+func _sb_create() -> void:
+	if _sb_name == null or _sb_name.text.strip_edges() == "":
+		_toast_show("Enter a spell name.")
+		return
+	var conds: Array = []
+	if _sb_kind == "buff" or _sb_kind == "debuff":
+		for cb in _sb_cond_checks:
+			if is_instance_valid(cb) and cb.button_pressed:
+				conds.append(str(cb.get_meta("cond_name")))
+		if conds.is_empty():
+			_toast_show("Pick at least one condition.")
+			return
+	var err: String = BattleSystem.create_custom_spell(
+		_sb_name.text.strip_edges(), _sb_kind, _sb_dc, _sb_ds,
+		_sb_area, conds, BattleSystem.player_team)
+	if err != "":
+		_toast_show(err)
+		return
+	_toast_show("✦ Custom spell created: %s" % _sb_name.text.strip_edges())
+	if _spell_builder != null and is_instance_valid(_spell_builder):
+		_spell_builder.queue_free()
+	# Refresh the spell popup to include the new spell.
+	if _spell_popup != null and is_instance_valid(_spell_popup):
+		_spell_popup.queue_free()
+	_open_spell_popup()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Minimap (2 Hz rebuild)
+# ═════════════════════════════════════════════════════════════════════════
+
+func _update_minimap() -> void:
+	if _e == null or _minimap == null:
+		return
+	var pal: Dictionary = REGION_PALETTES.get(str(BattleSystem.region_id), REGION_PALETTES["plains"])
+	var floor_c: Color = (pal["floor"] as Color).darkened(0.45)
+	var wall_c := Color(0.45, 0.45, 0.48)
+	var obst_c := Color(0.42, 0.30, 0.18)
+	if _minimap_img == null:
+		_minimap_img = Image.create_empty(_ms, _ms, false, Image.FORMAT_RGB8)
+	var img := _minimap_img
+
+	var fogged: bool = _fog_on and not _fog_revealed and _explored.size() == _ms * _ms
+	var total: int = _ms * _ms
+	var buf := PackedByteArray()
+	buf.resize(total * 3)   # RGB8
+	var floor_r: int = clampi(int(floor_c.r * 255), 0, 255)
+	var floor_g: int = clampi(int(floor_c.g * 255), 0, 255)
+	var floor_b: int = clampi(int(floor_c.b * 255), 0, 255)
+	var wall_r: int = 115; var wall_g: int = 115; var wall_b: int = 122
+	var obst_r: int = 107; var obst_g: int = 77; var obst_b: int = 46
+	var void_r: int = 13; var void_g: int = 13; var void_b: int = 18
+	var bi: int = 0
+	for i in range(total):
+		var v: int = int(_e._dungeon_map[i])
+		var r: int; var g: int; var b: int
+		if v == 1:
+			r = floor_r; g = floor_g; b = floor_b
+		elif v == 2:
+			r = wall_r; g = wall_g; b = wall_b
+		elif v == 3:
+			r = obst_r; g = obst_g; b = obst_b
+		else:
+			r = void_r; g = void_g; b = void_b
+		if fogged:
+			if _explored[i] == 0:
+				r = 5; g = 5; b = 8
+			elif _vision[i] == 0:
+				r = r * 45 / 100; g = g * 45 / 100; b = b * 45 / 100
+		buf[bi] = r; buf[bi + 1] = g; buf[bi + 2] = b
+		bi += 3
+	img = Image.create_from_data(_ms, _ms, false, Image.FORMAT_RGB8, buf)
+
+	# Entities: 2×2 team-colored dots; resource nodes teal. Fog-filtered.
+	for ent_v in _e._dungeon_entities:
+		var ent: Dictionary = ent_v
+		if bool(ent.get("is_dead", false)):
+			continue
+		if fogged and not _fog_sees(ent):
+			continue
+		var c: Color
+		if bool(ent.get("is_resource_node", false)):
+			c = Color(0.15, 0.9, 0.85) if not bool(ent.get("looted", false)) else Color(0.3, 0.4, 0.4)
+		elif bool(ent.get("is_crate", false)):
+			c = Color(1.0, 0.85, 0.3)
+		elif ent.has("battle_team"):
+			c = BattleSystem.get_team_color(int(ent["battle_team"]))
+		else:
+			continue
+		var ex := int(ent.get("x", 0))
+		var ey := int(ent.get("y", 0))
+		for oy in range(2):
+			for ox in range(2):
+				var px := clampi(ex + ox, 0, _ms - 1)
+				var py := clampi(ey + oy, 0, _ms - 1)
+				img.set_pixel(px, py, c)
+
+	# Camera view: white rectangle around the current focus.
+	var half_w := int(_zoom * 0.9)
+	var half_h := int(_zoom * 0.62)
+	var cx := int(_cam_focus.x)
+	var cy := int(_cam_focus.z)
+	var white := Color(1, 1, 1)
+	for x in range(maxi(cx - half_w, 0), mini(cx + half_w, _ms - 1) + 1):
+		img.set_pixel(x, clampi(cy - half_h, 0, _ms - 1), white)
+		img.set_pixel(x, clampi(cy + half_h, 0, _ms - 1), white)
+	for y in range(maxi(cy - half_h, 0), mini(cy + half_h, _ms - 1) + 1):
+		img.set_pixel(clampi(cx - half_w, 0, _ms - 1), y, white)
+		img.set_pixel(clampi(cx + half_w, 0, _ms - 1), y, white)
+
+	# Attack-alert ping: blinking red square at the last alert tile.
+	if _alert_ping_t > 0.0 and _alert_ping_tile.x >= 0 \
+			and int(_alert_ping_t * 6.0) % 2 == 0:
+		var red := Color(1.0, 0.15, 0.1)
+		for py in range(-2, 3):
+			for px in range(-2, 3):
+				if absi(px) < 2 and absi(py) < 2:
+					continue   # hollow square reads better
+				img.set_pixel(
+					clampi(_alert_ping_tile.x + px, 0, _ms - 1),
+					clampi(_alert_ping_tile.y + py, 0, _ms - 1), red)
+
+	if _minimap_tex == null:
+		_minimap_tex = ImageTexture.create_from_image(img)
+		_minimap.texture = _minimap_tex
+	else:
+		_minimap_tex.update(img)
+
+
+func _on_minimap_input(ev: InputEvent) -> void:
+	if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
+		_mm_drag = ev.pressed
+		if ev.pressed:
+			_minimap_jump(ev.position)
+	elif ev is InputEventMouseMotion and _mm_drag:
+		_minimap_jump(ev.position)
+
+
+func _minimap_jump(local_pos: Vector2) -> void:
+	var sz := _minimap.size
+	if sz.x <= 0.0 or sz.y <= 0.0:
+		return
+	_cam_focus = Vector3(
+		clampf(local_pos.x / sz.x, 0.0, 1.0) * float(_ms),
+		0.0,
+		clampf(local_pos.y / sz.y, 0.0, 1.0) * float(_ms))
+	_clamp_focus()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Battle end
+# ═════════════════════════════════════════════════════════════════════════
+
+func _show_over(winner: int) -> void:
+	if _over_shown:
+		return
+	_over_shown = true
+
+	# Region Conquest: a battle launched from the world map carries a pending
+	# region id. Winning it claims the region (claim() clears the flag). A loss
+	# or draw leaves the flag set so "🔁 Rematch" retries the same conquest
+	# battle; the flag is cleared instead when the player leaves the battle.
+	var conquest_rid: String = Conquest.pending_region
+	var is_conquest: bool = conquest_rid != ""
+	if is_conquest and winner == BattleSystem.player_team:
+		Conquest.claim(conquest_rid)
+
+	# Outcome sting (guarded internally against missing assets).
+	if winner == BattleSystem.player_team:
+		AudioManager.play_sfx("jingle_victory")
+	elif winner < 0:
+		AudioManager.play_sfx("jingle_quest")
+	else:
+		AudioManager.play_sfx("jingle_defeat")
+
+	var overlay := Control.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_hud.add_child(overlay)
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.55)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _panel_style())
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	panel.custom_minimum_size = Vector2(460, 0)
+	overlay.add_child(panel)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.add_child(box)
+
+	var title_txt: String
+	var title_col: Color
+	if winner == BattleSystem.player_team:
+		var cname := str(TEAM_COLOR_NAMES[clampi(winner, 0, TEAM_COLOR_NAMES.size() - 1)])
+		title_txt = "🏆 VICTORY — %s holds the region" % cname
+		title_col = RimvaleColors.GOLD
+	elif winner < 0:
+		title_txt = "🕊 DRAW — the region lies in ruin"
+		title_col = RimvaleColors.TEXT_LIGHT
+	else:
+		var wname := str(TEAM_COLOR_NAMES[clampi(winner, 0, TEAM_COLOR_NAMES.size() - 1)])
+		title_txt = "💀 DEFEAT — %s holds the region" % wname
+		title_col = RimvaleColors.DANGER
+	var title := RimvaleUtils.label(title_txt, 22, title_col)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(title)
+
+	var sub := RimvaleUtils.label(
+		"Battle time %02d:%02d" % [int(BattleSystem.get_battle_time() / 60.0), int(BattleSystem.get_battle_time()) % 60],
+		12, RimvaleColors.TEXT_GRAY)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(sub)
+
+	# ── Score report ─────────────────────────────────────────────────────
+	var stats: Dictionary = BattleSystem.get_battle_stats()
+	var pt: int = BattleSystem.player_team
+	box.add_child(HSeparator.new())
+	for line in _score_lines(stats, pt):
+		var sl := RimvaleUtils.label(str(line), 12, RimvaleColors.TEXT_LIGHT)
+		sl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		box.add_child(sl)
+	box.add_child(HSeparator.new())
+
+	var btns := HBoxContainer.new()
+	btns.add_theme_constant_override("separation", 12)
+	btns.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_child(btns)
+
+	var back: Button
+	if is_conquest:
+		back = RimvaleUtils.button("🗺 Back to World Map", RimvaleColors.GOLD, 40, 14)
+		back.pressed.connect(_leave_to_map)
+	else:
+		back = RimvaleUtils.button("Back to Title", RimvaleColors.GOLD, 40, 14)
+		back.pressed.connect(_leave_battle)
+	back.custom_minimum_size = Vector2(200, 40)
+	btns.add_child(back)
+
+	var again := RimvaleUtils.button("🔁 Rematch", RimvaleColors.PRIMARY, 40, 14)
+	again.custom_minimum_size = Vector2(150, 40)
+	again.tooltip_text = "Same region, teams, difficulty, resources and heroes."
+	again.pressed.connect(func():
+		BattleSystem.rematch()
+		get_tree().reload_current_scene())
+	btns.add_child(again)
+
+	var watch := RimvaleUtils.button("🏖 Keep playing", RimvaleColors.TEXT_GRAY, 40, 14)
+	watch.custom_minimum_size = Vector2(170, 40)
+	watch.tooltip_text = "Free play: the sim keeps running — move units, mine, build, cast. Leave whenever you like."
+	watch.pressed.connect(func():
+		overlay.visible = false
+		BattleSystem.resume_sandbox()
+		_toast_show("🏖 Free play — the field is yours."))
+	btns.add_child(watch)
+
+
+## Human-readable score lines for the outcome modal.
+func _score_lines(stats: Dictionary, pt: int) -> Array:
+	var out: Array = []
+	var kills: Array = stats.get("kills", [])
+	var mined: Array = stats.get("mined", [])
+	var built: Array = stats.get("built", [])
+	var lost: Array = stats.get("lost", [])
+	var caps: Array = stats.get("captures", [])
+	var my_kills: int = int(kills[pt]) if pt < kills.size() else 0
+	# Best rival by kills, for bragging context.
+	var best_t: int = -1
+	var best_k: int = -1
+	for t in range(kills.size()):
+		if t == pt:
+			continue
+		if int(kills[t]) > best_k:
+			best_k = int(kills[t])
+			best_t = t
+	var rival: String = ""
+	if best_t >= 0:
+		rival = "  ·  best rival Team %d: %d" % [best_t + 1, best_k]
+	out.append("⚔ Kills — you: %d%s" % [my_kills, rival])
+	out.append("⛏ Supply mined: %d⛃    🏭 Built: %d    💀 Lost: %d" % [
+		int(mined[pt]) if pt < mined.size() else 0,
+		int(built[pt]) if pt < built.size() else 0,
+		int(lost[pt]) if pt < lost.size() else 0])
+	if pt < caps.size() and int(caps[pt]) > 0:
+		out.append("🔧 Structures captured: %d" % int(caps[pt]))
+	var blast: Dictionary = stats.get("blast", {})
+	if not blast.is_empty():
+		out.append("💥 Biggest blast — %s, %d damage (Team %d)" % [
+			str(blast.get("spell", "?")), int(blast.get("dmg", 0)),
+			int(blast.get("team", 0)) + 1])
+	var mvp: Dictionary = stats.get("mvp", {})
+	if not mvp.is_empty():
+		var mvp_tag: String = "your" if int(mvp.get("team", -1)) == pt else "Team %d's" % (int(mvp.get("team", 0)) + 1)
+		out.append("🎖 MVP — %s (%s unit, %d kills)" % [
+			str(mvp.get("name", "?")), mvp_tag, int(mvp.get("kills", 0))])
+	return out
+
+
+func _leave_battle() -> void:
+	# Clear any conquest flag so a manual skirmish can't inherit it.
+	Conquest.abandon()
+	BattleSystem.end_battle()
+	get_tree().change_scene_to_file(TITLE_SCENE)
+
+
+## Return to the Region Conquest world map after a conquest battle. A win has
+## already been claimed in _show_over; here we just clear the pending flag and
+## end the battle. The map re-reads Conquest.owned to repaint (and shows the
+## triumph screen if that win completed the campaign).
+func _leave_to_map() -> void:
+	Conquest.abandon()
+	BattleSystem.end_battle()
+	get_tree().change_scene_to_file(CONQUEST_MAP_SCENE)

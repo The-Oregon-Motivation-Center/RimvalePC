@@ -7133,4 +7133,6 @@ func _get_region_display_name(region_id: String) -> String:
 		"forest": return "Forest"
 		"mountain": return "Mountain"
 		"swamp": return "Swamp"
-		"desert
+		"desert": return "Desert"
+		"coast": return "Coast"
+		_: return region_id.capitalize()
